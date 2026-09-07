@@ -501,13 +501,20 @@ class FileInputTab(QWidget):
     def update_cellnames_from_gds(self, filename):
         if filename:
             # get top level cellnames now
-            lib = gdspy.GdsLibrary()
-            lib.read_gds(filename)
-            cellnames = list(lib.cells.keys())
+            try:
+                lib = gdspy.GdsLibrary()
+                lib.read_gds(filename)
+                cellnames = list(lib.cells.keys())
+            except Exception:
+                # called on a just-resolved path during load_values() now, not only after
+                # the user explicitly picked a file via the Browse dialog - be defensive
+                return False
             self.cellname_box.clear()
             self.cellname_box.addItem("")  # blank for default
             for cellname in cellnames:
                 self.cellname_box.addItem(cellname)
+            return True
+        return False
 
     def set_gds_file(self, filename):
         # clear model name and target dir if they were auto-generated from previous model
@@ -665,13 +672,25 @@ class FileInputTab(QWidget):
 
     def load_values(self):
         saved_values = self.MainWindow.saved_values
-        self.gds_file_edit.setText(get_saved_value(saved_values, "GdsFile", "Please choose a file ===>"))
+        gdsfile = get_saved_value(saved_values, "GdsFile", "Please choose a file ===>")
+        self.gds_file_edit.setText(gdsfile)
         XML = get_saved_value(saved_values, "SubstrateFile", "Please choose a file ===>")
         self.XML_file_edit.setText(XML)
         self.update_XML_description(XML)
         self.update_variable_overrides_grid(XML)
-        self.cellname_box.clear()
-        self.cellname_box.addItem(get_saved_value(saved_values, "cellname", ""))
+
+        # Repopulate the full cellname picker from the GDS file (matching what
+        # browse_gds_file()/set_gds_file() already do), not just the one saved value -
+        # otherwise a resolved/substituted GdsFile path (see resolve_missing_file_paths)
+        # leaves the dropdown showing only the previously-saved cellname (blank, if none
+        # was set) with no way to pick a different one without re-browsing for the file.
+        saved_cellname = get_saved_value(saved_values, "cellname", "")
+        if os.path.isfile(gdsfile) and self.update_cellnames_from_gds(gdsfile):
+            index = self.cellname_box.findText(saved_cellname)
+            self.cellname_box.setCurrentIndex(index if index >= 0 else 0)
+        else:
+            self.cellname_box.clear()
+            self.cellname_box.addItem(saved_cellname)
         self.viamerge_edit.setText(str(get_saved_value(saved_values, "merge_polygon_size", "0.5")))
         self.preprocess_gds_checkbox.setChecked(bool(get_saved_value(saved_values, "preprocess_gds", True)))
 
