@@ -184,6 +184,17 @@ def get_saved_value(saved_values, key, default):
             return default
 
 
+def shorten_path_for_display(path, head_len=14):
+    # A full network path can run to 100+ characters, unreadable crammed into a
+    # dialog box next to a second equally long path. Keep just enough of the head
+    # to hint at the drive/share, plus the filename - drop the unreadable middle.
+    path = path.replace('\\', '/')
+    filename = path.rsplit('/', 1)[-1]
+    if len(path) <= head_len + len(filename) + 5:
+        return path  # already short enough, don't bother truncating
+    return f"{path[:head_len]}.../{filename}"
+
+
 def resolve_missing_file_paths(saved_values, reference_dir, keys=("GdsFile", "SubstrateFile")):
     """After loading a model (.py) or settings (.simcfg/.tsimcfg) file, GdsFile/
     SubstrateFile paths stored for one OS/network-drive mapping often don't exist
@@ -205,7 +216,10 @@ def resolve_missing_file_paths(saved_values, reference_dir, keys=("GdsFile", "Su
         candidate = os.path.join(reference_dir, os.path.basename(old_path))
         if os.path.isfile(candidate):
             saved_values[key] = candidate.replace('\\', '/')
-            messages.append(f"{key} not found at stored path ({old_path}); using {candidate} from the same folder instead.")
+            messages.append(
+                f"{key}: {shorten_path_for_display(old_path)} not found, "
+                f"using {shorten_path_for_display(candidate)} instead"
+            )
     return messages
 
 
@@ -2053,7 +2067,7 @@ class MainWindowBase(QMainWindow):
                     self.apply_native_config_data(data)
                     self.load_all_tabs()
                     self._add_recent_file(RECENT_SETTINGS_KEY, file_path)
-                    loaded_message = f"Settings loaded from {file_path}"
+                    loaded_message = f"Settings loaded from {shorten_path_for_display(file_path)}"
                     if path_messages:
                         loaded_message += "\n\n" + "\n".join(path_messages)
                     QMessageBox.information(self, "Loaded", loaded_message)
@@ -2155,7 +2169,7 @@ class MainWindowBase(QMainWindow):
 
                 self.load_all_tabs()
                 self._add_recent_file(RECENT_MODEL_KEY, file_path)
-                loaded_message = f"Settings loaded from {file_path}"
+                loaded_message = f"Settings loaded from {shorten_path_for_display(file_path)}"
                 if path_messages:
                     loaded_message += "\n\n" + "\n".join(path_messages)
                 QMessageBox.information(self, "Loaded", loaded_message)
