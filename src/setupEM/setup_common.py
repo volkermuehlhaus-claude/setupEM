@@ -184,6 +184,31 @@ def get_saved_value(saved_values, key, default):
             return default
 
 
+def resolve_missing_file_paths(saved_values, reference_dir, keys=("GdsFile", "SubstrateFile")):
+    """After loading a model (.py) or settings (.simcfg/.tsimcfg) file, GdsFile/
+    SubstrateFile paths stored for one OS/network-drive mapping often don't exist
+    verbatim on another (e.g. a Windows drive letter vs. a Linux mount point for
+    the same network share) - saved_values still holds the old, unreachable path.
+
+    For each key whose stored path doesn't resolve, look for a same-named file in
+    reference_dir (the folder the just-loaded file itself came from) and, if found,
+    switch saved_values to point at that instead. Returns a list of human-readable
+    messages describing each substitution made, for the caller to show the user -
+    silently swapping in a different file (even same-named) without saying so could
+    be confusing if it's actually a stale/different copy.
+    """
+    messages = []
+    for key in keys:
+        old_path = saved_values.get(key)
+        if not old_path or os.path.isfile(old_path):
+            continue
+        candidate = os.path.join(reference_dir, os.path.basename(old_path))
+        if os.path.isfile(candidate):
+            saved_values[key] = candidate.replace('\\', '/')
+            messages.append(f"{key} not found at stored path ({old_path}); using {candidate} from the same folder instead.")
+    return messages
+
+
 def parse_assignments(file_path):
     # parse lines from a Python model code for variable assigments
     parameters = {}
@@ -2020,11 +2045,18 @@ class MainWindowBase(QMainWindow):
                     # update internal data structure
                     saved_values.clear()
                     saved_values.update(data.get("saved_values"))
+                    # GdsFile/SubstrateFile paths saved on a different OS/network-drive
+                    # mapping often don't resolve here - fall back to a same-named file
+                    # next to this settings file before populating the tabs with them
+                    path_messages = resolve_missing_file_paths(saved_values, os.path.dirname(file_path))
                     # update ports/thermal objects, separate from the other internal data
                     self.apply_native_config_data(data)
                     self.load_all_tabs()
                     self._add_recent_file(RECENT_SETTINGS_KEY, file_path)
-                    QMessageBox.information(self, "Loaded", f"Settings loaded from {file_path}")
+                    loaded_message = f"Settings loaded from {file_path}"
+                    if path_messages:
+                        loaded_message += "\n\n" + "\n".join(path_messages)
+                    QMessageBox.information(self, "Loaded", loaded_message)
                     self.create_model_tab.log_area.clear()
                 else:
                     QMessageBox.information(self, "Failed", "Unknown data format")
@@ -2098,6 +2130,12 @@ class MainWindowBase(QMainWindow):
                                     else:
                                         saved_values[varname] = raw
 
+                # GdsFile/SubstrateFile paths saved on a different OS/network-drive mapping
+                # often don't resolve here even as a full absolute path (the bare-relative-
+                # path fallback above only fires when there's no directory component at
+                # all) - fall back to a same-named file next to this model script instead
+                path_messages = resolve_missing_file_paths(saved_values, modelcode_path)
+
                 # ask whether future "Create Model" output should overwrite this same
                 # file, or start a fresh model (today's GDS-derived default)
                 reuse = QMessageBox.question(
@@ -2117,7 +2155,10 @@ class MainWindowBase(QMainWindow):
 
                 self.load_all_tabs()
                 self._add_recent_file(RECENT_MODEL_KEY, file_path)
-                QMessageBox.information(self, "Loaded", f"Settings loaded from {file_path}")
+                loaded_message = f"Settings loaded from {file_path}"
+                if path_messages:
+                    loaded_message += "\n\n" + "\n".join(path_messages)
+                QMessageBox.information(self, "Loaded", loaded_message)
                 self.create_model_tab.log_area.clear()
 
             else:
