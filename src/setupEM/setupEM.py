@@ -1427,7 +1427,7 @@ class CreateModelTab(CreateModelTabBase):
                 # unreadable) - _update_status_line() shows "0/0" for the former, "n/a" for
                 # the latter.
                 self._status_amr_max = max_its
-                self._status_amr_cur = 1 if max_its else 0  # the first solve, on the unrefined mesh, is iteration 1
+                self._status_amr_cur = 0  # the initial, unrefined-mesh solve displays as "0"
             except (OSError, ValueError, KeyError):
                 pass
             self._update_status_line()
@@ -1489,11 +1489,17 @@ class CreateModelTab(CreateModelTabBase):
         for amr_re in (self._RE_AMR_ITER_A, self._RE_AMR_ITER_B, self._RE_AMR_PROCEEDING):
             m = amr_re.search(line)
             if m and self._status_amr_max:
-                # Not clamped to amr_max: MaxIts caps refinement actions, not solve passes,
-                # so the last legitimate pass is on the MaxIts-times-refined mesh and gets
-                # reported as "iteration MaxIts+1" - showing whatever Palace actually prints
-                # is more honest than silently capping it back down to MaxIts.
-                self._status_amr_cur = int(m.group(1))
+                # Palace's own log numbers the initial, unrefined-mesh solve as "iteration
+                # 1" (confirmed earlier against DOF counts and palace_results.py's own
+                # iteration1/iteration2/... folder naming). Displayed here shifted down by
+                # 1 instead, so the initial solve reads "0" and each subsequent number
+                # counts completed *refinements* - e.g. the 2nd refinement (Palace's
+                # "iteration 3") reads "2/2" against a MaxIts=2 config, not "3/2". Not
+                # clamped to amr_max: MaxIts caps refinement actions, not solve passes, so
+                # the last legitimate pass is Palace's "iteration MaxIts+1" (displayed
+                # "MaxIts") - showing whatever Palace actually reports is more honest than
+                # silently capping it.
+                self._status_amr_cur = int(m.group(1)) - 1
                 self._update_status_line()
                 return
 
@@ -1647,6 +1653,20 @@ class CreateModelTab(CreateModelTabBase):
                     f"⚠️ snp2le installation failed (exit code {exit_code}). "
                     f"Try manually: pip install snp2le\n"
                 )
+        # self.process here is run_sim's whole script (run_palace THEN combine_snp,
+        # run sequentially), so "finished" firing guarantees combine_snp has already
+        # run - an already-open result viewer can safely rescan for real Touchstone
+        # files now, seamlessly replacing any live port-S.csv preview it was showing.
+        if self._process_purpose == "run_simulation" and self.MainWindow.result_viewer_window is not None:
+            self.MainWindow.result_viewer_window._rescan_files()
+
+    def on_process_error(self, error):
+        super().on_process_error(error)
+        # Covers QProcess.FailedToStart/Crashed, where "finished" may not fire the
+        # same way - an open viewer left showing a "still running" live preview
+        # should switch to the "stopped" wording rather than get stuck.
+        if self.MainWindow.result_viewer_window is not None:
+            self.MainWindow.result_viewer_window._rescan_files()
 
     def create_model(self):
         # Request all tabs to save values again,
@@ -1844,6 +1864,12 @@ class CreateModelTab(CreateModelTabBase):
                 self.process.setWorkingDirectory(run_path)
                 # start simulation
                 self.process.start(".//run_elmer")
+
+        # If the result viewer is already open, arm its live-preview polling
+        # immediately rather than waiting for some other trigger (e.g. the window's
+        # own showEvent(), which won't fire again for an already-visible window).
+        if self.MainWindow.result_viewer_window is not None:
+            self.MainWindow.result_viewer_window._rescan_files()
 
 
 class ModelEditorTab(QWidget):

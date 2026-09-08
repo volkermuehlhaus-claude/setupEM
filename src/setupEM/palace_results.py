@@ -157,9 +157,12 @@ def _parse_palace_port_s_csv(path):
     return freq, S_dB, S_arg, num_ports
 
 
-def _read_port_s_data(dir_path):
+def read_port_s_data(dir_path):
     """Parse dir_path/port-S.csv (if present), or None if the file is
-    missing, unfinished, or malformed (e.g. a still-running pass).
+    missing, unfinished, or malformed (e.g. a still-running pass). Public
+    (no leading underscore): also used by result_viewer.py to build a live
+    preview of the most recently completed AMR iteration while Palace is
+    still running - see find_live_iteration_dirs() below.
     """
     path = os.path.join(dir_path, 'port-S.csv')
     if not os.path.isfile(path):
@@ -212,7 +215,7 @@ def _collect_amr_rows(output_dir, iteration_dirs):
     for label, d in zip(labels, dirs_in_order):
         summary = _read_palace_json(d)
         errors = _read_error_indicators(d)
-        port_s = _read_port_s_data(d)
+        port_s = read_port_s_data(d)
         delta_s = _max_delta_s(prev_port_s, port_s)
         rows.append((label, summary, errors, delta_s))
         prev_port_s = port_s
@@ -230,6 +233,22 @@ def _list_iteration_dirs(output_dir):
             found.append((int(match.group(1)), full_path))
     found.sort(key=lambda item: item[0])
     return [full_path for _, full_path in found]
+
+
+def find_live_iteration_dirs(run_path, model_basename):
+    """While a multi-iteration AMR run is still in progress (before combine_snp has
+    produced real Touchstone files), return the list of iteration<N> subfolders under
+    this run's Palace output directory that already have a successfully-parsed
+    port-S.csv - i.e. iterations whose solve+error-estimate has fully completed - in
+    ascending order. Empty list if AMR is off (no iteration<N> subfolders exist at
+    all - a single pass writes directly to the output root, never to iteration<N>) or
+    if no iteration has completed yet. Deliberately does NOT include the output root
+    itself (the "Final", most-refined pass) - see result_viewer.py's live-preview
+    handling for why.
+    """
+    output_dir = find_output_dir(run_path, model_basename)
+    iteration_dirs = _list_iteration_dirs(output_dir)
+    return [d for d in iteration_dirs if read_port_s_data(d) is not None]
 
 
 def _format_duration(seconds):

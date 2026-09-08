@@ -35,10 +35,12 @@ below and pyproject.toml).
 """
 
 import argparse
+import cmath
 import math
 import os
 import re
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import skrf as rf
@@ -54,7 +56,15 @@ from PySide6.QtWidgets import (
     QGroupBox, QLabel, QTreeWidget, QTreeWidgetItem, QPushButton,
     QRadioButton, QButtonGroup, QCheckBox, QSizePolicy, QStyleFactory,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, QProcess
+
+# __package__ is None/"" when this file is run directly rather than imported as part
+# of the setupEM package, so relative import fails - same dual-mode pattern used
+# throughout setupEM.py/setup_common.py for sibling imports.
+if __package__ in (None, ""):
+    from palace_results import find_output_dir, find_live_iteration_dirs, read_port_s_data
+else:
+    from .palace_results import find_output_dir, find_live_iteration_dirs, read_port_s_data
 
 
 # ------------------------------------------------------------------
@@ -68,13 +78,18 @@ LINESTYLES = ['solid', 'dashed', 'dashdot', 'dotted', 'solid', 'dashed', 'dashdo
 # (no line can be drawn between points, so it would otherwise be invisible)
 SINGLE_POINT_MARKERSIZE = 7
 
-# reflection coefficient magnitude shown in the zoomed Smith chart
+# reflection coefficient magnitude shown in the zoomed Smith chart, vs. the full one
 ZOOM_GAMMA = 0.5
+FULL_GAMMA = 1.0
 GRID_COLOR = 'lightgrey'
 GRID_LW = 0.8
-# constant-resistance/-reactance grid values for the zoomed Smith chart,
-# denser than skrf's default labeled grid ([0.2, 0.5, 1, 2, 5])
+# constant-resistance/-reactance grid values: denser for the zoomed view, skrf's own
+# default labeled grid for the full one - both drawn by the same draw_smith_grid(),
+# not skrf's plot_s_smith(), so the full Smith chart works for live-preview data too
+# (see result_viewer.py's live-preview handling - the raw-CSV stand-in network has no
+# skrf-specific methods, only .s/.frequency.f/.nports).
 ZOOM_GRID_VALUES = [0.2, 0.5, 1.0, 1.5, 2.0, 3.0]
+FULL_GRID_VALUES = [0.2, 0.5, 1.0, 2.0, 5.0]
 
 TOUCHSTONE_RE = re.compile(r'\.s(\d+)p$', re.IGNORECASE)
 
@@ -91,14 +106,20 @@ def Sxx(network, m, n):
     return network.s[:, m-1, n-1]
 
 
-def draw_zoomed_smith_grid(ax, gamma):
-    # draw a denser Smith chart grid for the zoomed view, with labels placed where
-    # each grid circle crosses the real (for r) or imaginary (for x) axis, since
-    # skrf's own label placement is designed for the full chart and would fall
-    # outside the zoomed axis limits
+def draw_smith_grid(ax, gamma, grid_values):
+    """Draw a Smith chart grid (constant-resistance/-reactance circles plus the
+    outer |Gamma|=gamma boundary) into ax - used for both the full chart (gamma=1,
+    grid_values=FULL_GRID_VALUES) and the zoomed chart (gamma=ZOOM_GAMMA,
+    grid_values=ZOOM_GRID_VALUES). Plain matplotlib circle geometry, not skrf's own
+    smith()/plot_s_smith() grid - this way the full chart works for live-preview
+    networks too (see draw_smith()), and this file doesn't depend on skrf's
+    internal grid-label placement, which is designed for gamma=1 and would fall
+    outside a zoomed view's axis limits.
+    """
     ax.axhline(0, color='grey', lw=0.5)
+    ax.add_patch(Circle((0, 0), gamma, ec=GRID_COLOR, fc='none', lw=GRID_LW))
 
-    for r in ZOOM_GRID_VALUES:
+    for r in grid_values:
         center = (r/(1+r), 0)
         radius = 1/(1+r)
         ax.add_patch(Circle(center, radius, ec=GRID_COLOR, fc='none', lw=GRID_LW))
@@ -108,7 +129,7 @@ def draw_zoomed_smith_grid(ax, gamma):
                         fontsize=8, color='dimgrey', ha='center', va='bottom')
 
     for sign in (1, -1):
-        for x in ZOOM_GRID_VALUES:
+        for x in grid_values:
             xv = sign * x
             center = (1, 1/xv)
             radius = abs(1/xv)
@@ -155,32 +176,26 @@ def draw_rectangular(ax, m, n, plotted, mode):
 
 def draw_smith(ax, m, n, plotted, zoomed):
     """Draw a Smith chart (or zoomed Smith chart) of reflection parameter Smm/Snn,
-    one trace per (network, color, linestyle, label) tuple in plotted, into ax."""
-    if zoomed:
-        draw_zoomed_smith_grid(ax, ZOOM_GAMMA)
-        for network, color, linestyle, label in plotted:
-            data = Sxx(network, m, n)
-            if len(data) == 1:
-                # a single frequency point has no line to draw between points
-                # and would otherwise be invisible - mark it with a fat dot
-                ax.plot(data.real, data.imag, color=color, linestyle=linestyle,
-                         label=label, marker='o', markersize=SINGLE_POINT_MARKERSIZE)
-            else:
-                ax.plot(data.real, data.imag, color=color, linestyle=linestyle, label=label)
-        ax.set_xlim(-ZOOM_GAMMA, ZOOM_GAMMA)
-        ax.set_ylim(-ZOOM_GAMMA, ZOOM_GAMMA)
-        ax.set_xticks([])
-        ax.set_yticks([])
-    else:
-        for network, color, linestyle, label in plotted:
-            marker_kwargs = {'marker': 'o', 'markersize': SINGLE_POINT_MARKERSIZE} if Sxx(network, m, n).size == 1 else {}
-            network.plot_s_smith(m-1, n-1, ax=ax, show_legend=False, draw_labels=True,
-                                  color=color, linestyle=linestyle, label=label, **marker_kwargs)
-        # skrf draws the grid circles with hardcoded colors (black for r=0/1, x=+-1);
-        # recolor them to match the zoomed chart's uniform light grid style
-        for patch in ax.patches:
-            patch.set_edgecolor(GRID_COLOR)
-            patch.set_linewidth(GRID_LW)
+    one trace per (network, color, linestyle, label) tuple in plotted, into ax. Grid
+    and trace are both plain matplotlib (draw_smith_grid() + Sxx()), not skrf's
+    plot_s_smith() - works the same for a live-preview network (see the module
+    docstring / ResultViewerWindow's live-preview handling) as for a real one."""
+    gamma = ZOOM_GAMMA if zoomed else FULL_GAMMA
+    grid_values = ZOOM_GRID_VALUES if zoomed else FULL_GRID_VALUES
+    draw_smith_grid(ax, gamma, grid_values)
+    for network, color, linestyle, label in plotted:
+        data = Sxx(network, m, n)
+        if len(data) == 1:
+            # a single frequency point has no line to draw between points and
+            # would otherwise be invisible - mark it with a fat dot instead
+            ax.plot(data.real, data.imag, color=color, linestyle=linestyle,
+                     label=label, marker='o', markersize=SINGLE_POINT_MARKERSIZE)
+        else:
+            ax.plot(data.real, data.imag, color=color, linestyle=linestyle, label=label)
+    ax.set_xlim(-gamma, gamma)
+    ax.set_ylim(-gamma, gamma)
+    ax.set_xticks([])
+    ax.set_yticks([])
 
     ax.set_title(f"S{m}{n}")
     ax.set_aspect('equal')
@@ -220,6 +235,35 @@ def is_amr_iteration_snapshot(path):
     return any(_AMR_ITERATION_DIR_RE.match(part) for part in parts)
 
 
+def _network_from_port_s_data(port_s_data):
+    """Build a minimal, skrf-free stand-in for the network object draw_rectangular()/
+    draw_smith() expect (just .s, .frequency.f and .nports - see Sxx()), directly
+    from read_port_s_data()'s return value: plain numpy + cmath/math only, no
+    skrf.Network / DC-extrapolation / de-embedding - this is raw, not-yet-combined
+    Palace output (a live AMR-iteration preview), and those are combine_snp/
+    combine_extend_snp features that don't apply here. Returns None if port_s_data
+    is None or empty. NOT a real skrf.Network, but draw_smith() (both the full and
+    zoomed chart) only ever needs .s/.frequency.f/.nports - see draw_smith_grid()
+    - so this plots in every display mode, same as a real Touchstone-loaded one.
+    """
+    if not port_s_data:
+        return None
+    freq, S_dB, S_arg, num_ports = port_s_data
+    if not freq or num_ports < 1:
+        return None
+    f_hz = np.array([float(f) for f in freq]) * 1e9
+    s = np.zeros((len(freq), num_ports, num_ports), dtype=complex)
+    for idx, (dB_row, arg_row) in enumerate(zip(S_dB, S_arg)):
+        for key, dB_str in dB_row.items():
+            i, j = (int(x) for x in key.split())
+            try:
+                mag = 10 ** (float(dB_str) / 20.0)
+                s[idx, i - 1, j - 1] = cmath.rect(mag, math.radians(float(arg_row[key])))
+            except (ValueError, KeyError):
+                continue  # unparsable entry - leave as 0, matches _max_delta_s's tolerance
+    return SimpleNamespace(s=s, frequency=SimpleNamespace(f=f_hz), nports=num_ports)
+
+
 def pick_final_result_file(paths):
     """Given a list of touchstone file paths, prefer the final result (any
     path with no "iterationN" component) over AMR per-iteration snapshots;
@@ -249,13 +293,24 @@ class ResultViewerWindow(QDialog):
         self._master_files = []          # sorted absolute paths, last scan
         self._checked_paths = set()      # subset of _master_files currently checked
         self._checked_params = {(1, 1)}  # set of (m, n) S-parameters to plot
-        self._network_cache = {}         # path -> (mtime, skrf.Network | None)
+        self._network_cache = {}         # path -> (mtime, network-like object | None)
         self._last_n = None              # common port count as of last parameter-grid rebuild
         self.smith_mode = "phase"        # "phase" | "smith" | "zoom"
         self._updating_checks = False    # re-entrancy guard for group<->leaf checkbox propagation
 
+        # Live preview of Palace's raw port-S.csv, one per completed AMR iteration,
+        # while a run hasn't produced real Touchstone files yet - see _rescan_files(),
+        # _is_palace_run_active(), _network_from_port_s_data().
+        self._live_paths = set()         # subset of _master_files sourced from a live port-S.csv
+        self._live_timer = QTimer(self)  # polls while a Palace run is active; starts inactive
+        self._live_timer.timeout.connect(self._rescan_files)
+
         self._build_ui()
         self._rescan_files()
+
+    def closeEvent(self, event):
+        self._live_timer.stop()
+        super().closeEvent(event)
 
     # ---------- UI construction ----------
 
@@ -269,6 +324,10 @@ class ResultViewerWindow(QDialog):
         files_group = QGroupBox("Files")
         files_layout = QVBoxLayout()
         filter_layout = QHBoxLayout()
+        self.include_all_models_cb = QCheckBox("Include all models")
+        self.include_all_models_cb.setChecked(False)  # start restricted to the current model
+        self.include_all_models_cb.toggled.connect(self._rescan_files)
+        filter_layout.addWidget(self.include_all_models_cb)
         self.include_dc_cb = QCheckBox("Include _dc files")
         self.include_dc_cb.setChecked(False)  # start showing only the raw result file
         self.include_dc_cb.toggled.connect(self._rescan_files)
@@ -314,6 +373,18 @@ class ResultViewerWindow(QDialog):
 
         main_layout.addLayout(controls_layout)
 
+        # Full-width banner for live (in-progress or stopped-early) AMR-iteration
+        # preview data, separate from warning_label (load failures) - see
+        # _get_checked_plotted(). Styled distinctly (amber) so it reads as "heads up
+        # about data provenance", not an error.
+        self.live_banner_label = QLabel("")
+        self.live_banner_label.setWordWrap(True)
+        self.live_banner_label.setStyleSheet(
+            "background-color: #fff3cd; color: #664d03; padding: 4px; font-weight: bold;"
+        )
+        self.live_banner_label.setVisible(False)
+        main_layout.addWidget(self.live_banner_label)
+
         # constrained layout (not tight_layout()) recomputes margins on every draw,
         # including window resizes - tight_layout() only computes them once at the
         # call site and goes stale (clipped axis labels) as the Qt widget is resized
@@ -330,6 +401,32 @@ class ResultViewerWindow(QDialog):
         super().showEvent(event)
         self._rescan_files()
 
+    # ---------- Live preview (raw port-S.csv, before combine_snp has run) ----------
+
+    def _is_palace_run_active(self):
+        """True only while this window's associated CreateModelTab is actively
+        running a real Palace simulation (not mesh creation / model fit / snp2le
+        install). False in standalone mode (_StandaloneMainWindow has no
+        create_model_tab/PalaceMode at all) and for Elmer mode (this feature is
+        Palace-only). Used only to word the live banner and arm/disarm the polling
+        timer - NOT to decide whether live data is offered at all, see
+        _rescan_files() (a crashed/stopped run keeps showing its last completed
+        iteration until real results appear)."""
+        create_model_tab = getattr(self.MainWindow, 'create_model_tab', None)
+        if create_model_tab is None or not getattr(self.MainWindow, 'PalaceMode', False):
+            return False
+        return (create_model_tab.process.state() == QProcess.Running
+                and create_model_tab._process_purpose == "run_simulation")
+
+    def _sync_live_timer(self):
+        """Poll for newly-completed iterations only while a run is actually active -
+        an idle, already-open viewer shouldn't keep scanning the filesystem forever."""
+        should_poll = self._is_palace_run_active()
+        if should_poll and not self._live_timer.isActive():
+            self._live_timer.start(5000)  # iterations take tens of seconds to minutes
+        elif not should_poll and self._live_timer.isActive():
+            self._live_timer.stop()
+
     # ---------- File list ----------
 
     def _relpath_for_path(self, path):
@@ -341,6 +438,8 @@ class ResultViewerWindow(QDialog):
     def _legend_label_for_path(self, path):
         """Shortened label for plot legends, which have much less room than the
         file list."""
+        if path in self._live_paths:
+            return f"{os.path.basename(os.path.dirname(path))} (live)"
         rel = self._relpath_for_path(path)
         if len(rel) <= 17:
             return rel
@@ -349,6 +448,17 @@ class ResultViewerWindow(QDialog):
     def _filtered_files(self, files):
         include_dc = self.include_dc_cb.isChecked()
         include_deembedded = self.include_deembedded_cb.isChecked()
+        include_all_models = self.include_all_models_cb.isChecked()
+
+        # "<model_basename>_data" is the run-folder-naming convention used for both
+        # palace_model/ and elmer_model/ (see run_model()/find_output_dir() in
+        # setupEM.py/palace_results.py) - checking for it as a path component,
+        # rather than branching on PalaceMode, restricts to the current model
+        # regardless of which solver produced it.
+        saved_values = self.MainWindow.saved_values
+        model_basename = saved_values.get('model_basename', '') if isinstance(saved_values, dict) else ''
+        current_model_dir = f"{model_basename}_data" if model_basename else None
+
         result = []
         for path in files:
             name = os.path.basename(path)
@@ -356,6 +466,9 @@ class ResultViewerWindow(QDialog):
                 continue
             if not include_deembedded and '_deembedded' in name:
                 continue
+            if not include_all_models and current_model_dir:
+                if current_model_dir not in os.path.normpath(path).split(os.sep):
+                    continue
             result.append(path)
         return result
 
@@ -366,6 +479,7 @@ class ResultViewerWindow(QDialog):
 
         self.file_list.blockSignals(True)
         self.file_list.clear()
+        self._live_paths = set()
 
         if not target_dir:
             self._master_files = []
@@ -380,9 +494,31 @@ class ResultViewerWindow(QDialog):
         else:
             all_files = find_touchstone_files(target_dir)
             self._master_files = self._filtered_files(all_files)
+
+            # Live preview: as long as this run's own Palace output directory has no
+            # real "final" Touchstone file yet (combine_snp hasn't run, or the run
+            # crashed/was stopped before it could), offer each already-completed AMR
+            # iteration's raw port-S.csv instead. Scoped to THIS model's own output
+            # dir (not all of target_dir) so an unrelated other model's leftover
+            # results in the same sim_path can't wrongly suppress or feed this.
+            model_basename = saved_values.get('model_basename', '') if isinstance(saved_values, dict) else ''
+            if model_basename:
+                run_path = os.path.join(target_dir, "palace_model", model_basename + "_data")
+                output_dir = os.path.normpath(find_output_dir(run_path, model_basename))
+                has_final_result = any(
+                    not is_amr_iteration_snapshot(p)
+                    for p in all_files
+                    if os.path.normpath(p).startswith(output_dir)
+                )
+                if not has_final_result:
+                    for iteration_dir in find_live_iteration_dirs(run_path, model_basename):
+                        self._live_paths.add(os.path.join(iteration_dir, "port-S.csv"))
+                    if self._live_paths:
+                        self._master_files = sorted(set(self._master_files) | self._live_paths)
+
             if not self._master_files:
                 if all_files:
-                    message = "No files match the current _dc/_deembedded filters " \
+                    message = "No files match the current _dc/_deembedded/model filters " \
                                f"under {target_dir}"
                 else:
                     message = f"No Touchstone (.sNp) files found under {target_dir}"
@@ -426,9 +562,14 @@ class ResultViewerWindow(QDialog):
 
         self.file_list.blockSignals(False)
         self._on_control_changed()
+        self._sync_live_timer()
 
     def _make_file_item(self, path):
-        item = QTreeWidgetItem([os.path.basename(path)])
+        if path in self._live_paths:
+            text = f"⚡ {os.path.basename(os.path.dirname(path))} (live preview, not yet combined)"
+        else:
+            text = os.path.basename(path)
+        item = QTreeWidgetItem([text])
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
         item.setData(0, Qt.UserRole, path)
         item.setCheckState(0, Qt.Checked if path in self._checked_paths else Qt.Unchecked)
@@ -488,10 +629,13 @@ class ResultViewerWindow(QDialog):
         cached = self._network_cache.get(path)
         if cached is not None and cached[0] == mtime:
             return cached[1]
-        try:
-            network = rf.Network(path)
-        except Exception:
-            network = None
+        if path in self._live_paths:
+            network = _network_from_port_s_data(read_port_s_data(os.path.dirname(path)))
+        else:
+            try:
+                network = rf.Network(path)
+            except Exception:
+                network = None
         self._network_cache[path] = (mtime, network)
         return network
 
@@ -506,14 +650,30 @@ class ResultViewerWindow(QDialog):
         checked_in_order = [path for path in self._master_files if path in self._checked_paths]
         networks = []
         warnings = []
+        live_labels = []
         for path in checked_in_order:
-            network = self._load_network_cached(path)
             label = self._legend_label_for_path(path)
+            network = self._load_network_cached(path)
             if network is None:
                 warnings.append(label)
             else:
                 networks.append((network, label))
+                if path in self._live_paths:
+                    live_labels.append(os.path.basename(os.path.dirname(path)))
         self.warning_label.setText("Failed to load: " + ", ".join(warnings) if warnings else "")
+        if live_labels:
+            if self._is_palace_run_active():
+                self.live_banner_label.setText(
+                    "⚡ LIVE PREVIEW - simulation running. Showing raw, not-yet-combined "
+                    f"Palace results from: {', '.join(live_labels)}. Final combined results "
+                    "will replace this automatically once the run finishes."
+                )
+            else:
+                self.live_banner_label.setText(
+                    "⚠ Simulation is not currently running - showing last available raw "
+                    f"iteration data from: {', '.join(live_labels)}."
+                )
+        self.live_banner_label.setVisible(bool(live_labels))
         return [
             (network, COLORS[i % len(COLORS)], LINESTYLES[i % len(LINESTYLES)], label)
             for i, (network, label) in enumerate(networks)
