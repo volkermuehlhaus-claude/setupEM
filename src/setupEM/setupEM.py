@@ -1340,6 +1340,177 @@ class CreateModelTab(CreateModelTabBase):
         self.buttons_grid.addWidget(self.paraview_btn, row, 0)
         self._update_paraview_button_visibility()
 
+        # Live solver-progress status line, below the log area. Palace-only: visibility is
+        # driven by MainWindow.setPalaceMode()/setElmerMode() (self.status_line.setVisible());
+        # this is just the matching default for whichever mode is active at construction time.
+        self.status_line = QLabel()
+        self.status_line.setVisible(self.MainWindow.PalaceMode)
+        self.actions_layout.addWidget(self.status_line)
+        self._init_status_state()
+
+    # --- Live Palace solver status line ------------------------------------------------
+    #
+    # Regexes matched against real Palace 0.16.0 stdout (see palace-x86_64.bin console
+    # output), one AMR iteration's worth of an 8-port sweep:
+    #   "Running with 16 MPI processes"
+    #   "Estimated current per-rank memory usage is: Min. 84.8M, Max. 87.1M, Avg. 85.7M, Total 1.3G"
+    #   "Estimated peak per-rank memory usage is: Min. 1.5G, Max. 1.6G, Avg. 1.5G, Total 24.2G"
+    #   "Sweeping excitation index 2 (2/8):"
+    #   "It 1/1: ω/2π = 9.300e+01 GHz (total elapsed time = 1.52e+01 s, solve 1/8)"
+    #   "Completed 1 iteration of adaptive mesh refinement (AMR):"
+    # "Estimated ... memory usage" appears both early (current, post mesh-partition) and
+    # again per AMR iteration (peak); the parser just keeps the latest value seen, whichever
+    # wording it came from. Deliberately per-rank, not per-node: per-rank Total is the sum
+    # of every individual rank's own estimate, i.e. the actual total memory footprint of the
+    # whole job, regardless of how ranks are distributed across nodes (per-node Total is only
+    # numerically the same thing when everything happens to run on a single node).
+    # "Sweeping excitation" marks a port in a uniform sweep; "Adding excitation" is the
+    # equivalent during PROM/adaptive offline construction (Beginning PROM construction
+    # offline phase: / Adding excitation index 1 (1/2):) - both mean "now on port N/M".
+    _RE_MPI = re.compile(r"Running with (\d+) MPI processes")
+    _RE_MEM_TOTAL = re.compile(r"Estimated (?:current|peak) per-rank memory usage is:.*Total\s+([\d.]+)([MG])")
+    _RE_EXCITATION = re.compile(r"(?:Sweeping|Adding) excitation index \d+ \((\d+)/(\d+)\):")
+    # "It i/n: ... (total elapsed time = t s, solve k/N)" in a uniform sweep, but only
+    # "It i/n: ... (total elapsed time = t s)" - no trailing solve k/N - during PROM's online
+    # (interpolated-evaluation) phase, so the solve suffix is matched separately and is
+    # optional; its presence is what distinguishes a real full-order solve from a PROM
+    # evaluation (see _parse_palace_status_line).
+    _RE_FREQ = re.compile(r"It (\d+)/(\d+):")
+    _RE_SOLVE_SUFFIX = re.compile(r"solve (\d+)/(\d+)\)")
+    # PROM's offline phase (building the reduced-order model) has no "It i/n" progress at
+    # all - only these per-port greedy-sampling steps, with no fixed total to divide by:
+    #   "Greedy iteration 1 (n = 4): ω* = 2.716e+01 GHz (4.986e-01), error = 7.573e-03, memory = 1/2"
+    _RE_GREEDY = re.compile(r"Greedy iteration (\d+) \(n = (\d+)\):")
+    # Different Palace releases report each just-finished AMR pass differently, but both
+    # number 1-based from the very first (unrefined-mesh) solve - there is no "iteration 0"
+    # in either wording. Confirmed two ways: the "global unknowns" figure on these lines
+    # matches the DOF count of the solve that just finished (not a next/refined mesh), and
+    # palace_results.py's own output-folder naming (iteration1/, iteration2/, ...) uses the
+    # same 1-based scheme.
+    #   "Completed 1 iteration of adaptive mesh refinement (AMR): Indicator norm=..., global unknowns=..."   (older release)
+    #   "Adaptive mesh refinement (AMR) iteration 1: Indicator norm=..., global unknowns=..."                 (v0.16.0-34-gea2e7b23)
+    # The newer release also prints "Proceeding with solve/estimate iteration 2..." right
+    # after refining/rebalancing, announcing the *next* iteration before its ports start
+    # solving - matched separately so the display updates immediately instead of lagging one
+    # iteration behind until that next iteration's own report line finally appears.
+    _RE_AMR_ITER_A = re.compile(r"Completed (\d+) iteration.*adaptive mesh refinement \(AMR\)")
+    _RE_AMR_ITER_B = re.compile(r"Adaptive mesh refinement \(AMR\) iteration (\d+):")
+    _RE_AMR_PROCEEDING = re.compile(r"Proceeding with solve/estimate iteration (\d+)")
+
+    def _init_status_state(self):
+        """Reset the tracked fields to unknown ('n/a'). Split out from
+        _reset_status_for_run() so __init__ can establish the attributes without
+        touching disk (config.json may not exist yet at construction time)."""
+        self._status_mpi = None
+        self._status_mem_gb = None
+        self._status_port_cur = None
+        self._status_port_total = None
+        self._status_freq_display = None
+        self._status_solve_display = ""
+        self._status_amr_cur = None
+        self._status_amr_max = None
+        self._update_status_line()
+
+    def _reset_status_for_run(self):
+        """Called from run_model() right after the log is cleared. Re-reads MaxIts out
+        of the just-generated config.json so the AMR field has a known ceiling from the
+        start, instead of only appearing once the first iteration-report line shows up
+        in the log."""
+        self._init_status_state()
+        if self.MainWindow.PalaceMode:
+            run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+            try:
+                with open(os.path.join(run_path, "config.json")) as f:
+                    config_data = json.load(f)
+                max_its = config_data.get("Model", {}).get("Refinement", {}).get("MaxIts", 0)
+                # 0 (AMR off) is a known value, distinct from None (unknown, e.g. config
+                # unreadable) - _update_status_line() shows "0/0" for the former, "n/a" for
+                # the latter.
+                self._status_amr_max = max_its
+                self._status_amr_cur = 1 if max_its else 0  # the first solve, on the unrefined mesh, is iteration 1
+            except (OSError, ValueError, KeyError):
+                pass
+            self._update_status_line()
+
+    def _on_stdout_line(self, line):
+        if self.MainWindow.PalaceMode:
+            self._parse_palace_status_line(line)
+
+    def _parse_palace_status_line(self, line):
+        m = self._RE_MPI.search(line)
+        if m:
+            self._status_mpi = int(m.group(1))
+            self._update_status_line()
+            return
+
+        m = self._RE_MEM_TOTAL.search(line)
+        if m:
+            value, unit = float(m.group(1)), m.group(2)
+            self._status_mem_gb = value / 1024 if unit == "M" else value
+            self._update_status_line()
+            return
+
+        m = self._RE_EXCITATION.search(line)
+        if m:
+            self._status_port_cur = int(m.group(1))
+            self._status_port_total = int(m.group(2))
+            # New port: the previous port's frequency/solve position no longer applies.
+            self._status_freq_display = None
+            self._status_solve_display = ""
+            self._update_status_line()
+            return
+
+        m = self._RE_FREQ.search(line)
+        if m:
+            solve_m = self._RE_SOLVE_SUFFIX.search(line)
+            if solve_m:
+                # Real per-frequency full-order solve (uniform sweep) - meaningful progress.
+                self._status_freq_display = f"{m.group(1)}/{m.group(2)}"
+                self._status_solve_display = f" (solve {solve_m.group(1)}/{solve_m.group(2)})"
+            else:
+                # PROM online phase: cheap interpolated evaluation of the already-built
+                # reduced-order model, not a real solve (the whole sweep runs in ~1-2s) -
+                # still real progress through the output frequency list, just far cheaper
+                # than "It i/n" would mean for a uniform sweep, hence the distinct label.
+                self._status_freq_display = f"{m.group(1)}/{m.group(2)} (PROM eval)"
+                self._status_solve_display = ""
+            self._update_status_line()
+            return
+
+        m = self._RE_GREEDY.search(line)
+        if m:
+            # PROM offline phase: building the reduced-order model. No fixed total to show
+            # progress against, so just the greedy-sampling iteration and sample count.
+            self._status_freq_display = f"ROM build: iter {m.group(1)} (n={m.group(2)})"
+            self._status_solve_display = ""
+            self._update_status_line()
+            return
+
+        for amr_re in (self._RE_AMR_ITER_A, self._RE_AMR_ITER_B, self._RE_AMR_PROCEEDING):
+            m = amr_re.search(line)
+            if m and self._status_amr_max:
+                # Not clamped to amr_max: MaxIts caps refinement actions, not solve passes,
+                # so the last legitimate pass is on the MaxIts-times-refined mesh and gets
+                # reported as "iteration MaxIts+1" - showing whatever Palace actually prints
+                # is more honest than silently capping it back down to MaxIts.
+                self._status_amr_cur = int(m.group(1))
+                self._update_status_line()
+                return
+
+    def _update_status_line(self):
+        mpi = self._status_mpi if self._status_mpi is not None else "n/a"
+        mem = f"{self._status_mem_gb:.2f} GB" if self._status_mem_gb is not None else "n/a"
+        port = (f"{self._status_port_cur}/{self._status_port_total}"
+                if self._status_port_cur is not None else "n/a")
+        freq = self._status_freq_display if self._status_freq_display is not None else "n/a"
+        solve = self._status_solve_display
+        amr = "n/a" if self._status_amr_max is None else f"{self._status_amr_cur}/{self._status_amr_max}"
+
+        self.status_line.setText(
+            f"MPI processes: {mpi}    |    Est. total memory: {mem}    |    "
+            f"Port: {port}    |    Freq: {freq}{solve}    |    AMR iteration: {amr}"
+        )
+
     def open_model_fit(self):
         SNP2LE_URL = "https://github.com/iic-jku/snp2le"
 
@@ -1578,6 +1749,7 @@ class CreateModelTab(CreateModelTabBase):
 
         # clear log
         self.log_area.clear()
+        self._reset_status_for_run()
         self._process_purpose = "run_simulation"
 
         if self.MainWindow.PalaceMode:
@@ -2020,6 +2192,7 @@ class MainWindow(MainWindowBase):
         self.frequencies_tab.fdump_enabled_checkbox.setVisible(False)
         self.mesh_tab.AMR_group.setVisible(True)
         self.mesh_tab.Elmer_group.setVisible(False)
+        self.create_model_tab.status_line.setVisible(True)
 
         # update mesh settings that are not always visible
         self.mesh_tab.on_meshorder_changed(self.mesh_tab.mesh_order_box.currentText())
@@ -2040,6 +2213,7 @@ class MainWindow(MainWindowBase):
         self.frequencies_tab.fdump_enabled_checkbox.setVisible(True)
         self.mesh_tab.AMR_group.setVisible(False)
         self.mesh_tab.Elmer_group.setVisible(True)
+        self.create_model_tab.status_line.setVisible(False)
 
         # update mesh settings that are not always visible
         self.mesh_tab.on_meshorder_changed(self.mesh_tab.mesh_order_box.currentText())

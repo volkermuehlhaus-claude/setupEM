@@ -1609,6 +1609,14 @@ class CreateModelTabBase(QWidget):
         for line in data.splitlines():
             if line.strip():  # Skip empty lines
                 self.log_area.appendPlainText(line)
+                self._on_stdout_line(line)
+
+    def _on_stdout_line(self, line):
+        """Hook called with each stdout line as it arrives, after it's appended to
+        log_area. No-op here; overridden by setupEM.py's CreateModelTab to parse
+        live solver progress (MPI/memory/port/AMR) out of Palace's log output.
+        """
+        pass
 
     def on_stderr(self):
         data = self.process.readAllStandardError().data().decode()
