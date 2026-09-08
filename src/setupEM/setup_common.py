@@ -165,6 +165,11 @@ COMBO_STYLE_OPTIONAL = """
     }
 """
 
+# Width shared by every narrow/secondary action button (targetdir_btn's "Browse ...",
+# CreateModelTab's Terminate/Model Fit) so their column lines up consistently across
+# the Output Files and Actions group boxes, instead of each guessing its own width.
+SECONDARY_BUTTON_WIDTH = 150
+
 
 # ------------------------------------------------------------------
 # Small shared helpers
@@ -1519,7 +1524,7 @@ class CreateModelTabBase(QWidget):
         self.targetdir_edit.setStyleSheet(EDIT_STYLE_REQUIRED)
         self.targetdir_layout.addWidget(self.targetdir_edit)
         self.targetdir_btn = QPushButton("Browse ...")
-        self.targetdir_btn.setFixedWidth(150)  # narrower
+        self.targetdir_btn.setFixedWidth(SECONDARY_BUTTON_WIDTH)
         self.targetdir_btn.clicked.connect(self.browse_directory)
         self.targetdir_layout.addWidget(self.targetdir_btn)
         self.file_layout.addLayout(self.targetdir_layout)
@@ -1533,22 +1538,32 @@ class CreateModelTabBase(QWidget):
         # install event filter, so we capture when edit looses focus
         self.modelname_edit.editingFinished.connect(self.on_modelname_edit_done)
         self.modelname_layout.addWidget(self.modelname_edit)
+        # Reserve the same width targetdir_btn ("Browse ...") occupies in the row
+        # above, so modelname_edit's right edge lines up with targetdir_edit's -
+        # and, in turn, with the Actions buttons' right edge - instead of stretching
+        # further right just because this row has no trailing button of its own.
+        self.modelname_layout.addSpacing(SECONDARY_BUTTON_WIDTH)
         self.file_layout.addLayout(self.modelname_layout)
 
         self.file_group.setLayout(self.file_layout)
 
         # Actions group - kept visually separate (its own framed group) from the
         # input fields above. Preview/Create Mesh/Start Simulation/Terminate (plus,
-        # in setupEM's subclass, View Results/Model Fit) all share this grid so
-        # their right edges line up at exactly the same two-thirds/one-third split
-        # - a QGridLayout keeps columns aligned across rows; independent
-        # QHBoxLayouts can't guarantee that once some rows have two widgets (e.g.
-        # Start Simulation/Terminate) and others have one (Preview/Create Mesh).
+        # in setupEM's subclass, View Results/Model Fit) all share this grid - a
+        # QGridLayout keeps columns aligned across rows; independent QHBoxLayouts
+        # can't guarantee that once some rows have two widgets (e.g. Start
+        # Simulation/Terminate) and others have one (Preview/Create Mesh). Column 0
+        # (primary actions) stretches to fill the remaining width so its right edge
+        # lines up with targetdir_edit's right edge in the Output Files group above;
+        # column 1 (secondary actions: Terminate/Model Fit) is a fixed
+        # SECONDARY_BUTTON_WIDTH, matching targetdir_btn's "Browse ..." button, so
+        # both group boxes present the same "wide field/button + narrow button"
+        # proportions instead of an unrelated stretch ratio.
         self.actions_group = QGroupBox("Actions")
         self.actions_layout = QVBoxLayout()
         self.buttons_grid = QGridLayout()
-        self.buttons_grid.setColumnStretch(0, 2)  # primary column: two thirds
-        self.buttons_grid.setColumnStretch(1, 1)  # secondary column: one third
+        self.buttons_grid.setColumnStretch(0, 1)  # primary column: fills remaining width
+        self.buttons_grid.setColumnStretch(1, 0)  # secondary column: fixed-width buttons only
 
         self.preview_model_btn = QPushButton("⚙️ Preview model geometry in gmsh")
         self.preview_model_btn.clicked.connect(self.preview_model)
@@ -1562,16 +1577,17 @@ class CreateModelTabBase(QWidget):
         self.create_run_btn.clicked.connect(self.run_model)
         self.buttons_grid.addWidget(self.create_run_btn, 2, 0)
         self.kill_btn = QPushButton("🛑 Terminate ")
+        self.kill_btn.setFixedWidth(SECONDARY_BUTTON_WIDTH)
         self.kill_btn.clicked.connect(self.terminate_run)
         self.buttons_grid.addWidget(self.kill_btn, 2, 1)
 
         self.actions_layout.addLayout(self.buttons_grid)
 
-        # Log file: kept inside the Actions frame (not its own group box) since it is
-        # the direct output of the actions above (Preview/Create Mesh/Start Simulation),
-        # not an independent input section.
+        # Log area follows directly, no "Log file:" label - kept inside the Actions
+        # frame (not its own group box) since it is the direct output of the actions
+        # above (Preview/Create Mesh/Start Simulation), not an independent input
+        # section, and the log content itself is self-explanatory.
         self.actions_layout.addSpacing(10)
-        self.actions_layout.addWidget(QLabel("Log file:"))
         self.log_area = QPlainTextEdit()
         self.log_area.setReadOnly(True)
         log_font = QFont()

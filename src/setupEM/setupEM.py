@@ -51,6 +51,7 @@ from gds2palace import *
 if __package__ in (None, ""):
     from setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        SECONDARY_BUTTON_WIDTH,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
@@ -59,6 +60,7 @@ if __package__ in (None, ""):
 else:
     from .setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        SECONDARY_BUTTON_WIDTH,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
@@ -1315,15 +1317,15 @@ class CreateModelTab(CreateModelTabBase):
 
         # S-parameter result viewer + model fit: appended here (not in the shared
         # CreateModelTabBase) since setupThermal has no S-parameters and must not
-        # show these buttons. Added as a row of the base class's buttons_grid
-        # (not a separate layout) so this row's two-thirds/one-third split lines
-        # up exactly with Preview/Create Mesh/Start Simulation above, in the same
-        # Actions group.
+        # show these buttons. Added as a row of the base class's buttons_grid (not a
+        # separate layout) so this row's column widths line up exactly with
+        # Preview/Create Mesh/Start Simulation above, in the same Actions group.
         row = self.buttons_grid.rowCount()
         self.view_results_btn = QPushButton("📈 View S-Parameters...")
         self.view_results_btn.clicked.connect(self.MainWindow.open_result_viewer)
         self.buttons_grid.addWidget(self.view_results_btn, row, 0)
         self.model_fit_btn = QPushButton("🧩 Model Fit...")
+        self.model_fit_btn.setFixedWidth(SECONDARY_BUTTON_WIDTH)
         self.model_fit_btn.clicked.connect(self.open_model_fit)
         self.buttons_grid.addWidget(self.model_fit_btn, row, 1)
 
