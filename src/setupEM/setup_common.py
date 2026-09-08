@@ -1634,6 +1634,16 @@ class CreateModelTabBase(QWidget):
         """
         pass
 
+    def _reset_live_status(self):
+        """Hook called whenever the loaded model changes (new *.py/*.simcfg loaded,
+        or a fresh mesh/config is about to be created) - anywhere the previous
+        run's status is no longer relevant to what's now loaded. No-op here;
+        overridden by setupEM.py's CreateModelTab to clear the live solver-status
+        line (MPI/memory/port/AMR) back to "n/a" rather than leave it showing a
+        stale run's data for a model that's no longer the one on screen.
+        """
+        pass
+
     def on_stderr(self):
         data = self.process.readAllStandardError().data().decode()
         for line in data.splitlines():
@@ -1786,6 +1796,7 @@ class CreateModelTabBase(QWidget):
         XMLfile = saved_values.get("SubstrateFile")
         if os.path.isfile(gdsfile):
             if os.path.isfile(XMLfile):
+                self._reset_live_status()  # a fresh mesh/config invalidates the last run's status
                 saved_values['preview_only'] = False
                 saved_values['no_preview'] = True
                 self.create_model()
@@ -2115,6 +2126,7 @@ class MainWindowBase(QMainWindow):
                         loaded_message += "\n\n" + "\n".join(path_messages)
                     QMessageBox.information(self, "Loaded", loaded_message)
                     self.create_model_tab.log_area.clear()
+                    self.create_model_tab._reset_live_status()
                 else:
                     QMessageBox.information(self, "Failed", "Unknown data format")
             elif extension.upper() == ".PY":
@@ -2217,6 +2229,7 @@ class MainWindowBase(QMainWindow):
                     loaded_message += "\n\n" + "\n".join(path_messages)
                 QMessageBox.information(self, "Loaded", loaded_message)
                 self.create_model_tab.log_area.clear()
+                self.create_model_tab._reset_live_status()
 
             else:
                 QMessageBox.information(self, "Error", f"Could not load file {file_path}")

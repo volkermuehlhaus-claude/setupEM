@@ -1438,6 +1438,9 @@ class CreateModelTab(CreateModelTabBase):
         if self.MainWindow.PalaceMode:
             self._parse_palace_status_line(line)
 
+    def _reset_live_status(self):
+        self._init_status_state()
+
     def _parse_palace_status_line(self, line):
         m = self._RE_MPI.search(line)
         if m:
