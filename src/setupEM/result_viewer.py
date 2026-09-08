@@ -106,23 +106,41 @@ def Sxx(network, m, n):
     return network.s[:, m-1, n-1]
 
 
-def draw_smith_grid(ax, gamma, grid_values):
-    """Draw a Smith chart grid (constant-resistance/-reactance circles plus the
-    outer |Gamma|=gamma boundary) into ax - used for both the full chart (gamma=1,
-    grid_values=FULL_GRID_VALUES) and the zoomed chart (gamma=ZOOM_GAMMA,
-    grid_values=ZOOM_GRID_VALUES). Plain matplotlib circle geometry, not skrf's own
-    smith()/plot_s_smith() grid - this way the full chart works for live-preview
-    networks too (see draw_smith()), and this file doesn't depend on skrf's
-    internal grid-label placement, which is designed for gamma=1 and would fall
-    outside a zoomed view's axis limits.
+def draw_smith_grid(ax, gamma, grid_values, draw_boundary):
+    """Draw a Smith chart grid (constant-resistance/-reactance circles, plus the
+    outer |Gamma|=1 boundary when draw_boundary is set) into ax - used for both the
+    full chart (gamma=1, grid_values=FULL_GRID_VALUES, draw_boundary=True - the
+    physical edge of the valid reflection-coefficient region) and the zoomed chart
+    (gamma=ZOOM_GAMMA, grid_values=ZOOM_GRID_VALUES, draw_boundary=False - gamma
+    there is just where the window happens to crop the view, not a real boundary,
+    so drawing a circle there would falsely look like one - it'd sit exactly
+    inscribed in the axis limits, tangent to all four edges). Plain matplotlib
+    circle geometry, not skrf's own smith()/plot_s_smith() grid - this way the full
+    chart works for live-preview networks too (see draw_smith()), and this file
+    doesn't depend on skrf's internal grid-label placement, which is designed for
+    gamma=1 and would fall outside a zoomed view's axis limits.
     """
     ax.axhline(0, color='grey', lw=0.5)
-    ax.add_patch(Circle((0, 0), gamma, ec=GRID_COLOR, fc='none', lw=GRID_LW))
+    boundary_patch = None
+    if draw_boundary:
+        boundary_patch = ax.add_patch(Circle((0, 0), gamma, ec=GRID_COLOR, fc='none', lw=GRID_LW))
+
+    def add_grid_circle(center, radius):
+        patch = ax.add_patch(Circle(center, radius, ec=GRID_COLOR, fc='none', lw=GRID_LW))
+        if boundary_patch is not None:
+            # Full chart only: each constant-r/x circle extends beyond |Gamma|=1 (a
+            # circle of radius 1/(1+r) or 1/x centered off-origin isn't contained in
+            # the unit circle), so without clipping, the parts outside the physical
+            # boundary would show up in the square viewport's corners. Not needed
+            # for the zoomed view - gamma there is just where the window happens to
+            # crop, not a real boundary, so there's nothing to clip to.
+            patch.set_clip_path(boundary_patch)
+        return patch
 
     for r in grid_values:
         center = (r/(1+r), 0)
         radius = 1/(1+r)
-        ax.add_patch(Circle(center, radius, ec=GRID_COLOR, fc='none', lw=GRID_LW))
+        add_grid_circle(center, radius)
         label_pos = center[0] - radius
         if abs(label_pos) < gamma:
             ax.annotate(f"{r:g}", xy=(label_pos, 0), xytext=(label_pos, 0.01),
@@ -133,7 +151,7 @@ def draw_smith_grid(ax, gamma, grid_values):
             xv = sign * x
             center = (1, 1/xv)
             radius = abs(1/xv)
-            ax.add_patch(Circle(center, radius, ec=GRID_COLOR, fc='none', lw=GRID_LW))
+            add_grid_circle(center, radius)
             if radius >= 1:
                 # crossing point with the imaginary axis nearest the origin
                 y0 = 1/xv - math.copysign(math.sqrt(radius**2 - 1), 1/xv)
@@ -182,7 +200,7 @@ def draw_smith(ax, m, n, plotted, zoomed):
     docstring / ResultViewerWindow's live-preview handling) as for a real one."""
     gamma = ZOOM_GAMMA if zoomed else FULL_GAMMA
     grid_values = ZOOM_GRID_VALUES if zoomed else FULL_GRID_VALUES
-    draw_smith_grid(ax, gamma, grid_values)
+    draw_smith_grid(ax, gamma, grid_values, draw_boundary=not zoomed)
     for network, color, linestyle, label in plotted:
         data = Sxx(network, m, n)
         if len(data) == 1:
@@ -324,7 +342,7 @@ class ResultViewerWindow(QDialog):
         files_group = QGroupBox("Files")
         files_layout = QVBoxLayout()
         filter_layout = QHBoxLayout()
-        self.include_all_models_cb = QCheckBox("Include all models")
+        self.include_all_models_cb = QCheckBox("Include all models in directory")
         self.include_all_models_cb.setChecked(False)  # start restricted to the current model
         self.include_all_models_cb.toggled.connect(self._rescan_files)
         filter_layout.addWidget(self.include_all_models_cb)
