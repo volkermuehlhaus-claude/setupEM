@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QLineEdit,QComboBox,QTableWidget,QHeaderView,
     QPushButton, QFileDialog, QTabWidget, QMessageBox, QGroupBox,
-    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog
+    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog,
+    QDialogButtonBox,
     )
 from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup
 from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths
@@ -56,6 +57,7 @@ if __package__ in (None, ""):
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
         next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference,
     )
     from palace_results import build_results_summary, find_output_dir, find_paraview_files
 else:
@@ -66,6 +68,7 @@ else:
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
         next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference,
     )
     from .palace_results import build_results_summary, find_output_dir, find_paraview_files
 
@@ -209,14 +212,14 @@ class FrequenciesTab(QWidget):
                 saved_values.pop("fstart", None) # don't leave stale sweep data behind
             else:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstart")
-                self.start_edit.setText("0")
+                self.start_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstart", "0")))
                 return False
         else:
             try:
                 fstart = float(self.start_edit.text())
             except Exception:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstart")
-                self.start_edit.setText("0")
+                self.start_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstart", "0")))
                 return False
             saved_values ["fstart"] = fstart
 
@@ -226,14 +229,14 @@ class FrequenciesTab(QWidget):
                 saved_values.pop("fstop", None) # don't leave stale sweep data behind
             else:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstop")
-                self.stop_edit.setText("50")
+                self.stop_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstop", "50")))
                 return False
         else:
             try:
                 fstop = float(self.stop_edit.text())
             except Exception:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstop")
-                self.stop_edit.setText("50")
+                self.stop_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstop", "50")))
                 return False
             saved_values ["fstop"] = fstop
 
@@ -302,8 +305,8 @@ class FrequenciesTab(QWidget):
         fdump_given = saved_values.get("fdump_enabled", False) if self.MainWindow.ElmerMode \
                       else ("fdump" in saved_values)
         discrete_freqs_given = ("fpoint" in saved_values) or fdump_given
-        fstart_default = "" if discrete_freqs_given else "0"
-        fstop_default  = "" if discrete_freqs_given else "50"
+        fstart_default = "" if discrete_freqs_given else str(get_preference(self.MainWindow.APP_NAME, "fstart", "0"))
+        fstop_default  = "" if discrete_freqs_given else str(get_preference(self.MainWindow.APP_NAME, "fstop", "50"))
         self.start_edit.setText(str(saved_values.get("fstart",fstart_default)))
         self.stop_edit.setText(str(saved_values.get("fstop",fstop_default)))
         self.step_edit.setText(str(saved_values.get("fstep","")))
@@ -1185,7 +1188,7 @@ class MeshTab(QWidget):
             value = float(self.refinement_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for mesh refinement")
-            self.refinement_edit.setText("5")
+            self.refinement_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "refined_cellsize", "5")))
             return False
         saved_values ["refined_cellsize"] = float(value)
         saved_values ["refined_cellsize_override"] = self._refined_cellsize_override
@@ -1196,7 +1199,7 @@ class MeshTab(QWidget):
             value = float(self.cells_lambda_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for cells/wavelength")
-            self.cells_lambda_edit.setText("10")
+            self.cells_lambda_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "cells_per_wavelength", "10")))
             return False
         saved_values ["cells_per_wavelength"] = float(value)
 
@@ -1204,7 +1207,7 @@ class MeshTab(QWidget):
             value = float(self.cells_maxsize_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for max. meshsize")
-            self.cells_maxsize_edit.setText("100")
+            self.cells_maxsize_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "meshsize_max", "100")))
             return False
         saved_values ["meshsize_max"] = float(value)
 
@@ -1212,7 +1215,7 @@ class MeshTab(QWidget):
             value = int(self.AMR_iterations_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for AMR iterations")
-            self.AMR_iterations_edit.setText("0")
+            self.AMR_iterations_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "adaptive_mesh_iterations", "0")))
             return False
         saved_values ["adaptive_mesh_iterations"] = int(value)
 
@@ -1233,7 +1236,7 @@ class MeshTab(QWidget):
             value = float(self.margins_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for dielectric oversize margin")
-            self.margins_edit.setText("200")
+            self.margins_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "margin", "200")))
             return False
         saved_values ["margin"] = float(value)
 
@@ -1289,13 +1292,14 @@ class MeshTab(QWidget):
 
 
     def load_values(self):
-        self.refinement_edit.setText(str(saved_values.get("refined_cellsize","5")))
+        app_name = self.MainWindow.APP_NAME
+        self.refinement_edit.setText(str(saved_values.get("refined_cellsize", get_preference(app_name, "refined_cellsize", "5"))))
         self._refined_cellsize_override = list(saved_values.get("refined_cellsize_override", []))
         self._update_refined_override_button_label()
-        self.cells_lambda_edit.setText(str(saved_values.get("cells_per_wavelength","10")))
-        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max","100")))
-        self.AMR_iterations_edit.setText(str(saved_values.get("adaptive_mesh_iterations","0")))
-        self.margins_edit.setText(str(saved_values.get("margin","200")))
+        self.cells_lambda_edit.setText(str(saved_values.get("cells_per_wavelength", get_preference(app_name, "cells_per_wavelength", "10"))))
+        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max", get_preference(app_name, "meshsize_max", "100"))))
+        self.AMR_iterations_edit.setText(str(saved_values.get("adaptive_mesh_iterations", get_preference(app_name, "adaptive_mesh_iterations", "0"))))
+        self.margins_edit.setText(str(saved_values.get("margin", get_preference(app_name, "margin", "200"))))
 
         self.mesh_order_box.setCurrentIndex(int(saved_values.get("order", 2))-1)
 
@@ -1315,8 +1319,14 @@ class MeshTab(QWidget):
         # check if air layer is defined at all, or single value or list
         air = saved_values.get("air_around","")
         if air == "":
-            # no value defined, use same value as dielectric margins
-            self.airaround_edit.setText(saved_values.get("margin","200"))
+            # no value defined: an explicit air_around preference wins, otherwise
+            # fall back to the (also preference-aware) dielectric margin value -
+            # this mirrors the tab's original "same as margins" convenience default
+            air_pref = get_preference(self.MainWindow.APP_NAME, "air_around", "")
+            if str(air_pref) != "":
+                self.airaround_edit.setText(str(air_pref))
+            else:
+                self.airaround_edit.setText(str(saved_values.get("margin", get_preference(self.MainWindow.APP_NAME, "margin", "200"))))
             self.airaround_box.setCurrentIndex(0)
         else:
             # native JSON round-trip stores this as a real list of floats;
@@ -1400,12 +1410,22 @@ class CreateModelTab(CreateModelTabBase):
         self._update_paraview_button_visibility()
 
         # Live solver-progress status line, below the log area. Palace-only: visibility is
-        # driven by MainWindow.setPalaceMode()/setElmerMode() (self.status_line.setVisible());
-        # this is just the matching default for whichever mode is active at construction time.
+        # driven by MainWindow.setPalaceMode()/setElmerMode() combined with the
+        # "enable_status_bar" preference (see apply_preference_visibility()); this is
+        # just a placeholder default, replaced immediately below.
         self.status_line = QLabel()
-        self.status_line.setVisible(self.MainWindow.PalaceMode)
         self.actions_layout.addWidget(self.status_line)
         self._init_status_state()
+        self.apply_preference_visibility()
+
+    def apply_preference_visibility(self):
+        # Called from __init__, from MainWindow.setPalaceMode()/setElmerMode() (mode
+        # switch also affects status_line visibility), and from MainWindow's Preferences
+        # dialog on accept (live update, no restart needed).
+        enable_fit = get_preference_bool(self.MainWindow.APP_NAME, "enable_model_fit_button", True)
+        self.model_fit_btn.setVisible(enable_fit)
+        enable_status = get_preference_bool(self.MainWindow.APP_NAME, "enable_status_bar", True)
+        self.status_line.setVisible(enable_status and self.MainWindow.PalaceMode)
 
     # --- Live Palace solver status line ------------------------------------------------
     #
@@ -2170,6 +2190,135 @@ class ModelEditorTab(QWidget):
         self.create_model_text(forExport=True)  # show "external" code including run from Python model
 
 
+# ---------- PREFERENCES DIALOG ----------
+
+class PreferencesDialog(QDialog):
+    """File > Preferences ...: per-user defaults for fields that used to be plain
+    hardcoded literals (e.g. FrequenciesTab's fstart/fstop). Persisted via
+    get_preference()/set_preference() (setup_common.py) - a dedicated QSettings
+    store, separate from *.simcfg project files and from "Save as Default Config".
+    Editing a value here only changes what a brand-new/blank field starts out
+    showing; it never touches the currently open project's saved_values.
+    """
+
+    def __init__(self, MainWindow):
+        super().__init__(MainWindow)
+        self.MainWindow = MainWindow
+        self.app_name = MainWindow.APP_NAME
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(420)
+
+        outer_layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        outer_layout.addWidget(self.tabs)
+
+        label_width = 260
+
+        def add_row(form_layout, label_text, key, default):
+            row = QHBoxLayout()
+            label = QLabel(label_text)
+            label.setFixedWidth(label_width)
+            row.addWidget(label)
+            edit = QLineEdit(str(get_preference(self.app_name, key, default)))
+            edit.setStyleSheet(EDIT_STYLE_REQUIRED)
+            row.addWidget(edit)
+            form_layout.addLayout(row)
+            return edit
+
+        # ---------- Layout tab ----------
+        layout_widget = QWidget()
+        layout_form = QVBoxLayout(layout_widget)
+        layout_form.setAlignment(Qt.AlignTop)
+        self.purpose_edit = add_row(layout_form, "Default GDS layer purpose", "purpose", "0")
+        self.viamerge_edit = add_row(layout_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
+        layout_form.addStretch()
+        self.tabs.addTab(layout_widget, "Layout")
+
+        # ---------- Frequencies tab ----------
+        freq_widget = QWidget()
+        freq_form = QVBoxLayout(freq_widget)
+        freq_form.setAlignment(Qt.AlignTop)
+        self.fstart_edit = add_row(freq_form, "Default fstart (GHz)", "fstart", "0")
+        self.fstop_edit = add_row(freq_form, "Default fstop (GHz)", "fstop", "50")
+        freq_form.addStretch()
+        self.tabs.addTab(freq_widget, "Frequencies")
+
+        # ---------- Mesh tab ----------
+        mesh_widget = QWidget()
+        mesh_form = QVBoxLayout(mesh_widget)
+        mesh_form.setAlignment(Qt.AlignTop)
+        self.refined_cellsize_edit = add_row(mesh_form, "Mesh refinement at metal edges (µm)", "refined_cellsize", "5")
+        self.cells_per_wavelength_edit = add_row(mesh_form, "Mesh cells per wavelength", "cells_per_wavelength", "10")
+        self.meshsize_max_edit = add_row(mesh_form, "Mesh cell maximum size (µm)", "meshsize_max", "100")
+        self.adaptive_mesh_iterations_edit = add_row(mesh_form, "Adaptive mesh iterations", "adaptive_mesh_iterations", "0")
+        self.margin_edit = add_row(mesh_form, "Dielectric stackup oversize margin (µm)", "margin", "200")
+        self.air_around_edit = add_row(mesh_form, "Air layer thickness around stackup (µm)", "air_around", "")
+        self.air_around_edit.setPlaceholderText("same as dielectric margin")
+        self.air_around_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        mesh_form.addStretch()
+        self.tabs.addTab(mesh_widget, "Mesh")
+
+        # ---------- Create Model tab ----------
+        create_widget = QWidget()
+        create_form = QVBoxLayout(create_widget)
+        create_form.setAlignment(Qt.AlignTop)
+        self.enable_model_fit_checkbox = QCheckBox('Show "Model Fit ..." button')
+        self.enable_model_fit_checkbox.setChecked(get_preference_bool(self.app_name, "enable_model_fit_button", True))
+        create_form.addWidget(self.enable_model_fit_checkbox)
+        self.enable_status_bar_checkbox = QCheckBox("Show live solver status line (Palace mode)")
+        self.enable_status_bar_checkbox.setChecked(get_preference_bool(self.app_name, "enable_status_bar", True))
+        create_form.addWidget(self.enable_status_bar_checkbox)
+        create_form.addStretch()
+        self.tabs.addTab(create_widget, "Create Model")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        outer_layout.addWidget(buttons)
+
+    def accept(self):
+        # via-merge distance and the two mesh sizes must parse as numbers; everything
+        # else here (purpose, fstart/fstop, AMR iterations, air_around) is stored as
+        # free text, same tolerant convention already used by the tabs themselves
+        try:
+            float(self.viamerge_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value for via array merge distance")
+            return
+        try:
+            float(self.refined_cellsize_edit.text())
+            float(self.cells_per_wavelength_edit.text())
+            float(self.meshsize_max_edit.text())
+            float(self.margin_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value in the Mesh tab")
+            return
+        if self.air_around_edit.text() != "":
+            try:
+                float(self.air_around_edit.text())
+            except Exception:
+                QMessageBox.warning(self, "Error", "Not a valid value for air layer thickness")
+                return
+
+        set_preference(self.app_name, "purpose", self.purpose_edit.text())
+        set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
+        set_preference(self.app_name, "fstart", self.fstart_edit.text())
+        set_preference(self.app_name, "fstop", self.fstop_edit.text())
+        set_preference(self.app_name, "refined_cellsize", self.refined_cellsize_edit.text())
+        set_preference(self.app_name, "cells_per_wavelength", self.cells_per_wavelength_edit.text())
+        set_preference(self.app_name, "meshsize_max", self.meshsize_max_edit.text())
+        set_preference(self.app_name, "adaptive_mesh_iterations", self.adaptive_mesh_iterations_edit.text())
+        set_preference(self.app_name, "margin", self.margin_edit.text())
+        set_preference(self.app_name, "air_around", self.air_around_edit.text())
+        set_preference(self.app_name, "enable_model_fit_button", self.enable_model_fit_checkbox.isChecked())
+        set_preference(self.app_name, "enable_status_bar", self.enable_status_bar_checkbox.isChecked())
+
+        # live update, no restart needed
+        self.MainWindow.create_model_tab.apply_preference_visibility()
+
+        super().accept()
+
+
 # ---------- MAIN WINDOW ----------
 
 
@@ -2280,7 +2429,7 @@ class MainWindow(MainWindowBase):
         self.frequencies_tab.fdump_enabled_checkbox.setVisible(False)
         self.mesh_tab.AMR_group.setVisible(True)
         self.mesh_tab.Elmer_group.setVisible(False)
-        self.create_model_tab.status_line.setVisible(True)
+        self.create_model_tab.apply_preference_visibility()
 
         # update mesh settings that are not always visible
         self.mesh_tab.on_meshorder_changed(self.mesh_tab.mesh_order_box.currentText())
@@ -2301,7 +2450,7 @@ class MainWindow(MainWindowBase):
         self.frequencies_tab.fdump_enabled_checkbox.setVisible(True)
         self.mesh_tab.AMR_group.setVisible(False)
         self.mesh_tab.Elmer_group.setVisible(True)
-        self.create_model_tab.status_line.setVisible(False)
+        self.create_model_tab.apply_preference_visibility()
 
         # update mesh settings that are not always visible
         self.mesh_tab.on_meshorder_changed(self.mesh_tab.mesh_order_box.currentText())
@@ -2412,6 +2561,12 @@ class MainWindow(MainWindowBase):
             marker["kind"] = "port"
             marker["group"] = "Ports"
         return markers
+
+
+    # ---------- Preferences dialog hook ----------
+    def open_preferences_dialog(self):
+        dialog = PreferencesDialog(self)
+        dialog.exec()
 
 
     # ---------- Stackup preview hooks (permittivity / sheet resistance) ----------

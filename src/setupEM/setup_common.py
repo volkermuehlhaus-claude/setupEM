@@ -86,6 +86,51 @@ RECENT_SETTINGS_KEY = "recentSettingsFiles"
 RECENT_MODEL_KEY = "recentModelFiles"
 MAX_RECENT_FILES = 10
 
+# Preferences (File > Preferences...): per-user, per-app defaults for fields
+# that used to be plain hardcoded literals (e.g. FrequenciesTab's fstart/fstop
+# QLineEdit("0")/("50")). Deliberately a separate store from the *.simcfg /
+# *.tsimcfg project files and from the existing "Save as Default Config"
+# mechanism (DEFAULT_SETTINGS_FILE) - this is about what a brand-new/blank
+# field starts out showing, not a full saved project snapshot. Reuses the
+# same QSettings org/app scope as the recent-files lists above, just under
+# its own sub-group so the keys never collide.
+PREFERENCES_GROUP = "preferences"
+
+
+def get_preference(app_name, key, default):
+    """Read a user preference, falling back to `default` (the app's own
+    built-in default, e.g. "50" for fstop) if never explicitly set. `default`
+    is returned as-is (same type) when unset; QSettings otherwise round-trips
+    whatever type was last stored via set_preference().
+    """
+    settings = QSettings(RECENT_FILES_ORG, app_name)
+    settings.beginGroup(PREFERENCES_GROUP)
+    try:
+        return settings.value(key, default)
+    finally:
+        settings.endGroup()
+
+
+def get_preference_bool(app_name, key, default):
+    """Bool-safe variant of get_preference() - some QSettings backends (e.g.
+    the Windows registry) round-trip a stored bool back as the string "true"/
+    "false" instead of a real bool, the same well-known quirk noted for the
+    recent-files lists above.
+    """
+    value = get_preference(app_name, key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes")
+    return bool(value)
+
+
+def set_preference(app_name, key, value):
+    settings = QSettings(RECENT_FILES_ORG, app_name)
+    settings.beginGroup(PREFERENCES_GROUP)
+    try:
+        settings.setValue(key, value)
+    finally:
+        settings.endGroup()
+
 
 def _read_substrate_variables(filename):
     """Parse a stackup XML file's <Variables> block (if any) into a resolved
@@ -733,10 +778,12 @@ class FileInputTab(QWidget):
         else:
             self.cellname_box.clear()
             self.cellname_box.addItem(saved_cellname)
-        self.viamerge_edit.setText(str(get_saved_value(saved_values, "merge_polygon_size", "0.5")))
+        viamerge_default = get_preference(self.MainWindow.APP_NAME, "merge_polygon_size", "0.5")
+        self.viamerge_edit.setText(str(get_saved_value(saved_values, "merge_polygon_size", viamerge_default)))
         self.preprocess_gds_checkbox.setChecked(bool(get_saved_value(saved_values, "preprocess_gds", True)))
 
-        int_list = saved_values.get("purpose", "0")
+        purpose_default = get_preference(self.MainWindow.APP_NAME, "purpose", "0")
+        int_list = saved_values.get("purpose", purpose_default)
         purpose_string = str(int_list).replace('[', '').replace(']', '')
         self.purpose_edit.setText(purpose_string)
         # self.purpose_edit.setText(','.join(map(str, int_list)))
@@ -755,7 +802,7 @@ class FileInputTab(QWidget):
             merge_polygon_size = float(self.viamerge_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", f"Not a valid value for via array merging")
-            self.viamerge_edit.setText("0.5")
+            self.viamerge_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "merge_polygon_size", "0.5")))
             return False
         saved_values["merge_polygon_size"] = float(merge_polygon_size)
 
@@ -764,7 +811,8 @@ class FileInputTab(QWidget):
             # save as list of comma separated values
             saved_values["purpose"] = ast.literal_eval('[' + text + ']')
         else:
-            saved_values["purpose"] = [0]  # safe default
+            purpose_default = get_preference(self.MainWindow.APP_NAME, "purpose", "0")
+            saved_values["purpose"] = ast.literal_eval('[' + str(purpose_default) + ']')
 
         # also trigger the load function of CreateModelTab, because that uses gds file info
         self.MainWindow.create_model_tab.load_values()
@@ -1930,6 +1978,7 @@ class MainWindowBase(QMainWindow):
         self.savedefault_action = QAction("Save as Default Config", self)
         self.import_model_action = QAction("Import from *.py model ...", self)
         self.export_model_action = QAction("Export to *.py model ...", self)
+        self.preferences_action = QAction("Preferences ...", self)
         exit_action = QAction("Exit", self)
 
         # disable export by default, only enable when on Code tab
@@ -1942,6 +1991,7 @@ class MainWindowBase(QMainWindow):
 
         self.import_model_action.triggered.connect(lambda: self.import_from_python())
         self.export_model_action.triggered.connect(lambda: self.export_to_python())
+        self.preferences_action.triggered.connect(lambda: self.open_preferences_dialog())
         exit_action.triggered.connect(self.close)
 
         file_menu.addAction(self.load_settings_action)
@@ -1954,6 +2004,8 @@ class MainWindowBase(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.load_default_action)
         file_menu.addAction(self.savedefault_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.preferences_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
         self._populate_recent_menus()
@@ -2511,6 +2563,13 @@ class MainWindowBase(QMainWindow):
         CLI startup flag). No-op by default.
         """
         pass
+
+    def open_preferences_dialog(self):
+        # Hook: build and show the app-specific Preferences dialog (its tabs/
+        # fields differ enough between setupEM and setupThermal - e.g. only
+        # setupEM has a Frequencies tab - that each app implements its own
+        # PreferencesDialog class rather than sharing one here).
+        raise NotImplementedError
 
     def open_popup(self):
         if getattr(self, "popup", None) is not None:

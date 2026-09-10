@@ -27,7 +27,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QLineEdit,QComboBox,QTableWidget,QHeaderView,
     QPushButton, QFileDialog, QTabWidget, QMessageBox, QGroupBox,
-    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog
+    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog,
+    QDialogButtonBox,
     )
 from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup
 from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths
@@ -53,6 +54,7 @@ if __package__ in (None, ""):
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference,
     )
     from thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
 else:
@@ -61,6 +63,7 @@ else:
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference,
     )
     from .thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
 
@@ -608,7 +611,7 @@ class MeshTab(QWidget):
             value = float(self.refinement_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for mesh refinement")
-            self.refinement_edit.setText("5")
+            self.refinement_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "refined_cellsize", "5")))
             return False
         saved_values ["refined_cellsize"] = float(value)
 
@@ -616,7 +619,7 @@ class MeshTab(QWidget):
             value = float(self.cells_maxsize_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for max. meshsize")
-            self.cells_maxsize_edit.setText("100")
+            self.cells_maxsize_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "meshsize_max", "100")))
             return False
         saved_values ["meshsize_max"] = float(value)
 
@@ -625,7 +628,7 @@ class MeshTab(QWidget):
             value = float(self.margins_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for dielectric oversize margin")
-            self.margins_edit.setText("100")
+            self.margins_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "margin", "100")))
             return False
         saved_values ["margin"] = float(value)
 
@@ -637,9 +640,10 @@ class MeshTab(QWidget):
 
 
     def load_values(self):
-        self.refinement_edit.setText(str(saved_values.get("refined_cellsize","5")))
-        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max","100")))
-        self.margins_edit.setText(str(saved_values.get("margin","100")))
+        app_name = self.MainWindow.APP_NAME
+        self.refinement_edit.setText(str(saved_values.get("refined_cellsize", get_preference(app_name, "refined_cellsize", "5"))))
+        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max", get_preference(app_name, "meshsize_max", "100"))))
+        self.margins_edit.setText(str(saved_values.get("margin", get_preference(app_name, "margin", "100"))))
 
         if saved_values.get("iterative", False):
             self.solver_box.setCurrentIndex(0)
@@ -953,6 +957,89 @@ class ModelEditorTab(QWidget):
         self.create_model_text(forExport=True)  # show "external" code including run from Python model
 
 
+# ---------- PREFERENCES DIALOG ----------
+
+class PreferencesDialog(QDialog):
+    """File > Preferences ...: per-user defaults for fields that used to be plain
+    hardcoded literals. Persisted via get_preference()/set_preference()
+    (setup_common.py) - a dedicated QSettings store, separate from *.tsimcfg
+    project files and from "Save as Default Config". Editing a value here only
+    changes what a brand-new/blank field starts out showing; it never touches
+    the currently open project's saved_values. Smaller than setupEM's version
+    of this dialog - no Frequencies tab (thermal has no frequency sweep) and no
+    Create Model tab (thermal has neither the Model Fit button nor the Palace
+    solver status line).
+    """
+
+    def __init__(self, MainWindow):
+        super().__init__(MainWindow)
+        self.MainWindow = MainWindow
+        self.app_name = MainWindow.APP_NAME
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(420)
+
+        outer_layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        outer_layout.addWidget(self.tabs)
+
+        label_width = 260
+
+        def add_row(form_layout, label_text, key, default):
+            row = QHBoxLayout()
+            label = QLabel(label_text)
+            label.setFixedWidth(label_width)
+            row.addWidget(label)
+            edit = QLineEdit(str(get_preference(self.app_name, key, default)))
+            edit.setStyleSheet(EDIT_STYLE_REQUIRED)
+            row.addWidget(edit)
+            form_layout.addLayout(row)
+            return edit
+
+        # ---------- Layout tab ----------
+        layout_widget = QWidget()
+        layout_form = QVBoxLayout(layout_widget)
+        layout_form.setAlignment(Qt.AlignTop)
+        self.purpose_edit = add_row(layout_form, "Default GDS layer purpose", "purpose", "0")
+        self.viamerge_edit = add_row(layout_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
+        layout_form.addStretch()
+        self.tabs.addTab(layout_widget, "Layout")
+
+        # ---------- Mesh tab ----------
+        mesh_widget = QWidget()
+        mesh_form = QVBoxLayout(mesh_widget)
+        mesh_form.setAlignment(Qt.AlignTop)
+        self.refined_cellsize_edit = add_row(mesh_form, "Mesh refinement at metal edges (µm)", "refined_cellsize", "5")
+        self.meshsize_max_edit = add_row(mesh_form, "Mesh cell maximum size (µm)", "meshsize_max", "100")
+        self.margin_edit = add_row(mesh_form, "Dielectric stackup oversize margin (µm)", "margin", "100")
+        mesh_form.addStretch()
+        self.tabs.addTab(mesh_widget, "Mesh")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        outer_layout.addWidget(buttons)
+
+    def accept(self):
+        # via-merge distance and the two mesh sizes must parse as numbers; purpose is
+        # stored as free text, same tolerant convention the Layout tab itself uses
+        try:
+            float(self.viamerge_edit.text())
+            float(self.refined_cellsize_edit.text())
+            float(self.meshsize_max_edit.text())
+            float(self.margin_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid numeric value")
+            return
+
+        set_preference(self.app_name, "purpose", self.purpose_edit.text())
+        set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
+        set_preference(self.app_name, "refined_cellsize", self.refined_cellsize_edit.text())
+        set_preference(self.app_name, "meshsize_max", self.meshsize_max_edit.text())
+        set_preference(self.app_name, "margin", self.margin_edit.text())
+
+        super().accept()
+
+
 # ---------- MAIN WINDOW ----------
 
 
@@ -1074,6 +1161,12 @@ class MainWindow(MainWindowBase):
                 marker["kind"] = "boundary"
                 marker["group"] = "Boundaries"
         return markers
+
+
+    # ---------- Preferences dialog hook ----------
+    def open_preferences_dialog(self):
+        dialog = PreferencesDialog(self)
+        dialog.exec()
 
 
     # ---------- Stackup preview hooks (thermal conductivity) ----------
