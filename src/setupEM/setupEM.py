@@ -1019,6 +1019,28 @@ class MeshTab(QWidget):
         self.cells_AMRiterations_layout.addStretch()
         self.AMR_layout.addLayout(self.cells_AMRiterations_layout)
 
+        self.amr_goal_layout = QHBoxLayout()
+        self.labelAMRgoal1 = QLabel("AMR goal (relative error tolerance)")
+        self.labelAMRgoal1.setFixedWidth(label_width)
+        self.amr_goal_layout.addWidget(self.labelAMRgoal1)
+        self.amr_goal_edit = QLineEdit("0.01")
+        self.amr_goal_edit.setFixedWidth(edit_width)
+        self.amr_goal_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.amr_goal_layout.addWidget(self.amr_goal_edit)
+        self.amr_goal_layout.addStretch()
+        self.AMR_layout.addLayout(self.amr_goal_layout)
+
+        self.amr_maxdof_layout = QHBoxLayout()
+        self.labelAMRmaxdof1 = QLabel("AMR maximum DOF")
+        self.labelAMRmaxdof1.setFixedWidth(label_width)
+        self.amr_maxdof_layout.addWidget(self.labelAMRmaxdof1)
+        self.amr_maxdof_edit = QLineEdit("2000000")
+        self.amr_maxdof_edit.setFixedWidth(edit_width)
+        self.amr_maxdof_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.amr_maxdof_layout.addWidget(self.amr_maxdof_edit)
+        self.amr_maxdof_layout.addStretch()
+        self.AMR_layout.addLayout(self.amr_maxdof_layout)
+
         self.AMR_group.setLayout(self.AMR_layout)
         self.main_layout.addWidget(self.AMR_group)
         self.main_layout.addSpacing(20)
@@ -1236,6 +1258,22 @@ class MeshTab(QWidget):
             return False
         saved_values ["adaptive_mesh_iterations"] = int(value)
 
+        try:
+            value = float(self.amr_goal_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value for AMR goal")
+            self.amr_goal_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "amr_tol", "0.01")))
+            return False
+        saved_values ["amr_tol"] = float(value)
+
+        try:
+            value = int(self.amr_maxdof_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value for AMR maximum DOF")
+            self.amr_maxdof_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "amr_max_dof", "2000000")))
+            return False
+        saved_values ["amr_max_dof"] = int(value)
+
 
         # iterative or direct solver for Elmer
         saved_values["iterative"] = "iterative" in self.solver_box.currentText()
@@ -1316,6 +1354,8 @@ class MeshTab(QWidget):
         self.cells_lambda_edit.setText(str(saved_values.get("cells_per_wavelength", get_preference(app_name, "cells_per_wavelength", "10"))))
         self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max", get_preference(app_name, "meshsize_max", "100"))))
         self.AMR_iterations_edit.setText(str(saved_values.get("adaptive_mesh_iterations", get_preference(app_name, "adaptive_mesh_iterations", "0"))))
+        self.amr_goal_edit.setText(str(saved_values.get("amr_tol", get_preference(app_name, "amr_tol", "0.01"))))
+        self.amr_maxdof_edit.setText(str(saved_values.get("amr_max_dof", get_preference(app_name, "amr_max_dof", "2000000"))))
         self.margins_edit.setText(str(saved_values.get("margin", get_preference(app_name, "margin", "200"))))
 
         self.mesh_order_box.setCurrentIndex(int(saved_values.get("order", 2))-1)
@@ -2284,6 +2324,15 @@ class PreferencesDialog(QDialog):
         mesh_form.addStretch()
         self.tabs.addTab(mesh_widget, "Mesh")
 
+        # ---------- Palace tab ----------
+        palace_widget = QWidget()
+        palace_form = QVBoxLayout(palace_widget)
+        palace_form.setAlignment(Qt.AlignTop)
+        self.amr_goal_edit = add_row(palace_form, "AMR goal (relative error tolerance)", "amr_tol", "0.01")
+        self.amr_maxdof_edit = add_row(palace_form, "AMR maximum DOF", "amr_max_dof", "2000000")
+        palace_form.addStretch()
+        self.tabs.addTab(palace_widget, "Palace")
+
         # ---------- Create Model tab ----------
         create_widget = QWidget()
         create_form = QVBoxLayout(create_widget)
@@ -2334,6 +2383,12 @@ class PreferencesDialog(QDialog):
             except Exception:
                 QMessageBox.warning(self, "Error", "Not a valid value for air layer thickness")
                 return
+        try:
+            float(self.amr_goal_edit.text())
+            int(self.amr_maxdof_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value in the Palace tab")
+            return
 
         set_preference(self.app_name, "purpose", self.purpose_edit.text())
         set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
@@ -2347,6 +2402,8 @@ class PreferencesDialog(QDialog):
         set_preference(self.app_name, "adaptive_mesh_iterations", self.adaptive_mesh_iterations_edit.text())
         set_preference(self.app_name, "margin", self.margin_edit.text())
         set_preference(self.app_name, "air_around", self.air_around_edit.text())
+        set_preference(self.app_name, "amr_tol", self.amr_goal_edit.text())
+        set_preference(self.app_name, "amr_max_dof", self.amr_maxdof_edit.text())
         set_preference(self.app_name, "enable_model_fit_button", self.enable_model_fit_checkbox.isChecked())
         set_preference(self.app_name, "enable_status_bar", self.enable_status_bar_checkbox.isChecked())
 
