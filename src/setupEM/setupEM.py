@@ -2342,11 +2342,15 @@ class MainWindow(MainWindowBase):
 
 
     # ---------- Layout Preview hook ----------
-    def get_layout_preview_ports(self):
+    def get_layout_preview_markers(self):
         # flush the Ports tab's current table edits into simulation_ports first,
         # so the preview reflects unsaved edits without requiring a tab switch
         self.ports_tab.save_values()
-        return simulation_ports_to_struct(simulation_ports)
+        markers = simulation_ports_to_struct(simulation_ports)
+        for marker in markers:
+            marker["kind"] = "port"
+            marker["group"] = "Ports"
+        return markers
 
 
     # ---------- Stackup preview hooks (permittivity / sheet resistance) ----------

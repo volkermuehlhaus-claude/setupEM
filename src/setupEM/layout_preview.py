@@ -22,10 +22,10 @@ layout_preview.py
 Layout Preview window (Tools > Layout Preview...): draws the 2D GDSII shapes
 gds2palace's own reader would process for the current Input Files tab
 settings (GDS file, cell name, datatype/purpose filter), in z (stackup)
-order, colored per the stackup XML's material colors. Port shapes - from
-MainWindow.get_layout_preview_ports(), the EM app's Ports tab data, empty
-for setupThermal - are drawn on top, highlighted, and labeled with their
-GDS layer number and port number.
+order, colored per the stackup XML's material colors. "Marker" shapes - from
+MainWindow.get_layout_preview_markers(): EM ports for setupEM, thermal
+sources/constant-temperature boundaries for setupThermal - are drawn on top,
+highlighted, labeled, and grouped separately (own legend section per kind).
 """
 
 import os, io, contextlib
@@ -43,13 +43,33 @@ from gds2palace import gds_reader
 DEFAULT_LAYER_COLOR = "#a0a0a0"   # stackup_material.color has no default (None) if XML omits Color=
 PORT_OUTLINE_COLOR = "#ff33ff"
 PORT_FILL_COLOR = QColor(255, 51, 255, 100)
-# a z-directed via port's GDS marker polygon is often a zero-width sliver in one
-# axis (a line, not a rectangle) - draw its outline with this fixed device-pixel
-# width (a cosmetic pen, so it does not grow/shrink with canvas zoom) so it
-# stays visible instead of vanishing, without faking the underlying geometry
-PORT_OUTLINE_WIDTH = 3
+SOURCE_OUTLINE_COLOR = "#ff8800"      # orange: thermal heat source
+SOURCE_FILL_COLOR = QColor(255, 136, 0, 100)
+BOUNDARY_OUTLINE_COLOR = "#33ccff"    # cyan: thermal constant-temperature boundary
+BOUNDARY_FILL_COLOR = QColor(51, 204, 255, 100)
+# a z-directed via port's (or a thermal source/boundary's) GDS marker polygon
+# is often a zero-width sliver in one axis (a line, not a rectangle) - draw its
+# outline with this fixed device-pixel width (a cosmetic pen, so it does not
+# grow/shrink with canvas zoom) so it stays visible instead of vanishing,
+# without faking the underlying geometry
+MARKER_OUTLINE_WIDTH = 3
 # initial layer-opacity slider position
 DEFAULT_LAYER_OPACITY_PERCENT = 70
+
+# legend section order for "marker" groups (see get_layout_preview_markers());
+# a group only appears if the current app/data actually has items for it
+MARKER_GROUP_ORDER = ["Ports", "Sources", "Boundaries"]
+# per-marker-kind (fill, outline) colors, keyed by the "kind" tag each marker
+# dict carries (see MainWindowBase.get_layout_preview_markers() docstring)
+MARKER_STYLES = {
+    "port": (PORT_FILL_COLOR, PORT_OUTLINE_COLOR),
+    "source": (SOURCE_FILL_COLOR, SOURCE_OUTLINE_COLOR),
+    "boundary": (BOUNDARY_FILL_COLOR, BOUNDARY_OUTLINE_COLOR),
+}
+
+
+def _format_value(value, unit):
+    return f"{float(value):g} {unit}"
 
 # in-plane port directions -> (dx, dy) unit vector in *scene* coordinates (y
 # already flipped vs. GDS, matching _polygon_points()'s float(-y) convention -
@@ -109,6 +129,17 @@ def _via_marker_items(negative):
     color = QColor(VIA_NEGATIVE_COLOR if negative else VIA_POSITIVE_COLOR)
     circle = QGraphicsEllipseItem(-9, -9, 18, 18)
     circle.setBrush(QBrush(color))
+    circle.setPen(Qt.NoPen)
+    return [circle]
+
+
+def _plain_marker_items(color):
+    """Graphics item for a thermal source/boundary's marker: a plain filled
+    circle at the location, no direction/polarity indicator - thermal objects
+    have no orientation to show, unlike EM ports.
+    """
+    circle = QGraphicsEllipseItem(-9, -9, 18, 18)
+    circle.setBrush(QBrush(QColor(color)))
     circle.setPen(Qt.NoPen)
     return [circle]
 
@@ -318,12 +349,12 @@ class LayoutPreviewWindow(QDialog):
             # already showed a detailed QMessageBox.critical with the parse error
             return
 
-        port_dicts = self.MainWindow.get_layout_preview_ports()
-        port_by_layernum = {int(p["source_layernum"]): p for p in port_dicts}
+        marker_dicts = self.MainWindow.get_layout_preview_markers()
+        marker_by_layernum = {int(m["source_layernum"]): m for m in marker_dicts}
 
         saved_values = self.MainWindow.saved_values
         layernumbers = metals_list.getlayernumbers()
-        layernumbers.extend(port_by_layernum.keys())
+        layernumbers.extend(marker_by_layernum.keys())
 
         captured_stdout = io.StringIO()
         try:
@@ -354,7 +385,7 @@ class LayoutPreviewWindow(QDialog):
         # layers are drawn last and are not hidden by lower ones underneath
         regular_layers = []
         for layernum, polys in polygons_by_layer.items():
-            if layernum in port_by_layernum:
+            if layernum in marker_by_layernum:
                 continue
             metal = metals_list.getbylayernumber(layernum)
             regular_layers.append((metal, layernum, polys))
@@ -394,89 +425,106 @@ class LayoutPreviewWindow(QDialog):
         for color_name, tooltip, group in reversed(layer_legend_rows):
             self._add_legend_row(color_name, tooltip, group)
 
-        # port shapes, always drawn on top of every regular layer, highlighted
-        # and always labeled (not just on hover) with port number + GDS layer
-        if port_by_layernum:
-            self.legend_layout.addWidget(self._section_label("Ports"))
-        port_zvalue = len(regular_layers) + 1
-        for layernum, polys in polygons_by_layer.items():
-            port = port_by_layernum.get(layernum)
-            if port is None:
-                continue
+        # marker shapes (EM ports / thermal sources / thermal boundaries),
+        # always drawn on top of every regular layer, highlighted and always
+        # labeled (not just on hover), grouped into their own legend sections
+        present_groups = [name for name in MARKER_GROUP_ORDER
+                           if any(m["group"] == name for m in marker_by_layernum.values())]
+        marker_zvalue = len(regular_layers) + 1
+        for group_name in present_groups:
+            self.legend_layout.addWidget(self._section_label(group_name))
+            for layernum, polys in polygons_by_layer.items():
+                marker = marker_by_layernum.get(layernum)
+                if marker is None or marker["group"] != group_name:
+                    continue
 
-            group = _VisibilityGroup()
+                kind = marker["kind"]
+                fill_color, outline_color = MARKER_STYLES[kind]
+                group = _VisibilityGroup()
 
-            portnumber = port["portnumber"]
-            label_text = f"P{portnumber}"
-            tooltip = f"Port {portnumber} [{layernum}] {_signed_direction(port.get('direction', ''))}"
-            if float(port.get("voltage", 1)) == 0:
-                tooltip += " (inactive)"
-            for poly in polys:
-                item = QGraphicsPolygonItem(self._polygon_points(poly))
-                item.setBrush(QBrush(PORT_FILL_COLOR))
-                # cosmetic pen: stroke stays PORT_OUTLINE_WIDTH device pixels
-                # regardless of canvas zoom, instead of scaling with it - what
-                # actually keeps a near-zero-width via-port sliver visible
-                port_pen = QPen(QColor(PORT_OUTLINE_COLOR), PORT_OUTLINE_WIDTH)
-                port_pen.setCosmetic(True)
-                item.setPen(port_pen)
-                item.setToolTip(tooltip)
-                item.setAcceptHoverEvents(True)
-                item.setZValue(port_zvalue)
-                scene.addItem(item)
-                group.add(item)
+                if kind == "port":
+                    portnumber = marker["portnumber"]
+                    label_text = f"P{portnumber}"
+                    tooltip = f"Port {portnumber} [{layernum}] {_signed_direction(marker.get('direction', ''))}"
+                    if float(marker.get("voltage", 1)) == 0:
+                        tooltip += " (inactive)"
+                elif kind == "source":
+                    label_text = _format_value(marker["power"], "W")
+                    tooltip = f"Source [{layernum}] {label_text}"
+                else:  # "boundary"
+                    label_text = _format_value(marker["temp"], "K")
+                    tooltip = f"Boundary [{layernum}] {label_text}"
 
-                center_x = (poly.xmin + poly.xmax) / 2
-                center_y = -(poly.ymin + poly.ymax) / 2
+                for poly in polys:
+                    item = QGraphicsPolygonItem(self._polygon_points(poly))
+                    item.setBrush(QBrush(fill_color))
+                    # cosmetic pen: stroke stays MARKER_OUTLINE_WIDTH device
+                    # pixels regardless of canvas zoom, instead of scaling
+                    # with it - what keeps a near-zero-width marker visible
+                    marker_pen = QPen(QColor(outline_color), MARKER_OUTLINE_WIDTH)
+                    marker_pen.setCosmetic(True)
+                    item.setPen(marker_pen)
+                    item.setToolTip(tooltip)
+                    item.setAcceptHoverEvents(True)
+                    item.setZValue(marker_zvalue)
+                    scene.addItem(item)
+                    group.add(item)
 
-                # a real port polygon is often a thin sliver (e.g. a via-port
-                # marker rectangle) that all but disappears at normal zoom, so
-                # also mark its centroid with a fixed-pixel-size symbol - stays
-                # visible at any zoom level, same trick as the label below.
-                # In-plane ports (X/Y/-X/-Y) get a direction arrow, centered
-                # on the port location; Z/-Z (via ports, no in-plane direction
-                # to show) get a red "+" (out of the page) or blue "-" (into
-                # the page) filled-circle polarity marker instead.
-                direction_text = port.get("direction", "")
-                vector = _direction_vector(direction_text)
-                if vector is not None:
-                    arrow = QGraphicsPathItem(_arrow_path(*vector))
-                    arrow.setPen(QPen(QColor(PORT_OUTLINE_COLOR), 3))
-                    marker_items = [arrow]
-                else:
-                    negative = str(direction_text).strip().upper() == "-Z"
-                    marker_items = _via_marker_items(negative)
+                    center_x = (poly.xmin + poly.xmax) / 2
+                    center_y = -(poly.ymin + poly.ymax) / 2
 
-                for marker_item in marker_items:
-                    marker_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-                    marker_item.setPos(center_x, center_y)
-                    marker_item.setZValue(port_zvalue + 1)
-                    marker_item.setToolTip(tooltip)
-                    scene.addItem(marker_item)
-                    group.add(marker_item)
+                    # a real marker polygon is often a thin sliver that all but
+                    # disappears at normal zoom, so also mark its centroid with
+                    # a fixed-pixel-size symbol - stays visible at any zoom
+                    # level, same trick as the label below. In-plane ports
+                    # (X/Y/-X/-Y) get a direction arrow; Z/-Z via ports get a
+                    # polarity marker; thermal sources/boundaries have no
+                    # direction to show, so just a plain marker dot.
+                    if kind == "port":
+                        direction_text = marker.get("direction", "")
+                        vector = _direction_vector(direction_text)
+                        if vector is not None:
+                            arrow = QGraphicsPathItem(_arrow_path(*vector))
+                            arrow.setPen(QPen(QColor(outline_color), 3))
+                            marker_items = [arrow]
+                        else:
+                            negative = str(direction_text).strip().upper() == "-Z"
+                            marker_items = _via_marker_items(negative)
+                    else:
+                        marker_items = _plain_marker_items(outline_color)
 
-                text = QGraphicsSimpleTextItem(label_text)
-                font = QFont()
-                font.setBold(True)
-                text.setFont(font)
-                text.setBrush(QBrush(QColor("white")))
-                text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-                # setPos() below places the *item's own origin* (top-left of its
-                # bounding rect, not its center) at the port location - use a
-                # local setTransform() to center the glyph on that origin first;
-                # it combines independently of the setPos() that follows
-                text_rect = text.boundingRect()
-                text.setTransform(QTransform.fromTranslate(-text_rect.width() / 2, -text_rect.height() / 2))
-                text.setPos(center_x, center_y)
-                # a *uniform* z-value across every port (not just "above this
-                # port's own marker") - two nearby ports' items interleave by
-                # scene insertion order at equal z, so without this a
-                # later-drawn port's marker could cover an earlier port's label
-                text.setZValue(port_zvalue + 2)
-                scene.addItem(text)
-                group.add(text)
+                    for marker_item in marker_items:
+                        marker_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+                        marker_item.setPos(center_x, center_y)
+                        marker_item.setZValue(marker_zvalue + 1)
+                        marker_item.setToolTip(tooltip)
+                        scene.addItem(marker_item)
+                        group.add(marker_item)
 
-            self._add_legend_row(PORT_OUTLINE_COLOR, tooltip, group)
+                    text = QGraphicsSimpleTextItem(label_text)
+                    font = QFont()
+                    font.setBold(True)
+                    text.setFont(font)
+                    text.setBrush(QBrush(QColor("white")))
+                    text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+                    # setPos() below places the *item's own origin* (top-left of
+                    # its bounding rect, not its center) at the marker location -
+                    # use a local setTransform() to center the glyph on that
+                    # origin first; it combines independently of the setPos()
+                    # that follows
+                    text_rect = text.boundingRect()
+                    text.setTransform(QTransform.fromTranslate(-text_rect.width() / 2, -text_rect.height() / 2))
+                    text.setPos(center_x, center_y)
+                    # a *uniform* z-value across every marker (not just "above
+                    # this marker's own symbol") - two nearby markers' items
+                    # interleave by scene insertion order at equal z, so
+                    # without this a later-drawn marker could cover an
+                    # earlier one's label
+                    text.setZValue(marker_zvalue + 2)
+                    scene.addItem(text)
+                    group.add(text)
+
+                self._add_legend_row(outline_color, tooltip, group)
 
         rect = scene.itemsBoundingRect()
         if not rect.isEmpty():

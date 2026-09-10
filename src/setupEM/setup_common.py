@@ -2440,16 +2440,25 @@ class MainWindowBase(QMainWindow):
         self.stackup_editor_window.destroyed.connect(lambda: setattr(self, "stackup_editor_window", None))
         self.stackup_editor_window.show()
 
-    def get_layout_preview_ports(self):
-        """Hook: return the current port list for the Layout Preview window, as a
-        list of dicts with the same keys as simulation_ports_to_struct() in
-        setupEM.py (portnumber, source_layernum, target_layername,
-        from_layername, to_layername, direction, port_Z0, voltage).
+    def get_layout_preview_markers(self):
+        """Hook: return the current list of "marker" objects to highlight in the
+        Layout Preview window on top of the GDS layers - EM ports for setupEM,
+        thermal sources/constant-temperature boundaries for setupThermal. Each
+        item is a dict with at least "source_layernum" (the GDS layer its
+        marker geometry lives on), "kind" (a short tag - "port", "source",
+        "boundary" - that layout_preview.py uses to pick a label/marker style),
+        and "group" (the legend section label to place it under, e.g. "Ports",
+        "Sources", "Boundaries" - kept separate per the app's own concept, not
+        merged into one section). Remaining keys are kind-specific: ports carry
+        the same fields as simulation_ports_to_struct() in setupEM.py
+        (portnumber, direction, voltage, ...); thermal objects carry the same
+        fields as thermal_objects_to_struct() in setupThermal.py (type, plus
+        power or temp).
 
-        Ports are an EM-specific concept (setupThermal has no equivalent), so
-        the default here is "no ports" and setupEM.py's MainWindow overrides
-        this to return its real port list - same injection pattern as
-        VectorWidget's dielectric_color_fn/metal_label_fn hooks above.
+        Default here is "no markers"; setupEM.py's and setupThermal.py's
+        MainWindow both override this with their real data - same injection
+        pattern as VectorWidget's dielectric_color_fn/metal_label_fn hooks
+        above.
         """
         return []
 

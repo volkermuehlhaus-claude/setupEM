@@ -1000,6 +1000,22 @@ class MainWindow(MainWindowBase):
         self.thermal_tab.update_layers(metals_list)
 
 
+    # ---------- Layout Preview hook ----------
+    def get_layout_preview_markers(self):
+        # flush the thermal tab's current table edits first, so the preview
+        # reflects unsaved edits without requiring a tab switch
+        self.thermal_tab.save_values()
+        markers = thermal_objects_to_struct(thermal_objects)
+        for marker in markers:
+            if marker["type"] == "source":
+                marker["kind"] = "source"
+                marker["group"] = "Sources"
+            else:
+                marker["kind"] = "boundary"
+                marker["group"] = "Boundaries"
+        return markers
+
+
     # ---------- Stackup preview hooks (thermal conductivity) ----------
     def stackup_dielectric_color(self, material):
         return QColor(Qt.white)
