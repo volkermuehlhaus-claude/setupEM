@@ -57,10 +57,12 @@ MARKER_OUTLINE_WIDTH = 3
 DEFAULT_LAYER_OPACITY_PERCENT = 70
 
 # cross-window highlight (see set_highlighted_layer()): a layer selected in the
-# Stackup Preview/Editor gets this outline, above every layer/port/source/
-# boundary marker in the scene. White (not red) since it's the one color none
-# of the layer/marker palettes above use, so it reads clearly against any of
-# them and the dark canvas background.
+# Stackup Preview/Editor gets this outline + hatch fill, above every regular
+# layer but *below* every port/source/boundary marker (those must stay
+# visible on top no matter what) - its actual z-value is computed per refresh()
+# in self._highlight_zvalue, since it depends on how many layers are drawn.
+# White (not red) since it's the one color none of the layer/marker palettes
+# above use, so it reads clearly against any of them and the dark background.
 HIGHLIGHT_COLOR = "white"
 HIGHLIGHT_WIDTH = 3
 HIGHLIGHT_ZVALUE = 100000
@@ -245,6 +247,8 @@ class LayoutPreviewWindow(QDialog):
         self._layer_items_by_name = {}
         self._highlighted_layer_name = None
         self._highlight_items = []
+        self._highlight_zvalue = 0  # recomputed each refresh() from the layer count
+        self._info_base_text = ""  # set by refresh(); _update_info_label() appends selection info
         self.opacity_label = QLabel()
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
@@ -317,10 +321,12 @@ class LayoutPreviewWindow(QDialog):
             item.setOpacity(value / 100.0)
 
     def set_highlighted_layer(self, name):
-        """Outline every drawn shape on layer `name` in white, on top of
-        everything else - called by MainWindow when a layer is selected in
-        the Stackup Preview/Editor (None/an unknown name clears it). Persists
-        across refresh() via self._highlighted_layer_name.
+        """Outline (+ hatch-fill) every drawn shape on layer `name` in white,
+        above every regular layer but below every port/source/boundary marker
+        - called by MainWindow when a layer is selected in the Stackup
+        Preview/Editor (None/an unknown name clears it). Persists across
+        refresh() via self._highlighted_layer_name. Also updates info_label
+        with the selected layer name and its polygon count.
         """
         self._highlighted_layer_name = name
         scene = self.canvas.scene()
@@ -329,13 +335,25 @@ class LayoutPreviewWindow(QDialog):
         self._highlight_items = []
         for polygon_item in self._layer_items_by_name.get(name, []):
             outline = QGraphicsPolygonItem(polygon_item.polygon())
-            outline.setBrush(Qt.NoBrush)
+            # diagonal hatch fill (built into Qt, no new dependency) in
+            # addition to the outline - draws the eye even on small/thin
+            # regions where a border alone is easy to miss
+            outline.setBrush(QBrush(QColor(HIGHLIGHT_COLOR), Qt.BDiagPattern))
             pen = QPen(QColor(HIGHLIGHT_COLOR), HIGHLIGHT_WIDTH)
             pen.setCosmetic(True)  # stays a thin fixed-pixel line at any zoom
             outline.setPen(pen)
-            outline.setZValue(HIGHLIGHT_ZVALUE)
+            outline.setZValue(self._highlight_zvalue)
             scene.addItem(outline)
             self._highlight_items.append(outline)
+        self._update_info_label()
+
+    def _update_info_label(self):
+        text = self._info_base_text
+        if self._highlighted_layer_name:
+            count = len(self._highlight_items)
+            text += (f"   Selected: {self._highlighted_layer_name} "
+                     f"({count} polygon{'s' if count != 1 else ''})")
+        self.info_label.setText(text)
 
     def _section_label(self, text):
         label = QLabel(text)
@@ -431,6 +449,10 @@ class LayoutPreviewWindow(QDialog):
             metal = metals_list.getbylayernumber(layernum)
             regular_layers.append((metal, layernum, polys))
         regular_layers.sort(key=lambda entry: entry[0].zmin if entry[0] is not None else 0.0)
+        # sits strictly above every regular layer's zValue (0..len-1) and
+        # strictly below the marker tier (len+1 and up, see marker_zvalue
+        # below) - the highlight must never cover a port/source/boundary
+        self._highlight_zvalue = len(regular_layers)
 
         self.legend_layout.addWidget(self._section_label("Layers"))
         layer_legend_rows = []
@@ -568,16 +590,17 @@ class LayoutPreviewWindow(QDialog):
 
                 self._add_legend_row(outline_color, tooltip, group)
 
+        self._info_base_text = (
+            f"GDS: {os.path.basename(saved_values['GdsFile'])}   "
+            f"Cell: {saved_values['cellname'] or '(top cell)'}   "
+            f"Purpose: {saved_values['purpose']}")
+
         # re-apply any active cross-window highlight - the polygon items it
-        # outlines were just rebuilt from scratch above
+        # outlines were just rebuilt from scratch above; this also refreshes
+        # info_label (base text + selection, if any) via _update_info_label()
         self.set_highlighted_layer(self._highlighted_layer_name)
 
         rect = scene.itemsBoundingRect()
         if not rect.isEmpty():
             scene.setSceneRect(rect)
             self.canvas.fitInView(rect, Qt.KeepAspectRatio)
-
-        self.info_label.setText(
-            f"GDS: {os.path.basename(saved_values['GdsFile'])}   "
-            f"Cell: {saved_values['cellname'] or '(top cell)'}   "
-            f"Purpose: {saved_values['purpose']}")
