@@ -2827,21 +2827,29 @@ class StackupEditorWindow(QDialog):
 
     def _on_dielectrics_row_selected(self):
         """Table -> preview: a Dielectric Stack row was selected - highlight the
-           matching slab in the preview."""
+           matching slab in the preview. A deselected table (row < 0) clears the
+           preview selection too, so listeners outside this editor (e.g. Layout
+           Preview's cross-window highlight) see the clear as well."""
         row = self.dielectrics_editor.table.currentRow()
         if 0 <= row < len(self.dielectrics_editor.row_elements):
             name = self.dielectrics_editor.row_elements[row].get("Name")
             if name:
                 self.vector_widget.select_element("dielectric", name)
+        else:
+            self.vector_widget.scene().clearSelection()
 
     def _on_layers_row_selected(self):
         """Table -> preview: a Layers row was selected - highlight the matching
-           metal/via/sheet box in the preview."""
+           metal/via/sheet box in the preview. A deselected table (row < 0) clears
+           the preview selection too, so listeners outside this editor (e.g.
+           Layout Preview's cross-window highlight) see the clear as well."""
         row = self.layers_editor.table.currentRow()
         if 0 <= row < len(self.layers_editor.row_elements):
             name = self.layers_editor.row_elements[row].get("Name")
             if name:
                 self.vector_widget.select_element("layer", name)
+        else:
+            self.vector_widget.scene().clearSelection()
 
     def _refresh_validation_status(self, errors):
         if not errors:

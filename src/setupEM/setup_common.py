@@ -1428,6 +1428,11 @@ class VectorWidget(QGraphicsView):
             # clicking empty background clears selection - dismiss any flyout left
             # showing from the previously-selected shape rather than stranding it
             QToolTip.hideText()
+            # emit the "nothing selected" sentinel too, so listeners outside this
+            # editor (e.g. Layout Preview's cross-window highlight) can tell a
+            # clear apart from "no signal yet" - existing consumers of a real
+            # (kind, key) pair already no-op safely on empty strings
+            self.elementSelected.emit("", "")
             return
         item = selected[0]
         self.elementSelected.emit(item.kind, item.key)
@@ -1458,6 +1463,15 @@ class PopUpWindow(QDialog):
     stackup_metal_label / stackup_via_label_suffix hooks so the same window
     class works for both the EM (permittivity/Rs) and thermal (thermal
     conductivity) apps.
+
+    Non-modal (see open_popup()'s lazy-singleton guard) so the user can keep
+    it open side by side with the Layout Preview window - e.g. to pan/zoom
+    there while clicking through layers here to see them highlighted.
+    MainWindowBase.read_XML() pushes fresh materials_list/dielectrics_list/
+    metals_list into this window's vector_widget (via VectorWidget.refresh(),
+    the same call the Stackup Editor uses to stay live during its own edits)
+    whenever the stackup is reloaded elsewhere, so it doesn't go stale while
+    left open.
     """
 
     def __init__(self, MainWindow):
@@ -1485,7 +1499,6 @@ class PopUpWindow(QDialog):
         layout.addWidget(close_button)
 
         self.setLayout(layout)
-        self.setModal(True)
 
 
 # ---------- CREATE MODEL TAB (shared base) ----------
@@ -2397,6 +2410,12 @@ class MainWindowBase(QMainWindow):
             self.update_target_layer_choices(self.metals_list)
             self.file_tab.update_XML_description(filename)
             self.file_tab.update_variable_overrides_grid(filename)
+            # keep an open Stackup Preview popup in sync - it otherwise reads
+            # this data only once at construction and would silently go stale
+            # if the stackup is reloaded (e.g. a different model/settings file
+            # loaded, or the XML field edited) while it's still open
+            if getattr(self, "popup", None) is not None:
+                self.popup.vector_widget.refresh(materials_list, dielectrics_list, metals_list)
 
     def update_target_layer_choices(self, metals_list):
         # Hook: push the metal list to the app-specific tab that offers
@@ -2404,11 +2423,35 @@ class MainWindowBase(QMainWindow):
         raise NotImplementedError
 
     def open_popup(self):
+        if getattr(self, "popup", None) is not None:
+            self.popup.raise_()
+            self.popup.activateWindow()
+            return
+
         if os.path.isfile(self.saved_values["SubstrateFile"]):
             self.popup = PopUpWindow(self)
+            self.popup.vector_widget.elementSelected.connect(self._forward_stackup_selection_to_layout_preview)
+            self.popup.destroyed.connect(lambda: setattr(self, "popup", None))
+            # also clear the Layout Preview highlight when this window goes
+            # away, since there's no longer a visible "what's selected"
+            # context once it's closed
+            self.popup.destroyed.connect(lambda: self._forward_stackup_selection_to_layout_preview("", ""))
             self.popup.show()
         else:
             QMessageBox.warning(self, "Error", "Substrate file not found")
+
+    def _forward_stackup_selection_to_layout_preview(self, kind, key):
+        """Slot for VectorWidget.elementSelected, connected from both the Stackup
+        Preview popup and the Stackup Editor (they share the same VectorWidget
+        class/signal shape) - mirrors the selected metal/via layer as a red
+        outline in the Layout Preview window, if one is currently open.
+        Dielectrics have no GDS polygon of their own, so they resolve to "no
+        highlight" same as an empty selection.
+        """
+        self._stackup_selection = (kind, key)
+        if getattr(self, "layout_preview_window", None) is not None:
+            name = key if (kind == "layer" and key) else None
+            self.layout_preview_window.set_highlighted_layer(name)
 
     def open_stackup_editor(self):
         # defense in depth: the menu action is already disabled/greyed out when
@@ -2437,7 +2480,9 @@ class MainWindowBase(QMainWindow):
 
         initial_filename = self.saved_values.get("SubstrateFile") if isinstance(self.saved_values, dict) else None
         self.stackup_editor_window = StackupEditorWindow(self, initial_filename=initial_filename)
+        self.stackup_editor_window.vector_widget.elementSelected.connect(self._forward_stackup_selection_to_layout_preview)
         self.stackup_editor_window.destroyed.connect(lambda: setattr(self, "stackup_editor_window", None))
+        self.stackup_editor_window.destroyed.connect(lambda: self._forward_stackup_selection_to_layout_preview("", ""))
         self.stackup_editor_window.show()
 
     def get_layout_preview_markers(self):
@@ -2471,10 +2516,20 @@ class MainWindowBase(QMainWindow):
             from .layout_preview import LayoutPreviewWindow
 
         if getattr(self, "layout_preview_window", None) is not None:
+            # re-read everything on every deliberate "go check the layout"
+            # action, rather than silently showing whatever it last had -
+            # unlike the Stackup Preview popup, this re-reads the whole GDS
+            # file from disk, so it only happens here (an explicit menu
+            # click), not automatically on every stackup/tab change
+            self.layout_preview_window.refresh()
             self.layout_preview_window.raise_()
             self.layout_preview_window.activateWindow()
             return
 
         self.layout_preview_window = LayoutPreviewWindow(self)
         self.layout_preview_window.destroyed.connect(lambda: setattr(self, "layout_preview_window", None))
+        # sync immediately to whatever's already selected in an open Stackup
+        # Preview/Editor, rather than waiting for the next selection change
+        kind, key = getattr(self, "_stackup_selection", ("", ""))
+        self._forward_stackup_selection_to_layout_preview(kind, key)
         self.layout_preview_window.show()

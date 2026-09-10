@@ -56,6 +56,15 @@ MARKER_OUTLINE_WIDTH = 3
 # initial layer-opacity slider position
 DEFAULT_LAYER_OPACITY_PERCENT = 70
 
+# cross-window highlight (see set_highlighted_layer()): a layer selected in the
+# Stackup Preview/Editor gets this outline, above every layer/port/source/
+# boundary marker in the scene. White (not red) since it's the one color none
+# of the layer/marker palettes above use, so it reads clearly against any of
+# them and the dark canvas background.
+HIGHLIGHT_COLOR = "white"
+HIGHLIGHT_WIDTH = 3
+HIGHLIGHT_ZVALUE = 100000
+
 # legend section order for "marker" groups (see get_layout_preview_markers());
 # a group only appears if the current app/data actually has items for it
 MARKER_GROUP_ORDER = ["Ports", "Sources", "Boundaries"]
@@ -230,6 +239,12 @@ class LayoutPreviewWindow(QDialog):
         # opaque so they keep standing out) - lets overlapping layers below
         # show through instead of being fully covered by the one on top
         self._layer_items = []
+        # cross-window highlight: which layer name (if any) to outline in red,
+        # set via set_highlighted_layer() by MainWindow when a layer is
+        # selected in the Stackup Preview/Editor - persists across refresh()
+        self._layer_items_by_name = {}
+        self._highlighted_layer_name = None
+        self._highlight_items = []
         self.opacity_label = QLabel()
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
@@ -281,6 +296,11 @@ class LayoutPreviewWindow(QDialog):
     def _clear_legend(self):
         self._checkboxes = []
         self._layer_items = []
+        self._layer_items_by_name = {}
+        # the highlight items themselves were just destroyed by scene.clear()
+        # in refresh() (called right before this) - drop the stale references,
+        # but keep _highlighted_layer_name itself so it survives a refresh
+        self._highlight_items = []
         while self.legend_layout.count():
             item = self.legend_layout.takeAt(0)
             widget = item.widget()
@@ -295,6 +315,27 @@ class LayoutPreviewWindow(QDialog):
         self.opacity_label.setText(f"Layer opacity: {value}%")
         for item in self._layer_items:
             item.setOpacity(value / 100.0)
+
+    def set_highlighted_layer(self, name):
+        """Outline every drawn shape on layer `name` in white, on top of
+        everything else - called by MainWindow when a layer is selected in
+        the Stackup Preview/Editor (None/an unknown name clears it). Persists
+        across refresh() via self._highlighted_layer_name.
+        """
+        self._highlighted_layer_name = name
+        scene = self.canvas.scene()
+        for item in self._highlight_items:
+            scene.removeItem(item)
+        self._highlight_items = []
+        for polygon_item in self._layer_items_by_name.get(name, []):
+            outline = QGraphicsPolygonItem(polygon_item.polygon())
+            outline.setBrush(Qt.NoBrush)
+            pen = QPen(QColor(HIGHLIGHT_COLOR), HIGHLIGHT_WIDTH)
+            pen.setCosmetic(True)  # stays a thin fixed-pixel line at any zoom
+            outline.setPen(pen)
+            outline.setZValue(HIGHLIGHT_ZVALUE)
+            scene.addItem(outline)
+            self._highlight_items.append(outline)
 
     def _section_label(self, text):
         label = QLabel(text)
@@ -416,6 +457,7 @@ class LayoutPreviewWindow(QDialog):
                 scene.addItem(item)
                 group.add(item)
                 self._layer_items.append(item)
+                self._layer_items_by_name.setdefault(name, []).append(item)
 
             layer_legend_rows.append((color.name(), tooltip, group))
 
@@ -525,6 +567,10 @@ class LayoutPreviewWindow(QDialog):
                     group.add(text)
 
                 self._add_legend_row(outline_color, tooltip, group)
+
+        # re-apply any active cross-window highlight - the polygon items it
+        # outlines were just rebuilt from scratch above
+        self.set_highlighted_layer(self._highlighted_layer_name)
 
         rect = scene.itemsBoundingRect()
         if not rect.isEmpty():
