@@ -2341,6 +2341,14 @@ class MainWindow(MainWindowBase):
         self.ports_tab.update_layers(metals_list)
 
 
+    # ---------- Layout Preview hook ----------
+    def get_layout_preview_ports(self):
+        # flush the Ports tab's current table edits into simulation_ports first,
+        # so the preview reflects unsaved edits without requiring a tab switch
+        self.ports_tab.save_values()
+        return simulation_ports_to_struct(simulation_ports)
+
+
     # ---------- Stackup preview hooks (permittivity / sheet resistance) ----------
     def stackup_dielectric_color(self, material):
         return epsilon_to_color(material.eps, 95)
@@ -2380,14 +2388,38 @@ def parse_python_ports_definitions (file_path):
 
     # List to store parsed ports
     ports = []
+    skipped_count = 0
 
     # Read your input file line by line
     with open(file_path) as f:
         for line in f:
+            # strip a trailing comment first (same convention as parse_assignments()
+            # in setup_common.py) - otherwise a note like "# single-ended (target 80
+            # ohm)" ends up inside the extracted argument text, and rstrip(") \n")
+            # below stops at the first non-')'/space/newline character it hits from
+            # the right (here, the 'm' in "ohm"), never reaching the real closing
+            # parens right after the call's actual last argument
+            line = line.split('#', 1)[0]
             if "simulation_port(" in line:
                 start = line.index("simulation_port(") + len("simulation_port(")
                 inside = line[start:].rstrip(") \n")  # remove trailing ')'
-                ports.append(parse_port_args(inside))
+                try:
+                    ports.append(parse_port_args(inside))
+                except (SyntaxError, ValueError, TypeError):
+                    # this is a best-effort static text parser, not a real
+                    # interpreter - a port built from a variable or computed
+                    # expression (e.g. portnumber=portnumber inside a loop, as
+                    # in some GDS/inductor synthesis scripts) can't be resolved
+                    # by ast.literal_eval. Skip it so the rest of the import
+                    # still succeeds, rather than crashing the whole model load.
+                    skipped_count += 1
+
+    if skipped_count:
+        QMessageBox.warning(
+            None, "Import Model",
+            f"{skipped_count} port definition(s) use variables or computed "
+            "expressions instead of plain values and could not be imported "
+            "automatically.\n\nAdd them manually on the Ports tab.")
 
     return ports
 

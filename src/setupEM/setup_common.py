@@ -1924,6 +1924,10 @@ class MainWindowBase(QMainWindow):
                 "Update with: pip install gds2palace --upgrade")
         tools_menu.addAction(self.edit_stackup_action)
 
+        self.layout_preview_action = QAction("Layout Preview...", self)
+        self.layout_preview_action.triggered.connect(lambda: self.open_layout_preview())
+        tools_menu.addAction(self.layout_preview_action)
+
         # one-time, non-blocking heads-up if gds2palace is too old for some features -
         # deferred so it appears after the window itself, not stalling startup
         if GDS2PALACE_OUTDATED:
@@ -2435,3 +2439,33 @@ class MainWindowBase(QMainWindow):
         self.stackup_editor_window = StackupEditorWindow(self, initial_filename=initial_filename)
         self.stackup_editor_window.destroyed.connect(lambda: setattr(self, "stackup_editor_window", None))
         self.stackup_editor_window.show()
+
+    def get_layout_preview_ports(self):
+        """Hook: return the current port list for the Layout Preview window, as a
+        list of dicts with the same keys as simulation_ports_to_struct() in
+        setupEM.py (portnumber, source_layernum, target_layername,
+        from_layername, to_layername, direction, port_Z0, voltage).
+
+        Ports are an EM-specific concept (setupThermal has no equivalent), so
+        the default here is "no ports" and setupEM.py's MainWindow overrides
+        this to return its real port list - same injection pattern as
+        VectorWidget's dielectric_color_fn/metal_label_fn hooks above.
+        """
+        return []
+
+    def open_layout_preview(self):
+        # local import: layout_preview.py imports from this module (MainWindowBase),
+        # so importing it at module load time here would be circular.
+        if __package__ in (None, ""):
+            from layout_preview import LayoutPreviewWindow
+        else:
+            from .layout_preview import LayoutPreviewWindow
+
+        if getattr(self, "layout_preview_window", None) is not None:
+            self.layout_preview_window.raise_()
+            self.layout_preview_window.activateWindow()
+            return
+
+        self.layout_preview_window = LayoutPreviewWindow(self)
+        self.layout_preview_window.destroyed.connect(lambda: setattr(self, "layout_preview_window", None))
+        self.layout_preview_window.show()
