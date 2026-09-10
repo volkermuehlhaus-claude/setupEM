@@ -252,6 +252,42 @@ def parse_assignments(file_path):
     return parameters
 
 
+def next_available_source_layer(gds_layers_present, excluded_layers, start=201):
+    """Smallest layer number >= start that actually has geometry in the GDS
+    (per gds_layers_present) and isn't already spoken for (per
+    excluded_layers - callers pass in both already-used port/thermal-object
+    layers and real stackup metal/via layer numbers, so this never suggests
+    a layer that means something else). Returns None if no such layer
+    exists, so callers can fall back to their own default.
+    """
+    candidates = sorted(l for l in gds_layers_present if l >= start and l not in excluded_layers)
+    return candidates[0] if candidates else None
+
+
+def update_missing_layer_column(table, source_col, comment_col, gds_layers_present):
+    """Set comment_col to "(missing in layout)" for every row whose
+    source_col holds a layer number not in gds_layers_present, and clear it
+    otherwise. Purely a computed display hint, not real row data - existing
+    save/export logic in both apps' Ports/Thermal tabs only ever reads
+    source_col and the columns before it, so writing into this trailing
+    (already otherwise-unused) column doesn't affect anything else.
+    """
+    for row in range(table.rowCount()):
+        item = table.item(row, source_col)
+        comment = ""
+        if item is not None and item.text():
+            try:
+                layernum = int(item.text())
+            except ValueError:
+                pass
+            else:
+                if layernum not in gds_layers_present:
+                    comment = "(missing in layout)"
+        existing = table.item(row, comment_col)
+        if existing is None or existing.text() != comment:
+            table.setItem(row, comment_col, QTableWidgetItem(comment))
+
+
 # ----------------------------------------
 
 class FileDropLineEdit(QLineEdit):
@@ -528,6 +564,7 @@ class FileInputTab(QWidget):
         self.MainWindow.saved_values["GdsFile"] = filename.replace('\\', '/')
         # file is read when leaving the files tab
         self.update_cellnames_from_gds(filename)
+        self.MainWindow.refresh_source_layer_hints()
 
     def browse_XML_file(self):
         # start browsing from previous file location, if valid
@@ -2417,10 +2454,63 @@ class MainWindowBase(QMainWindow):
             if getattr(self, "popup", None) is not None:
                 self.popup.vector_widget.refresh(materials_list, dielectrics_list, metals_list)
 
+    def get_gds_layers_in_range(self, layer_min, layer_max):
+        """Return the set of GDS layer numbers in [layer_min, layer_max] that
+        have at least one polygon on a datatype in the current purpose filter
+        - read the same way gds2palace's own reader would (same cellname/
+        purpose/preprocess), so "present" here means the same thing it would
+        during a real model build. Returns an empty set if the GDS file or
+        stackup isn't loaded/valid, rather than raising - this is only used
+        for Ports/Thermal tab UI hints (next-available-layer suggestion,
+        "(missing in layout)" annotations), never anything simulation-critical.
+
+        Reads the Input Files tab's *live* widgets rather than saved_values,
+        which only gets populated once that tab has been left at least once -
+        a Ports/Thermal tab reached before that would otherwise see an empty
+        GdsFile and silently find nothing.
+        """
+        gdsfile = self.file_tab.gds_file_edit.text()
+        if not os.path.isfile(gdsfile) or self.metals_list is None:
+            return set()
+        cellname = self.file_tab.cellname_box.currentText()
+        purpose_text = self.file_tab.purpose_edit.text().strip()
+        try:
+            purposelist = ast.literal_eval('[' + purpose_text + ']') if purpose_text else [0]
+        except Exception:
+            purposelist = [0]
+        preprocess = self.file_tab.preprocess_gds_checkbox.isChecked()
+        layernumbers = list(range(layer_min, layer_max + 1))
+        captured_stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(captured_stdout):
+                allpolygons = gds_reader.read_gds(
+                    gdsfile, layernumbers,
+                    cellname=cellname,
+                    purposelist=purposelist,
+                    metals_list=self.metals_list,
+                    preprocess=preprocess,
+                    merge_polygon_size=0, mirror=False, offset_x=0, offset_y=0,
+                    layernumber_offset=0)
+        except (Exception, SystemExit):
+            return set()
+        return {int(poly.layernum) for poly in allpolygons.polygons}
+
     def update_target_layer_choices(self, metals_list):
         # Hook: push the metal list to the app-specific tab that offers
         # target-layer choices (ports tab / thermal objects tab).
         raise NotImplementedError
+
+    def refresh_source_layer_hints(self):
+        """Hook: re-check GDS-layer-derived hints (missing-in-layout
+        annotations, next-available-source-layer suggestion) on the
+        app-specific ports/thermal tab. update_target_layer_choices() already
+        covers this after a stackup (re)load, but setting the GDS file alone
+        doesn't trigger that - FileInputTab.set_gds_file() calls this
+        separately so those hints aren't left stale until the user happens to
+        leave/re-enter the Input Files tab (or never, e.g. after the -gdsfile
+        CLI startup flag). No-op by default.
+        """
+        pass
 
     def open_popup(self):
         if getattr(self, "popup", None) is not None:

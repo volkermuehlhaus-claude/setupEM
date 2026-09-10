@@ -55,6 +55,7 @@ if __package__ in (None, ""):
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
+        next_available_source_layer, update_missing_layer_column,
     )
     from palace_results import build_results_summary, find_output_dir, find_paraview_files
 else:
@@ -64,6 +65,7 @@ else:
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
+        next_available_source_layer, update_missing_layer_column,
     )
     from .palace_results import build_results_summary, find_output_dir, find_paraview_files
 
@@ -358,7 +360,12 @@ class PortsTab(QWidget):
         label = QLabel("Port geometry on layer number")
         self.sourcelayer_layout.addWidget(label)
         label.setFixedWidth(left_label_width)
-        self.sourcelayer_edit = QLineEdit("201")
+        # no hardcoded "201" default - selectRow(0) below fires before the
+        # itemSelectionChanged connection even exists, so this would otherwise
+        # sit unrefreshed (looking like a real suggestion) until the user
+        # happens to select a different row and back; update_layers() below
+        # recomputes it for real once a GDS file is actually loaded
+        self.sourcelayer_edit = QLineEdit("")
         self.sourcelayer_edit.setFixedWidth(80)
         self.sourcelayer_edit.setStyleSheet(EDIT_STYLE_REQUIRED)
         self.sourcelayer_layout.addWidget(self.sourcelayer_edit)
@@ -525,6 +532,8 @@ class PortsTab(QWidget):
             for col, value in enumerate(data):
                 self.portslist.setItem(selected_row, col, QTableWidgetItem(str(value)))
 
+            self.refresh_missing_layer_annotations()
+
 
     # callback when applying changes to the selected port
     def get_port_values_from_table(self):
@@ -572,6 +581,7 @@ class PortsTab(QWidget):
             for col, value in enumerate(data):
                 # self.portslist.setItem(selected_row, col, QTableWidgetItem(str(value)))
                 self.portslist.setItem(selected_row, col, None)
+            self.portslist.setItem(selected_row, 7, None)  # clear any "(missing in layout)" note too
 
 
     def portslist_selection_changed(self):
@@ -584,7 +594,49 @@ class PortsTab(QWidget):
                 if item.text() != "":
                     self.get_port_values_from_table()
             else:
-                self.sourcelayer_edit.setText(str(201+selected_row))
+                suggestion = self._suggest_source_layer()
+                if suggestion is not None:
+                    self.sourcelayer_edit.setText(str(suggestion))
+                else:
+                    # no GDS-backed candidate - don't fabricate a number that
+                    # may not exist in the layout, leave it visibly empty
+                    self.sourcelayer_edit.clear()
+                    self.sourcelayer_edit.setPlaceholderText("no unused GDS layer found")
+
+    def _used_source_layers(self):
+        """Layer numbers (column 2) already entered in the table, across all
+        rows - used to avoid suggesting a layer another port already uses.
+        """
+        used = set()
+        for row in range(self.portslist.rowCount()):
+            item = self.portslist.item(row, 2)
+            if item is not None and item.text():
+                try:
+                    used.add(int(item.text()))
+                except ValueError:
+                    pass
+        return used
+
+    def _suggest_source_layer(self):
+        """Next GDS layer number >= 201 that actually has geometry and isn't
+        already a stackup layer or another port's source layer, or None if
+        no such layer can be determined (e.g. no GDS file loaded yet, or
+        every present layer is already spoken for).
+        """
+        gds_layers = self.MainWindow.get_gds_layers_in_range(201, 299)
+        xml_layers = set(self.MainWindow.metals_list.getlayernumbers()) if self.MainWindow.metals_list else set()
+        excluded = xml_layers | self._used_source_layers()
+        return next_available_source_layer(gds_layers, excluded, start=201)
+
+    def refresh_missing_layer_annotations(self):
+        """Flag any port row whose source layer has no geometry in the
+        currently loaded GDS - see update_missing_layer_column()."""
+        gds_layers = self.MainWindow.get_gds_layers_in_range(201, 299)
+        update_missing_layer_column(self.portslist, source_col=2, comment_col=7, gds_layers_present=gds_layers)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_missing_layer_annotations()
 
 
     def save_values(self):
@@ -648,6 +700,11 @@ class PortsTab(QWidget):
         index = self.from_box.findText('Metal1')  # returns -1 if not found
         if index != -1:
             self.from_box.setCurrentIndex(index)
+        self.refresh_missing_layer_annotations()
+        # re-evaluate the currently selected row's source-layer suggestion too -
+        # a GDS/XML (re)load is exactly when a stale/unset suggestion (e.g. an
+        # unapplied new row selected before any file was loaded) needs it most
+        self.portslist_selection_changed()
 
 
     def update_port_from_import (self, ports):
@@ -2339,6 +2396,10 @@ class MainWindow(MainWindowBase):
 
     def update_target_layer_choices(self, metals_list):
         self.ports_tab.update_layers(metals_list)
+
+    def refresh_source_layer_hints(self):
+        self.ports_tab.refresh_missing_layer_annotations()
+        self.ports_tab.portslist_selection_changed()
 
 
     # ---------- Layout Preview hook ----------
