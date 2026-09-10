@@ -234,6 +234,23 @@ def get_saved_value(saved_values, key, default):
             return default
 
 
+# The Cellname dropdown shows this in place of a blank entry for "use the GDS
+# file's default/top cell" - internally that's still just "" everywhere else
+# (saved_values["cellname"], gds_reader.read_gds()'s cellname= argument, the
+# generated Python model's settings['cellname']), only the combo box display
+# uses this label. Translate at the two boundaries with cellname_for_display()/
+# cellname_from_display() rather than special-casing "" throughout.
+CELLNAME_DEFAULT_LABEL = "(default)"
+
+
+def cellname_for_display(cellname):
+    return cellname if cellname else CELLNAME_DEFAULT_LABEL
+
+
+def cellname_from_display(text):
+    return "" if text == CELLNAME_DEFAULT_LABEL else text
+
+
 def shorten_path_for_display(path, head_len=14):
     # A full network path can run to 100+ characters, unreadable crammed into a
     # dialog box next to a second equally long path. Keep just enough of the head
@@ -426,13 +443,15 @@ class FileInputTab(QWidget):
         label.setFixedWidth(left_label_width)
         self.cellname_layout.addWidget(label)
         self.cellname_box = QComboBox()
-        self.cellname_box.setFixedWidth(250)
         self.cellname_box.setStyleSheet(COMBO_STYLE_OPTIONAL)
-        self.cellname_box.addItems([""])
-        self.cellname_layout.addWidget(self.cellname_box)
-        self.cellname_label2 = QLabel(" (leave empty for default)")
-        self.cellname_layout.addWidget(self.cellname_label2)
-        self.cellname_layout.addStretch()
+        self.cellname_box.addItems([CELLNAME_DEFAULT_LABEL])
+        # stretch to fill the row like gds_file_edit above, so its right edge lines
+        # up with gds_file_edit's - and show_layout_btn below matches browse_gds_btn
+        self.cellname_layout.addWidget(self.cellname_box, 1)
+        self.show_layout_btn = QPushButton("Show layout")
+        self.show_layout_btn.setFixedWidth(150)  # matches browse_gds_btn above
+        self.show_layout_btn.clicked.connect(self.MainWindow.open_layout_preview)
+        self.cellname_layout.addWidget(self.show_layout_btn)
         self.gds_layout.addLayout(self.cellname_layout)
 
         self.purpose_layout = QHBoxLayout()
@@ -596,7 +615,7 @@ class FileInputTab(QWidget):
                 # the user explicitly picked a file via the Browse dialog - be defensive
                 return False
             self.cellname_box.clear()
-            self.cellname_box.addItem("")  # blank for default
+            self.cellname_box.addItem(CELLNAME_DEFAULT_LABEL)
             for cellname in cellnames:
                 self.cellname_box.addItem(cellname)
             return True
@@ -773,11 +792,11 @@ class FileInputTab(QWidget):
         # was set) with no way to pick a different one without re-browsing for the file.
         saved_cellname = get_saved_value(saved_values, "cellname", "")
         if os.path.isfile(gdsfile) and self.update_cellnames_from_gds(gdsfile):
-            index = self.cellname_box.findText(saved_cellname)
+            index = self.cellname_box.findText(cellname_for_display(saved_cellname))
             self.cellname_box.setCurrentIndex(index if index >= 0 else 0)
         else:
             self.cellname_box.clear()
-            self.cellname_box.addItem(saved_cellname)
+            self.cellname_box.addItem(cellname_for_display(saved_cellname))
         viamerge_default = get_preference(self.MainWindow.APP_NAME, "merge_polygon_size", "0.5")
         self.viamerge_edit.setText(str(get_saved_value(saved_values, "merge_polygon_size", viamerge_default)))
         self.preprocess_gds_checkbox.setChecked(bool(get_saved_value(saved_values, "preprocess_gds", True)))
@@ -795,7 +814,7 @@ class FileInputTab(QWidget):
         saved_values["GdsFile"] = self.gds_file_edit.text().replace('\\', '/')
         saved_values["SubstrateFile"] = self.XML_file_edit.text().replace('\\', '/')
         saved_values["preprocess_gds"] = self.preprocess_gds_checkbox.isChecked()
-        saved_values["cellname"] = self.cellname_box.currentText()
+        saved_values["cellname"] = cellname_from_display(self.cellname_box.currentText())
         saved_values["variable_overrides"] = self.get_variable_overrides()
 
         try:
@@ -2524,7 +2543,7 @@ class MainWindowBase(QMainWindow):
         gdsfile = self.file_tab.gds_file_edit.text()
         if not os.path.isfile(gdsfile) or self.metals_list is None:
             return set()
-        cellname = self.file_tab.cellname_box.currentText()
+        cellname = cellname_from_display(self.file_tab.cellname_box.currentText())
         purpose_text = self.file_tab.purpose_edit.text().strip()
         try:
             purposelist = ast.literal_eval('[' + purpose_text + ']') if purpose_text else [0]
