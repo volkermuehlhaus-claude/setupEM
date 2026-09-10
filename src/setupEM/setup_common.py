@@ -1659,7 +1659,13 @@ class CreateModelTabBase(QWidget):
         # above, so modelname_edit's right edge lines up with targetdir_edit's -
         # and, in turn, with the Actions buttons' right edge - instead of stretching
         # further right just because this row has no trailing button of its own.
-        self.modelname_layout.addSpacing(SECONDARY_BUTTON_WIDTH)
+        # Uses an invisible placeholder widget (addWidget), not addSpacing(): a bare
+        # addSpacing() doesn't get the automatic inter-item gap a real widget would,
+        # so it ends up one layout-spacing() short of targetdir_btn's actual reserved
+        # width, letting modelname_edit stretch a few pixels past targetdir_edit.
+        self.modelname_spacer = QLabel("")
+        self.modelname_spacer.setFixedWidth(SECONDARY_BUTTON_WIDTH)
+        self.modelname_layout.addWidget(self.modelname_spacer)
         self.file_layout.addLayout(self.modelname_layout)
 
         self.file_group.setLayout(self.file_layout)
