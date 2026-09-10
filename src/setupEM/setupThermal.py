@@ -379,21 +379,39 @@ class PortsTab(QWidget):
                     pass
         return used
 
-    def _suggest_source_layer(self):
-        """Next GDS layer number >= 201 that actually has geometry and isn't
-        already a stackup layer or another thermal object's source layer, or
-        None if no such layer can be determined (e.g. no GDS file loaded
-        yet, or every present layer is already spoken for).
+    def _port_layer_range(self):
+        """Auto-assign source layer range, configurable via File > Preferences
+        > Ports (falls back to the historical 201-299 range if unset/invalid).
         """
-        gds_layers = self.MainWindow.get_gds_layers_in_range(201, 299)
+        app_name = self.MainWindow.APP_NAME
+        try:
+            layer_min = int(get_preference(app_name, "port_layer_min", "201"))
+        except (TypeError, ValueError):
+            layer_min = 201
+        try:
+            layer_max = int(get_preference(app_name, "port_layer_max", "299"))
+        except (TypeError, ValueError):
+            layer_max = 299
+        return layer_min, layer_max
+
+    def _suggest_source_layer(self):
+        """Next GDS layer number in the auto-assign range that actually has
+        geometry and isn't already a stackup layer or another thermal
+        object's source layer, or None if no such layer can be determined
+        (e.g. no GDS file loaded yet, or every present layer is already
+        spoken for).
+        """
+        layer_min, layer_max = self._port_layer_range()
+        gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
         xml_layers = set(self.MainWindow.metals_list.getlayernumbers()) if self.MainWindow.metals_list else set()
         excluded = xml_layers | self._used_source_layers()
-        return next_available_source_layer(gds_layers, excluded, start=201)
+        return next_available_source_layer(gds_layers, excluded, start=layer_min)
 
     def refresh_missing_layer_annotations(self):
         """Flag any thermal object row whose source layer has no geometry in
         the currently loaded GDS - see update_missing_layer_column()."""
-        gds_layers = self.MainWindow.get_gds_layers_in_range(201, 299)
+        layer_min, layer_max = self._port_layer_range()
+        gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
         update_missing_layer_column(self.thermalobjectslist, source_col=0, comment_col=5, gds_layers_present=gds_layers)
 
     def showEvent(self, event):
@@ -1004,6 +1022,15 @@ class PreferencesDialog(QDialog):
         layout_form.addStretch()
         self.tabs.addTab(layout_widget, "Layout")
 
+        # ---------- Ports tab ----------
+        ports_widget = QWidget()
+        ports_form = QVBoxLayout(ports_widget)
+        ports_form.setAlignment(Qt.AlignTop)
+        self.port_layer_min_edit = add_row(ports_form, "Auto-assign source layer range: min", "port_layer_min", "201")
+        self.port_layer_max_edit = add_row(ports_form, "Auto-assign source layer range: max", "port_layer_max", "299")
+        ports_form.addStretch()
+        self.tabs.addTab(ports_widget, "Ports")
+
         # ---------- Mesh tab ----------
         mesh_widget = QWidget()
         mesh_form = QVBoxLayout(mesh_widget)
@@ -1030,9 +1057,20 @@ class PreferencesDialog(QDialog):
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid numeric value")
             return
+        try:
+            port_layer_min = int(self.port_layer_min_edit.text())
+            port_layer_max = int(self.port_layer_max_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value in the Ports tab")
+            return
+        if port_layer_min > port_layer_max:
+            QMessageBox.warning(self, "Error", "Ports: min layer must not be greater than max layer")
+            return
 
         set_preference(self.app_name, "purpose", self.purpose_edit.text())
         set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
+        set_preference(self.app_name, "port_layer_min", self.port_layer_min_edit.text())
+        set_preference(self.app_name, "port_layer_max", self.port_layer_max_edit.text())
         set_preference(self.app_name, "refined_cellsize", self.refined_cellsize_edit.text())
         set_preference(self.app_name, "meshsize_max", self.meshsize_max_edit.text())
         set_preference(self.app_name, "margin", self.margin_edit.text())
