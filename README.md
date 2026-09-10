@@ -251,11 +251,13 @@ Behind the scenes, the setupEM user interface created Python model code for gds2
 <img src="./doc/png/code1.png" alt="code" width="700">
 
 ## File menu
-In the setupEM File menu, you can save and load simulation configurations, and you can also save and load a user defined "Default Settings" configuration. This includes the choice of simulation target directory and all other settings. Settings are stored in a JSON file with file extension ".simcfg". The "Default Settings" will be stored to the user home diretory.
+In the setupEM File menu, you can save and load simulation configurations, and you can also save and load a user defined "Default Config" configuration. This includes the choice of simulation target directory and all other settings. Configurations are stored in a JSON file with file extension ".simcfg". The "Default Config" will be stored to the user home diretory.
 
 Using "File > Import from *.py model", you can load settings from existing simulation model code, e.g. the examples included in the gds2palace repository. This import is based on detecting known keywords, with or without the settings[] syntax, and also works for openEMS Python models. Note that openEMS substrates model the MIM differently, and parameter "refined_cellsize" will usually be smaller in openEMS simulation, so you need to adjust these settings.
 
 If you are on the "Code" tab, you can also export the Python model code using "File > Export to *.py model". This option is only required if you want to save the model code **without** running it. Buttons "Create mesh and model file" and "Run Palace" on the "Create Model" tab will also save the model code to the target directory, and run it from there.
+
+"File > Preferences..." lets you change the built-in defaults that a brand-new/blank field starts out showing (e.g. fstart/fstop, mesh refinement, dielectric oversize margin), saved per-user and independent of any project file.
 
 <img src="./doc/png/filemenu1.png" alt="file" width="700">
 

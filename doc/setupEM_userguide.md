@@ -281,11 +281,15 @@ Use **File > Export to \*.py model** to save the current code to disk without ru
 
 ## File menu
 
-Save and load simulation configurations (JSON, extension `.simcfg` for setupEM / `.tsimcfg` for setupThermal), including a "Default Settings" configuration (stored in your home directory) that's reloaded independently of any project. You can also drag & drop a `.simcfg`/`.tsimcfg` file onto the main window to load it, instead of using **Load Settings ...**.
+Save and load simulation configurations (JSON, extension `.simcfg` for setupEM / `.tsimcfg` for setupThermal), including a "Default Config" configuration (stored in your home directory) that's reloaded independently of any project. You can also drag & drop a `.simcfg`/`.tsimcfg` file onto the main window to load it, instead of using **Load Config ...**.
 
-**Load Settings ...** and **Import from \*.py model ...** each have a **Recent** submenu right below them, listing your last 10 files of that kind for quick reopening; saving a settings file adds it to that list too. Use "Clear Recent Files" in either submenu to reset it.
+**Load Config ...** and **Import from \*.py model ...** each have a **Recent** submenu right below them, listing your last 10 files of that kind for quick reopening; saving a config file adds it to that list too. Use "Clear Recent Files" in either submenu to reset it.
 
 **Import from \*.py model** loads settings from existing model code (e.g. the examples in the gds2palace repository), by detecting known keywords with or without the `settings[...]` dict syntax - this also works for openEMS Python models, though you'll likely need to adjust `refined_cellsize` afterward (openEMS models the MIM differently and typically needs a finer mesh).
+
+**Preferences ...** changes the built-in defaults that a brand-new/blank field starts out showing (e.g. fstart/fstop, mesh refinement, dielectric oversize margin, the Ports tab's auto-assign source layer range) - saved per-user via Qt's settings mechanism, separate from any project's `.simcfg`/`.tsimcfg` file and from "Save as Default Config".
+
+<img src="./png/preferences1.png" alt="preferences" width="500">
 
 <img src="./png/filemenu1.png" alt="file" width="700">
 
