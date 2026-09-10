@@ -78,7 +78,7 @@ GDS2PALACE_SUPPORTS_FILE_DESCRIPTION = GDS2PALACE_HAS_FILE_DESCRIPTION
 GDS2PALACE_OUTDATED = not (GDS2PALACE_SUPPORTS_STACKUP_EDITOR and GDS2PALACE_SUPPORTS_FILE_DESCRIPTION)
 
 
-# QSettings scope for the File menu's "Load Recent Settings"/"Import Recent Model" lists -
+# QSettings scope for the File menu's "Load Recent Config"/"Import Recent Model" lists -
 # per-app (organization + self.APP_NAME, i.e. "setupEM" or "setupThermal"), mirroring
 # stackupEditor.py's own "Open Recent" mechanism (same org name, separate app/key there).
 RECENT_FILES_ORG = "muehlhaus.com"
@@ -1923,11 +1923,11 @@ class MainWindowBase(QMainWindow):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
 
-        # browse_action = QAction("Browse Settings File...", self)
-        self.load_settings_action = QAction("Load Settings ...", self)
-        self.save_action = QAction("Save Settings ...", self)
-        self.load_default_action = QAction("Load Default Settings", self)
-        self.savedefault_action = QAction("Save as Default Settings", self)
+        # browse_action = QAction("Browse Config File...", self)
+        self.load_settings_action = QAction("Load Config ...", self)
+        self.save_action = QAction("Save Config ...", self)
+        self.load_default_action = QAction("Load Default Config", self)
+        self.savedefault_action = QAction("Save as Default Config", self)
         self.import_model_action = QAction("Import from *.py model ...", self)
         self.export_model_action = QAction("Export to *.py model ...", self)
         exit_action = QAction("Exit", self)
@@ -1945,7 +1945,7 @@ class MainWindowBase(QMainWindow):
         exit_action.triggered.connect(self.close)
 
         file_menu.addAction(self.load_settings_action)
-        self.recent_settings_menu = file_menu.addMenu("Load Recent Settings")
+        self.recent_settings_menu = file_menu.addMenu("Load Recent Config")
         file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         file_menu.addAction(self.import_model_action)
@@ -2144,12 +2144,12 @@ class MainWindowBase(QMainWindow):
                 with open(filename, "r") as f:
                     return json.load(f)
             except Exception:
-                QMessageBox.warning(self, "Error", f"Failed to load settings from {filename}")
+                QMessageBox.warning(self, "Error", f"Failed to load config from {filename}")
                 return {}
         return {}
 
     def load_configuration_dialog(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Settings File", filter=f"*.{self.CONFIG_SUFFIX};;Python model code *.py")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Config File", filter=f"*.{self.CONFIG_SUFFIX};;Python model code *.py")
         # we can load JSON or Python models, decide which suffix we have
         if file_path:
             self.load_configuration_from_file(file_path)
@@ -2175,7 +2175,7 @@ class MainWindowBase(QMainWindow):
                     self.apply_native_config_data(data)
                     self.load_all_tabs()
                     self._add_recent_file(RECENT_SETTINGS_KEY, file_path)
-                    loaded_message = f"Settings loaded from {shorten_path_for_display(file_path)}"
+                    loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
                     if path_messages:
                         loaded_message += "\n\n" + "\n".join(path_messages)
                     QMessageBox.information(self, "Loaded", loaded_message)
@@ -2278,7 +2278,7 @@ class MainWindowBase(QMainWindow):
 
                 self.load_all_tabs()
                 self._add_recent_file(RECENT_MODEL_KEY, file_path)
-                loaded_message = f"Settings loaded from {shorten_path_for_display(file_path)}"
+                loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
                 if path_messages:
                     loaded_message += "\n\n" + "\n".join(path_messages)
                 QMessageBox.information(self, "Loaded", loaded_message)
@@ -2288,7 +2288,7 @@ class MainWindowBase(QMainWindow):
             else:
                 QMessageBox.information(self, "Error", f"Could not load file {file_path}")
 
-    # ---------- recent files (Load Settings / Import Model) ----------
+    # ---------- recent files (Load Config / Import Model) ----------
 
     def _recent_files(self, key):
         files = QSettings(RECENT_FILES_ORG, self.APP_NAME).value(key, [])
@@ -2357,7 +2357,7 @@ class MainWindowBase(QMainWindow):
         raise NotImplementedError
 
     def import_from_python(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Settings File", filter=f"*.py model code")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", filter=f"*.py model code")
         # we can load JSON or Python models, decide which suffix we have
         if file_path:
             self.load_configuration_from_file(file_path)
@@ -2377,9 +2377,9 @@ class MainWindowBase(QMainWindow):
             with open(filename, "w") as f:
                 json.dump(struct, f, indent=4)
             self._add_recent_file(RECENT_SETTINGS_KEY, filename)
-            QMessageBox.information(self, "Saved", f"Settings saved to {filename}")
+            QMessageBox.information(self, "Saved", f"Config saved to {filename}")
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to save settings to {filename}: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to save config to {filename}: {e}")
 
     def native_config_extra_struct(self):
         # Hook: extra top-level keys to merge into the saved *.simcfg /
@@ -2392,7 +2392,7 @@ class MainWindowBase(QMainWindow):
         # set gds filename as default for saving config
         gds_name = self.saved_values.get("GdsFile")
         default_config = gds_name.replace('.gds', '.' + self.CONFIG_SUFFIX)
-        file_path, _ = QFileDialog.getSaveFileName(self, "Select Settings File", default_config, filter=f"{self.APP_NAME} (*.{self.CONFIG_SUFFIX})")
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Config File", default_config, filter=f"{self.APP_NAME} (*.{self.CONFIG_SUFFIX})")
         # Ensure filename ends with CONFIG_SUFFIX
         if file_path:
             if not file_path.lower().endswith('.' + self.CONFIG_SUFFIX):
