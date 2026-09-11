@@ -349,6 +349,9 @@ class SimplifyGdsDialog(QDialog):
         button_layout.addStretch(1)
         self.delete_close_btn = QPushButton("Delete && Close")
         self.delete_close_btn.clicked.connect(self._delete_and_close)
+        # hidden until a run actually produces something to delete - shown/
+        # hidden alongside accept_close_btn's relabeling in _run()
+        self.delete_close_btn.setVisible(False)
         button_layout.addWidget(self.delete_close_btn)
         # starts as a plain Close (nothing to accept yet) - _run() relabels it
         # to "Accept & Close" once a run actually produces an output file,
@@ -446,6 +449,7 @@ class SimplifyGdsDialog(QDialog):
         self.log_area.setPlainText("Running ...")
         self.compare_btn.setEnabled(False)
         self.accept_close_btn.setText("Close")
+        self.delete_close_btn.setVisible(False)
         self._simplified_gds_path = None
 
         self.run_btn.setEnabled(False)
@@ -480,6 +484,7 @@ class SimplifyGdsDialog(QDialog):
         self._simplified_gds_path = output_path
         self.compare_btn.setEnabled(True)
         self.accept_close_btn.setText("Accept && Close")
+        self.delete_close_btn.setVisible(True)
 
     def _open_comparison(self):
         if not self._simplified_gds_path or not os.path.isfile(self._simplified_gds_path):
