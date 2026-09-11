@@ -238,6 +238,11 @@ class LayoutPreviewWindow(QDialog):
 
         self.legend_layout = QVBoxLayout()
         self.legend_layout.setAlignment(Qt.AlignTop)
+        # compact spacing so more layers/markers fit before the legend needs its
+        # own vertical scrollbar - the default style spacing is generous for a
+        # list that can run to dozens of rows (every drawn layer, plus a row per
+        # port/thermal source/boundary)
+        self.legend_layout.setSpacing(1)
         legend_widget = QWidget()
         legend_widget.setLayout(self.legend_layout)
         legend_scroll = QScrollArea()
@@ -401,6 +406,9 @@ class LayoutPreviewWindow(QDialog):
         font = label.font()
         font.setBold(True)
         label.setFont(font)
+        # a little extra breathing room above each section, since the legend's
+        # own row/list spacing is otherwise kept tight (see legend_layout above)
+        label.setContentsMargins(0, 4, 0, 0)
         return label
 
     def _add_legend_row(self, color_name, text, group, layer_name=None):
@@ -409,7 +417,9 @@ class LayoutPreviewWindow(QDialog):
         selectable = layer_name is not None
         row = _ClickableLegendRow() if selectable else QWidget()
         row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(2, 2, 2, 2)
+        # no vertical margin - keeps each row as short as its checkbox/text
+        # actually need, so more rows fit before the legend needs to scroll
+        row_layout.setContentsMargins(2, 0, 2, 0)
 
         checkbox = QCheckBox()
         checkbox.setChecked(True)
