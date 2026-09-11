@@ -1032,7 +1032,7 @@ def _build_layer_tooltip(metal):
 
 def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width, height,
                             dielectric_color_fn, dielectric_label_fn,
-                            metal_label_fn, via_label_suffix_fn):
+                            metal_label_fn, via_label_suffix_fn, metal_color_fn):
     """Pure layout computation for the stackup cross-section preview - no QPainter/
     widget/scene involved. Returns (draw_calls, interactive_entries):
 
@@ -1233,8 +1233,15 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
                         height_box = part_height / 2
                         label_string = metal_label_fn(metal, material, False)
 
-                    # the box for this metal
-                    if material.type.upper() == "CONDUCTOR":
+                    # the box for this metal - metal_color_fn(material) can
+                    # override the default type-based color below (e.g.
+                    # setupThermal's thermal-conductivity scale); None means
+                    # "no override", i.e. every caller except setupThermal
+                    override_color = metal_color_fn(material)
+                    if override_color is not None:
+                        setBrush(override_color)
+                        drawRect(xmetal, flipy(ymetal), wmetal, -int(height_box))
+                    elif material.type.upper() == "CONDUCTOR":
                         setBrush(QColor(230, 230, 230, 90))
                         drawRect(xmetal, flipy(ymetal), wmetal, -int(height_box))
                     else:
@@ -1471,6 +1478,9 @@ class VectorWidget(QGraphicsView):
         dielectric_label_fn(dielectric, material) -> str
         metal_label_fn(metal, material, is_sheet) -> str
         via_label_suffix_fn(metal, material) -> str
+        metal_color_fn(material) -> QColor | None (None = use the default
+            hardcoded type-based color - setupEM/stackupEditor's standalone
+            stand-in both return None; only setupThermal overrides this)
     """
 
     # emitted when a shape is clicked/selected in the preview: (kind, key), where
@@ -1479,7 +1489,7 @@ class VectorWidget(QGraphicsView):
 
     def __init__(self, materials_list, dielectrics_list, metals_list,
                  dielectric_color_fn, dielectric_label_fn,
-                 metal_label_fn, via_label_suffix_fn):
+                 metal_label_fn, via_label_suffix_fn, metal_color_fn):
         super().__init__()
         self.materials_list = materials_list
         self.dielectrics_list = dielectrics_list
@@ -1488,6 +1498,7 @@ class VectorWidget(QGraphicsView):
         self.dielectric_label_fn = dielectric_label_fn
         self.metal_label_fn = metal_label_fn
         self.via_label_suffix_fn = via_label_suffix_fn
+        self.metal_color_fn = metal_color_fn
 
         self.setRenderHint(QPainter.Antialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1537,7 +1548,7 @@ class VectorWidget(QGraphicsView):
             self.materials_list, self.dielectrics_list, self.metals_list,
             width, height,
             self.dielectric_color_fn, self.dielectric_label_fn,
-            self.metal_label_fn, self.via_label_suffix_fn)
+            self.metal_label_fn, self.via_label_suffix_fn, self.metal_color_fn)
 
         scene.addItem(StackupBackgroundItem(draw_calls, width, height))
 
@@ -1626,8 +1637,18 @@ class PopUpWindow(QDialog):
                                           dielectric_color_fn=self.MainWindow.stackup_dielectric_color,
                                           dielectric_label_fn=self.MainWindow.stackup_dielectric_label,
                                           metal_label_fn=self.MainWindow.stackup_metal_label,
-                                          via_label_suffix_fn=self.MainWindow.stackup_via_label_suffix)
+                                          via_label_suffix_fn=self.MainWindow.stackup_via_label_suffix,
+                                          metal_color_fn=self.MainWindow.stackup_metal_color)
         layout.addWidget(self.vector_widget)
+
+        # optional color-scale legend (e.g. setupThermal's thermal-conductivity
+        # colorbar) - getattr'd rather than required on every MainWindow-like
+        # object, since this is purely additive and most callers have nothing
+        # to show here (color already comes straight from the XML's Color=)
+        legend_fn = getattr(self.MainWindow, "stackup_color_legend", None)
+        legend_widget = legend_fn() if legend_fn is not None else None
+        if legend_widget is not None:
+            layout.addWidget(legend_widget)
 
         # Close button
         close_button = QPushButton("Close")

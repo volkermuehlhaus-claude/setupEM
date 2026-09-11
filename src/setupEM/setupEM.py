@@ -2964,6 +2964,9 @@ class MainWindow(MainWindowBase):
     def stackup_dielectric_color(self, material):
         return epsilon_to_color(material.eps, 95)
 
+    def stackup_metal_color(self, material):
+        return None  # no override - compute_stackup_layout()'s default type-based color
+
     def stackup_dielectric_label(self, dielectric, material):
         return default_stackup_dielectric_label(dielectric, material)
 

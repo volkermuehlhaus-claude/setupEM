@@ -17,7 +17,7 @@
 ########################################################################
 
 
-import sys, json, os, pathlib, ast, webbrowser, argparse
+import sys, json, os, pathlib, ast, webbrowser, argparse, math
 import numpy as np
 import importlib.metadata
 import requests
@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog,
     QDialogButtonBox,
     )
-from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup
+from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup, QLinearGradient
 from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths
 
 
@@ -1185,6 +1185,109 @@ class PreferencesDialog(QDialog):
         super().accept()
 
 
+# ---------- Thermal conductivity color scale (stackup preview) ----------
+#
+# Log10 scale clipped to [THERMAL_COND_MIN, THERMAL_COND_MAX] W/(m*K) - roughly
+# spans typical dielectrics/air (~0.03-5) up through silicon/metals (~150-400).
+# Single warm hue (pale = low conductivity/insulating, more saturated = high
+# conductivity), rather than a cold-to-hot two-color gradient - saturation and
+# value are kept low/high respectively throughout the range so the black text
+# labels drawn on top of these shapes (metal/dielectric name, kappa value)
+# stay legible at every point on the scale, not just at the pale end.
+
+THERMAL_COND_MIN = 0.1
+THERMAL_COND_MAX = 300.0
+_THERMAL_HUE = 25 / 360.0  # warm orange - reads as "heat"/conductivity
+
+def thermal_conductivity_to_color(thermalcond):
+    """QColor for a material's thermalcond (W/(m*K)) on the log10 scale above.
+    thermalcond <= 0 (util_stackup_reader.py's default when a material's XML
+    has no ThermalConductivity= attribute - never None, but not a real
+    measurement either) gets a distinct flat "no data" gray instead of being
+    silently clamped into the scale as if it were an extreme insulator.
+    """
+    if thermalcond is None or thermalcond <= 0:
+        return QColor(230, 230, 230, 95)
+    k = min(max(thermalcond, THERMAL_COND_MIN), THERMAL_COND_MAX)
+    t = ((math.log10(k) - math.log10(THERMAL_COND_MIN))
+         / (math.log10(THERMAL_COND_MAX) - math.log10(THERMAL_COND_MIN)))
+    saturation = 0.12 + 0.55 * t
+    color = QColor.fromHsvF(_THERMAL_HUE, saturation, 1.0)
+    color.setAlpha(95)
+    return color
+
+
+# room temperature reference point for coloring a table-based material (its
+# thermalcond is temperature-dependent, not one fixed number) - distinct from
+# THERMAL_COND_MAX above despite the same numeral: this is a temperature in
+# Kelvin, that one a conductivity ceiling in W/(m*K).
+THERMAL_TABLE_REFERENCE_TEMPERATURE_K = 300.0
+
+def _thermal_conductivity_for_color(material):
+    """The effective thermalcond (W/(m*K)) to color `material` by: its own
+    scalar value, or - for a temperature-dependent table
+    (thermaltablename set) - the table's value at/near room temperature,
+    linearly interpolated and clamped to the table's own range (never
+    extrapolated beyond the measured points)."""
+    if material is None:
+        return None
+    if material.thermaltablename and material.thermaltable is not None and material.thermaltable.points:
+        points = sorted(material.thermaltable.points)
+        if len(points) == 1:
+            return points[0][1]
+        temps = [p[0] for p in points]
+        values = [p[1] for p in points]
+        interp = interp1d(temps, values, bounds_error=False,
+                           fill_value=(values[0], values[-1]))
+        return float(interp(THERMAL_TABLE_REFERENCE_TEMPERATURE_K))
+    return material.thermalcond
+
+
+class ThermalConductivityLegend(QWidget):
+    """Compact colorbar + tick labels for the stackup preview's conductivity
+    color scale, shown next to it (setupThermal only - see
+    MainWindow.stackup_color_legend())."""
+
+    TICK_VALUES = [0.1, 1, 10, 100, 300]
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(46)
+        self.setMinimumWidth(220)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # horizontal inset wide enough that the end ticks' centered labels
+        # ("0.1", "300") stay fully inside the widget instead of overhanging
+        # past its left/right edges
+        bar_rect = self.rect().adjusted(18, 4, -18, -26)
+        gradient = QLinearGradient(bar_rect.left(), 0, bar_rect.right(), 0)
+        steps = 20
+        for i in range(steps + 1):
+            t = i / steps
+            k = THERMAL_COND_MIN * (THERMAL_COND_MAX / THERMAL_COND_MIN) ** t
+            color = thermal_conductivity_to_color(k)
+            color.setAlpha(255)  # opaque in the legend - no shape underneath to blend with
+            gradient.setColorAt(t, color)
+        painter.fillRect(bar_rect, gradient)
+        painter.setPen(QPen(Qt.black))
+        painter.drawRect(bar_rect)
+
+        log_min, log_max = math.log10(THERMAL_COND_MIN), math.log10(THERMAL_COND_MAX)
+        for value in self.TICK_VALUES:
+            t = (math.log10(value) - log_min) / (log_max - log_min)
+            x = bar_rect.left() + t * bar_rect.width()
+            painter.drawLine(int(x), bar_rect.bottom(), int(x), bar_rect.bottom() + 4)
+            label = f"{value:g}"
+            painter.drawText(int(x) - 15, bar_rect.bottom() + 6, 30, 16,
+                              Qt.AlignHCenter | Qt.AlignTop, label)
+
+        painter.drawText(bar_rect.adjusted(0, 0, 0, 20), Qt.AlignHCenter | Qt.AlignBottom,
+                          "Thermal conductivity κ, W/(m·K)")
+
+
 # ---------- MAIN WINDOW ----------
 
 
@@ -1316,7 +1419,13 @@ class MainWindow(MainWindowBase):
 
     # ---------- Stackup preview hooks (thermal conductivity) ----------
     def stackup_dielectric_color(self, material):
-        return QColor(Qt.white)
+        return thermal_conductivity_to_color(_thermal_conductivity_for_color(material))
+
+    def stackup_metal_color(self, material):
+        return thermal_conductivity_to_color(_thermal_conductivity_for_color(material))
+
+    def stackup_color_legend(self):
+        return ThermalConductivityLegend()
 
     def stackup_dielectric_label(self, dielectric, material):
         if material.thermaltablename == "":

@@ -1048,7 +1048,7 @@ class StackupPreviewWindow(QWidget):
     deleteLater() on this window instead of relying on Qt object-tree cleanup.
     """
 
-    def __init__(self, vector_widget, parent=None):
+    def __init__(self, vector_widget, parent=None, legend_widget=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("Stackup Preview")
         self.resize(700, 900)
@@ -1057,6 +1057,8 @@ class StackupPreviewWindow(QWidget):
         # wrapper needed (or wanted: it would nest a second set of scrollbars).
         layout = QVBoxLayout()
         layout.addWidget(vector_widget)
+        if legend_widget is not None:
+            layout.addWidget(legend_widget)
         self.setLayout(layout)
 
     def closeEvent(self, event):
@@ -1443,6 +1445,7 @@ class StackupEditorWindow(QDialog):
             dielectric_label_fn=self.MainWindow.stackup_dielectric_label,
             metal_label_fn=self.MainWindow.stackup_metal_label,
             via_label_suffix_fn=self.MainWindow.stackup_via_label_suffix,
+            metal_color_fn=self.MainWindow.stackup_metal_color,
         )
         self.vector_widget.setMinimumSize(600, 800)
 
@@ -1468,7 +1471,9 @@ class StackupEditorWindow(QDialog):
         # created once and kept for the editor's lifetime, but deliberately with
         # no Qt parent (see StackupPreviewWindow docstring) - cleaned up explicitly
         # in closeEvent() below rather than via Qt's parent-child auto-delete
-        self.preview_window = StackupPreviewWindow(self.vector_widget)
+        legend_fn = getattr(self.MainWindow, "stackup_color_legend", None)
+        legend_widget = legend_fn() if legend_fn is not None else None
+        self.preview_window = StackupPreviewWindow(self.vector_widget, legend_widget=legend_widget)
         self.preview_window.move(self.x() + self.width() + 20, self.y())
 
         if initial_filename and os.path.isfile(initial_filename):
@@ -2986,6 +2991,9 @@ class _StandaloneMainWindow:
 
     def stackup_dielectric_color(self, material):
         return epsilon_to_color(material.eps, 95)
+
+    def stackup_metal_color(self, material):
+        return None  # no override - compute_stackup_layout()'s default type-based color
 
     def stackup_dielectric_label(self, dielectric, material):
         return default_stackup_dielectric_label(dielectric, material)
