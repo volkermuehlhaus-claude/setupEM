@@ -292,16 +292,25 @@ class SimplifyGdsDialog(QDialog):
         layout.addWidget(cutout_group)
 
         # ---- Merge per layer ----
+        # remembers the user's own choice while the checkbox is forced/greyed
+        # out by "Remove floating (unconnected) metal" (see
+        # _on_floating_group_toggled() below), so it's restored rather than
+        # lost once that group is unchecked again
+        self._merge_user_choice = get_preference_bool(app_name, "simplify_merge_per_layer", True)
         self.merge_per_layer_checkbox = QCheckBox("Merge polygons per layer (final step)")
-        self.merge_per_layer_checkbox.setChecked(
-            get_preference_bool(app_name, "simplify_merge_per_layer", True))
+        self.merge_per_layer_checkbox.setChecked(self._merge_user_choice)
         self.merge_per_layer_checkbox.setToolTip(
             "Boolean-OR touching/overlapping polygons on the same layer into the minimal "
             "set of shapes. Runs automatically as part of 'Remove floating (unconnected) "
-            "metal' already - this only does extra work when that option is off, and it "
-            "flattens the design hierarchy to do so."
+            "metal' already (forced on, greyed out, while that's enabled) - this only does "
+            "extra work when that option is off, and it flattens the design hierarchy to do so."
         )
+        self.merge_per_layer_checkbox.toggled.connect(
+            lambda checked: setattr(self, "_merge_user_choice", checked)
+            if self.merge_per_layer_checkbox.isEnabled() else None)
         layout.addWidget(self.merge_per_layer_checkbox)
+        floating_group.toggled.connect(self._on_floating_group_toggled)
+        self._on_floating_group_toggled(floating_group.isChecked())
 
         # ---- Log area ----
         self.log_area = QPlainTextEdit()
@@ -328,6 +337,21 @@ class SimplifyGdsDialog(QDialog):
         close_btn.clicked.connect(self.close)
         button_layout.addWidget(close_btn)
         layout.addLayout(button_layout)
+
+    def _on_floating_group_toggled(self, checked):
+        """Floating-fill removal already ends with a flattened, per-layer-merged
+        cell (see run_simplify()) - force the merge checkbox to reflect that
+        instead of offering a choice that has no effect, and restore the
+        user's own choice once floating-fill removal is off again."""
+        if checked:
+            # disable first: setChecked() below would otherwise fire the
+            # toggled() guard while the checkbox still reads as enabled,
+            # overwriting the saved user choice with this forced value
+            self.merge_per_layer_checkbox.setEnabled(False)
+            self.merge_per_layer_checkbox.setChecked(True)
+        else:
+            self.merge_per_layer_checkbox.setEnabled(True)
+            self.merge_per_layer_checkbox.setChecked(self._merge_user_choice)
 
     def _browse_output_file(self):
         filename, _ = QFileDialog.getSaveFileName(
