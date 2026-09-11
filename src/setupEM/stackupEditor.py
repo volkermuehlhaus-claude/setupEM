@@ -617,7 +617,8 @@ class ElementTableEditor(QWidget):
                  reload_on_attr_change=frozenset(), compute_fn=None, gray_fn=None,
                  pre_set_attr_fn=None, reference_choices_fn=None,
                  header_tooltips=None, operand_lookup_fn=None, variable_names_fn=None,
-                 invalid_fn=None, table_choices_fn=None, reorder_fn=None):
+                 invalid_fn=None, table_choices_fn=None, reorder_fn=None,
+                 descending_attrs=frozenset()):
         """container_fn(root) -> list[Element]: fetches the current rows to display,
            re-called by reload() so the editor can refresh itself after any structural
            change (add/remove/move) without the caller having to re-fetch and hand
@@ -681,6 +682,11 @@ class ElementTableEditor(QWidget):
              one-time reorder, not a persistent "stay sorted" mode - editing/adding
              rows afterward doesn't re-sort, so a new row being filled in doesn't
              jump around before it's finished. Omit to leave headers unclickable.
+           descending_attrs: attribute names that should sort largest-first when
+             their header is clicked (e.g. a z-position column, so the physically
+             topmost layer lands at the top of the list) - every other numeric
+             column sorts smallest-first. A row whose value can't be parsed as a
+             number always sorts last, regardless of direction.
         """
         super().__init__()
         self.columns = columns
@@ -704,6 +710,7 @@ class ElementTableEditor(QWidget):
         self.invalid_fn = invalid_fn
         self.pre_set_attr_fn = pre_set_attr_fn
         self.reorder_fn = reorder_fn
+        self.descending_attrs = descending_attrs
 
         self.root = None
         self.row_elements = []
@@ -724,10 +731,11 @@ class ElementTableEditor(QWidget):
             # click-to-sort only makes sense for a plain value column - "text"
             # (e.g. Name) or "computed" (e.g. the resolved ResultZmin), not a
             # combo-box/button kind - append to any header_tooltips text already set
-            for col, (_attr, _header, kind) in enumerate(columns):
+            for col, (attr, _header, kind) in enumerate(columns):
                 if kind in ("text", "computed"):
                     item = self.table.horizontalHeaderItem(col)
-                    hint = "Click to sort by this column"
+                    hint = ("Click to sort by this column (largest first)"
+                            if attr in descending_attrs else "Click to sort by this column")
                     item.setToolTip(f"{item.toolTip()}\n{hint}" if item.toolTip() else hint)
             self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -995,10 +1003,13 @@ class ElementTableEditor(QWidget):
             else:
                 text = element.get(attr, "") or ""
             try:
-                return (0, float(text))
+                value = float(text)
+                if attr in self.descending_attrs:
+                    value = -value
+                return (0, value)
             except (TypeError, ValueError):
                 # non-numeric (e.g. Name) or blank (e.g. a row whose Z couldn't be
-                # resolved) - sort alphabetically after every numeric value
+                # resolved) - sort after every numeric value, regardless of direction
                 return (1, text)
 
         ordered = sorted(self.row_elements, key=sort_key)
@@ -1273,6 +1284,7 @@ class StackupEditorWindow(QDialog):
             add_fn=lambda root, **attrs: stackup_writer.add_layer(root, **attrs),
             remove_fn=stackup_writer.remove_layer,
             reorder_fn=stackup_writer.reorder_layers,
+            descending_attrs={"ResultZmin", "ResultZmax"},
             default_attrs_fn=self._default_layer_attrs,
             on_changed=self._on_changed,
             material_choices_fn=self._material_names,
