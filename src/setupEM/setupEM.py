@@ -2271,7 +2271,7 @@ class PreferencesDialog(QDialog):
 
         label_width = 260
 
-        def add_row(form_layout, label_text, key, default):
+        def add_row(form_layout, label_text, key, default, tooltip=None):
             row = QHBoxLayout()
             label = QLabel(label_text)
             label.setFixedWidth(label_width)
@@ -2279,6 +2279,9 @@ class PreferencesDialog(QDialog):
             edit = QLineEdit(str(get_preference(self.app_name, key, default)))
             edit.setStyleSheet(EDIT_STYLE_REQUIRED)
             row.addWidget(edit)
+            if tooltip:
+                label.setToolTip(tooltip)
+                edit.setToolTip(tooltip)
             form_layout.addLayout(row)
             return edit
 
@@ -2328,7 +2331,11 @@ class PreferencesDialog(QDialog):
         palace_widget = QWidget()
         palace_form = QVBoxLayout(palace_widget)
         palace_form.setAlignment(Qt.AlignTop)
-        self.amr_goal_edit = add_row(palace_form, "AMR goal (relative error tolerance)", "amr_tol", "0.01")
+        self.amr_goal_edit = add_row(
+            palace_form, "AMR goal (relative error tolerance)", "amr_tol", "0.01",
+            tooltip=("Target relative error of Palace's own mesh error estimator "
+                     "(Norm/Max/Mean indicators) - not a change in S-parameters "
+                     "between AMR iterations"))
         self.amr_maxdof_edit = add_row(palace_form, "AMR maximum DOF", "amr_max_dof", "2000000")
         palace_form.addStretch()
         self.tabs.addTab(palace_widget, "Palace")
