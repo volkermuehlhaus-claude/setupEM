@@ -2673,9 +2673,13 @@ class MainWindowBase(QMainWindow):
         Preview/Editor, the reverse of _forward_stackup_selection_to_layout_preview()
         above. Resolves the GDS layer to a real metal/via <Layer> if it has
         one, else to a Dielectric that uses it as its lateral Boundary, if
-        any - only applied if the Stackup Preview and/or Editor is already
-        open (mirroring the other direction, which never auto-opens Layout
-        Preview either); does not open either one on its own.
+        any - more than one Dielectric can share the same Boundary layer
+        (e.g. several dielectrics all bounded by the same "die outline"
+        layer), so pick the one with the smallest zmin (the lowest one in the
+        stack) rather than an arbitrary/file-order match - only applied if the
+        Stackup Preview and/or Editor is already open (mirroring the other
+        direction, which never auto-opens Layout Preview either); does not
+        open either one on its own.
         """
         kind, key = "", ""
         if layernum is not None:
@@ -2683,9 +2687,10 @@ class MainWindowBase(QMainWindow):
             if metal is not None:
                 kind, key = "layer", metal.name
             elif self.dielectrics_list is not None:
-                dielectric = next((d for d in self.dielectrics_list.dielectrics
-                                    if d.gdsboundary is not None and int(d.gdsboundary) == layernum), None)
-                if dielectric is not None:
+                candidates = [d for d in self.dielectrics_list.dielectrics
+                              if d.gdsboundary is not None and int(d.gdsboundary) == layernum]
+                if candidates:
+                    dielectric = min(candidates, key=lambda d: d.zmin)
                     kind, key = "dielectric", dielectric.name
 
         if getattr(self, "popup", None) is not None:
