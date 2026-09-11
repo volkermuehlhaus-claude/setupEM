@@ -1617,6 +1617,7 @@ class CreateModelTab(CreateModelTabBase):
         self._status_amr_cur = None
         self._status_amr_max = None
         self._ram_kill_triggered = False
+        self._ram_kill_message = None
         self._update_status_line()
 
     def _reset_status_for_run(self):
@@ -1738,9 +1739,16 @@ class CreateModelTab(CreateModelTabBase):
             return
 
         self._ram_kill_triggered = True
+        # also re-appended at the very end of the log once the run actually
+        # finishes (on_finished(), after the results summary) - by then
+        # Palace's own remaining output plus combine_snp's could easily push
+        # this first appearance out of view
+        self._ram_kill_message = (
+            f"⚠️ Palace memory usage ({self._status_mem_gb:.2f} GB) exceeded the "
+            f"configured limit ({limit_gb:.0f} GB) - terminated the solver."
+        )
         self.log_area.appendPlainText(
-            f"\n⚠️ Palace memory usage ({self._status_mem_gb:.2f} GB) exceeded the "
-            f"configured limit ({limit_gb:.0f} GB) - terminating the solver.\n"
+            f"\n{self._ram_kill_message}\n"
             "Running S-parameter postprocessing on whatever results were already computed...\n"
         )
         self._kill_palace_process_for_ram_limit()
@@ -1932,6 +1940,11 @@ class CreateModelTab(CreateModelTabBase):
         # Auto-append the results summary after a real simulation run (not after mesh creation)
         if self._process_purpose == "run_simulation" and self.MainWindow.PalaceMode:
             self._append_results_summary()
+            if self._ram_kill_triggered and self._ram_kill_message:
+                # repeat the warning after the summary/combine_snp output that
+                # followed it, so it's not lost above everything else logged
+                # since the kill actually happened
+                self.log_area.appendPlainText(f"\n{self._ram_kill_message}\n")
         elif self._process_purpose == "install_snp2le":
             importlib.invalidate_caches()
             if exit_code == 0 and importlib.util.find_spec("snp2le") is not None:
