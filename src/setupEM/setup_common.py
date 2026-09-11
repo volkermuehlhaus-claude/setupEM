@@ -2673,8 +2673,9 @@ class MainWindowBase(QMainWindow):
         Preview/Editor, the reverse of _forward_stackup_selection_to_layout_preview()
         above. Resolves the GDS layer to a real metal/via <Layer> if it has
         one, else to a Dielectric that uses it as its lateral Boundary, if
-        any - opening the Stackup Preview automatically if neither it nor the
-        Stackup Editor is already open, so the match is always visible.
+        any - only applied if the Stackup Preview and/or Editor is already
+        open (mirroring the other direction, which never auto-opens Layout
+        Preview either); does not open either one on its own.
         """
         kind, key = "", ""
         if layernum is not None:
@@ -2686,9 +2687,6 @@ class MainWindowBase(QMainWindow):
                                     if d.gdsboundary is not None and int(d.gdsboundary) == layernum), None)
                 if dielectric is not None:
                     kind, key = "dielectric", dielectric.name
-
-        if kind and getattr(self, "popup", None) is None and getattr(self, "stackup_editor_window", None) is None:
-            self.open_popup()
 
         if getattr(self, "popup", None) is not None:
             self.popup.vector_widget.select_element(kind, key)
