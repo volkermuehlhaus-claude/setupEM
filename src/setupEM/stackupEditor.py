@@ -617,7 +617,7 @@ class ElementTableEditor(QWidget):
                  reload_on_attr_change=frozenset(), compute_fn=None, gray_fn=None,
                  pre_set_attr_fn=None, reference_choices_fn=None,
                  header_tooltips=None, operand_lookup_fn=None, variable_names_fn=None,
-                 invalid_fn=None, table_choices_fn=None):
+                 invalid_fn=None, table_choices_fn=None, reorder_fn=None):
         """container_fn(root) -> list[Element]: fetches the current rows to display,
            re-called by reload() so the editor can refresh itself after any structural
            change (add/remove/move) without the caller having to re-fetch and hand
@@ -675,6 +675,12 @@ class ElementTableEditor(QWidget):
              field whose edit was what just made the whole file invalid (see
              StackupEditorWindow._is_invalid_field()), so the user's eye lands on the
              actual cause instead of just the generic status line/Save error list.
+           reorder_fn(root, ordered_elements): reorders the underlying XML elements
+             to match ordered_elements, enabling click-a-header-to-sort (by that
+             column's current value) on every "text"/"computed" column. This is a
+             one-time reorder, not a persistent "stay sorted" mode - editing/adding
+             rows afterward doesn't re-sort, so a new row being filled in doesn't
+             jump around before it's finished. Omit to leave headers unclickable.
         """
         super().__init__()
         self.columns = columns
@@ -697,6 +703,7 @@ class ElementTableEditor(QWidget):
         self.gray_fn = gray_fn
         self.invalid_fn = invalid_fn
         self.pre_set_attr_fn = pre_set_attr_fn
+        self.reorder_fn = reorder_fn
 
         self.root = None
         self.row_elements = []
@@ -713,6 +720,16 @@ class ElementTableEditor(QWidget):
                 tooltip = header_tooltips.get(attr)
                 if tooltip:
                     self.table.horizontalHeaderItem(col).setToolTip(tooltip)
+        if reorder_fn is not None:
+            # click-to-sort only makes sense for a plain value column - "text"
+            # (e.g. Name) or "computed" (e.g. the resolved ResultZmin), not a
+            # combo-box/button kind - append to any header_tooltips text already set
+            for col, (_attr, _header, kind) in enumerate(columns):
+                if kind in ("text", "computed"):
+                    item = self.table.horizontalHeaderItem(col)
+                    hint = "Click to sort by this column"
+                    item.setToolTip(f"{item.toolTip()}\n{hint}" if item.toolTip() else hint)
+            self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         header = self.table.horizontalHeader()
@@ -962,6 +979,33 @@ class ElementTableEditor(QWidget):
         new_row = row + direction
         if 0 <= new_row < self.table.rowCount():
             self.table.selectRow(new_row)
+        self.on_changed(structural=True)
+
+    def _on_header_clicked(self, col):
+        # a one-time reorder (see reorder_fn's docstring above), not a persistent
+        # sort mode - reload() below rebuilds the table from the new element
+        # order, but nothing here keeps re-sorting it as values change afterward
+        if self.reorder_fn is None or not self.row_elements:
+            return
+        attr, _header, kind = self.columns[col]
+
+        def sort_key(element):
+            if kind == "computed":
+                text = self._computed.get(id(element), {}).get(attr, "")
+            else:
+                text = element.get(attr, "") or ""
+            try:
+                return (0, float(text))
+            except (TypeError, ValueError):
+                # non-numeric (e.g. Name) or blank (e.g. a row whose Z couldn't be
+                # resolved) - sort alphabetically after every numeric value
+                return (1, text)
+
+        ordered = sorted(self.row_elements, key=sort_key)
+        if ordered == self.row_elements:
+            return
+        self.reorder_fn(self.root, ordered)
+        self.reload()
         self.on_changed(structural=True)
 
 
@@ -1228,6 +1272,7 @@ class StackupEditorWindow(QDialog):
             container_fn=self._layers_container,
             add_fn=lambda root, **attrs: stackup_writer.add_layer(root, **attrs),
             remove_fn=stackup_writer.remove_layer,
+            reorder_fn=stackup_writer.reorder_layers,
             default_attrs_fn=self._default_layer_attrs,
             on_changed=self._on_changed,
             material_choices_fn=self._material_names,
