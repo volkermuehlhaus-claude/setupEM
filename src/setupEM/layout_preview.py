@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QGraphicsEllipseItem, QGraphicsPathItem, QSlider, QSplitter,
     )
 from PySide6.QtGui import QColor, QBrush, QPen, QPolygonF, QPainter, QFont, QPainterPath, QTransform
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, Signal
 
 from gds2palace import gds_reader
 
@@ -186,6 +186,21 @@ class _VisibilityGroup:
             item.setZValue(z)
 
 
+class _ClickableLegendRow(QWidget):
+    """A legend row for a drawn layer (not a marker group) that can be clicked
+    to select/deselect that layer - anywhere except the visibility checkbox,
+    which keeps its own click for show/hide. The swatch/label children are
+    WA_TransparentForMouseEvents so a click on them still reaches this widget.
+    """
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class LayoutCanvas(QGraphicsView):
     """Pan/zoom GDS canvas - plain PySide6 QGraphicsView, no new dependency.
     Polygon/label points are stored with y already negated (see
@@ -248,6 +263,10 @@ class LayoutPreviewWindow(QDialog):
         self._highlighted_layer_name = None
         self._highlight_items = []
         self._highlight_zvalue = 0  # recomputed each refresh() from the layer count
+        # legend rows for drawn layers (name -> _ClickableLegendRow), so a click
+        # can select/deselect a layer directly from Layout Preview's own legend,
+        # independent of the Stackup Preview/Editor cross-window highlight below
+        self._legend_layer_rows = {}
         self._info_base_text = ""  # set by refresh(); _update_info_label() appends selection info
         self.opacity_label = QLabel()
         self.opacity_slider = QSlider(Qt.Horizontal)
@@ -301,6 +320,7 @@ class LayoutPreviewWindow(QDialog):
         self._checkboxes = []
         self._layer_items = []
         self._layer_items_by_name = {}
+        self._legend_layer_rows = {}
         # the highlight items themselves were just destroyed by scene.clear()
         # in refresh() (called right before this) - drop the stale references,
         # but keep _highlighted_layer_name itself so it survives a refresh
@@ -324,9 +344,11 @@ class LayoutPreviewWindow(QDialog):
         """Outline (+ hatch-fill) every drawn shape on layer `name` in white,
         above every regular layer but below every port/source/boundary marker
         - called by MainWindow when a layer is selected in the Stackup
-        Preview/Editor (None/an unknown name clears it). Persists across
-        refresh() via self._highlighted_layer_name. Also updates info_label
-        with the selected layer name and its polygon count.
+        Preview/Editor (None/an unknown name clears it), and also by clicking
+        a layer's own legend row (see _on_legend_layer_clicked()) - either way
+        this is the single source of truth for "what's highlighted right now".
+        Persists across refresh() via self._highlighted_layer_name. Also
+        updates info_label with the selected layer name and its polygon count.
         """
         self._highlighted_layer_name = name
         scene = self.canvas.scene()
@@ -346,6 +368,25 @@ class LayoutPreviewWindow(QDialog):
             scene.addItem(outline)
             self._highlight_items.append(outline)
         self._update_info_label()
+        self._update_legend_selection_styling()
+
+    def _update_legend_selection_styling(self):
+        # visually mark whichever legend row (if any) matches the current
+        # highlight, so clicking a row to select/deselect it has obvious
+        # feedback beyond the canvas outline itself
+        for name, row in self._legend_layer_rows.items():
+            row.setStyleSheet("background-color: palette(highlight);" if name == self._highlighted_layer_name else "")
+
+    def _on_legend_layer_clicked(self, name):
+        # click the already-selected layer's row again to deselect it, same
+        # convention as the canvas/Stackup Preview highlight; this only ever
+        # changes Layout Preview's own highlight, it does not reach back into
+        # an open Stackup Preview/Editor's selection (one-way: stackup->layout,
+        # not layout->stackup)
+        if self._highlighted_layer_name == name:
+            self.set_highlighted_layer(None)
+        else:
+            self.set_highlighted_layer(name)
 
     def _update_info_label(self):
         text = self._info_base_text
@@ -362,8 +403,11 @@ class LayoutPreviewWindow(QDialog):
         label.setFont(font)
         return label
 
-    def _add_legend_row(self, color_name, text, group):
-        row = QWidget()
+    def _add_legend_row(self, color_name, text, group, layer_name=None):
+        # layer_name is only set for a drawn-layer row (not a marker group row,
+        # e.g. Ports/Sources/Boundaries) - those aren't selectable, only shown
+        selectable = layer_name is not None
+        row = _ClickableLegendRow() if selectable else QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(2, 2, 2, 2)
 
@@ -380,6 +424,16 @@ class LayoutPreviewWindow(QDialog):
 
         label = QLabel(text)
         row_layout.addWidget(label, 1)
+
+        if selectable:
+            # let clicks on the swatch/label reach the row itself (the
+            # checkbox is left alone so it still toggles visibility)
+            swatch.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            row.setCursor(Qt.PointingHandCursor)
+            row.setToolTip("Click to select/deselect this layer")
+            row.clicked.connect(lambda name=layer_name: self._on_legend_layer_clicked(name))
+            self._legend_layer_rows[layer_name] = row
 
         self.legend_layout.addWidget(row)
 
@@ -481,13 +535,14 @@ class LayoutPreviewWindow(QDialog):
                 self._layer_items.append(item)
                 self._layer_items_by_name.setdefault(name, []).append(item)
 
-            layer_legend_rows.append((color.name(), tooltip, group))
+            layer_legend_rows.append((color.name(), tooltip, group, name))
 
         # legend lists layers top-to-bottom (largest z first) - the reverse of
         # the ascending zmin order used just above for the actual draw/z-stack
         # order, which must stay bottom-to-top for correct on-canvas layering
-        for color_name, tooltip, group in reversed(layer_legend_rows):
-            self._add_legend_row(color_name, tooltip, group)
+        for color_name, tooltip, group, name in reversed(layer_legend_rows):
+            self._add_legend_row(color_name, tooltip, group, layer_name=name)
+        self._update_legend_selection_styling()
 
         # marker shapes (EM ports / thermal sources / thermal boundaries),
         # always drawn on top of every regular layer, highlighted and always
