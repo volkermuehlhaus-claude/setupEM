@@ -132,6 +132,20 @@ def set_preference(app_name, key, value):
         settings.endGroup()
 
 
+def clear_preferences(app_name):
+    """Delete every stored preference for app_name (the "Reset all to
+    default" button in PreferencesDialog) - after this, every get_preference()/
+    get_preference_bool() call for this app falls back to its own built-in
+    default again, same as a user who has never opened Preferences at all.
+    """
+    settings = QSettings(RECENT_FILES_ORG, app_name)
+    settings.beginGroup(PREFERENCES_GROUP)
+    try:
+        settings.remove("")
+    finally:
+        settings.endGroup()
+
+
 def _read_substrate_variables(filename):
     """Parse a stackup XML file's <Variables> block (if any) into a resolved
        stackup_reader.variables_list, independent of the full read_substrate()/
@@ -2507,10 +2521,10 @@ class MainWindowBase(QMainWindow):
                 path_messages = resolve_missing_file_paths(saved_values, modelcode_path)
 
                 # ask whether future "Create Model" output should overwrite this same
-                # file, or start a fresh model (today's GDS-derived default) - unless
-                # the user has turned this question off in Preferences > Files, in
-                # which case silently agree (reuse the imported file) without asking
-                if get_preference_bool(self.APP_NAME, "confirm_reuse_import_filename", True):
+                # file, or start a fresh model (today's GDS-derived default) - only if
+                # the user has turned this question on in Preferences > Files; by
+                # default, silently agree (reuse the imported file) without asking
+                if get_preference_bool(self.APP_NAME, "confirm_reuse_import_filename", False):
                     reuse = QMessageBox.question(
                         self, "Import Model",
                         f"Use '{os.path.basename(file_path)}' as the output file for this model too?\n\n"

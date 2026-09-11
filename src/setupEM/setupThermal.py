@@ -54,7 +54,7 @@ if __package__ in (None, ""):
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         next_available_source_layer, update_missing_layer_column,
-        get_preference, get_preference_bool, set_preference,
+        get_preference, get_preference_bool, set_preference, clear_preferences,
     )
     from thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
 else:
@@ -63,7 +63,7 @@ else:
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         next_available_source_layer, update_missing_layer_column,
-        get_preference, get_preference_bool, set_preference,
+        get_preference, get_preference_bool, set_preference, clear_preferences,
     )
     from .thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
 
@@ -1014,6 +1014,13 @@ class PreferencesDialog(QDialog):
 
         label_width = 260
 
+        # (widget, key, default, kind) for every preference-backed field in this
+        # dialog, so "Reset all to default" (see _reset_to_defaults()) can put
+        # every widget back to its built-in default without hand-listing them
+        # again separately - add_row() below appends "text" entries itself;
+        # each standalone QCheckBox appends its own "bool" entry.
+        self._reset_targets = []
+
         def add_row(form_layout, label_text, key, default):
             row = QHBoxLayout()
             label = QLabel(label_text)
@@ -1023,17 +1030,13 @@ class PreferencesDialog(QDialog):
             edit.setStyleSheet(EDIT_STYLE_REQUIRED)
             row.addWidget(edit)
             form_layout.addLayout(row)
+            self._reset_targets.append((edit, key, default, "text"))
             return edit
 
         # ---------- Files tab ----------
         files_widget = QWidget()
         files_form = QVBoxLayout(files_widget)
         files_form.setAlignment(Qt.AlignTop)
-        self.purpose_edit = add_row(files_form, "Default GDS layer purpose", "purpose", "0")
-        self.viamerge_edit = add_row(files_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
-        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an imported model's filename as the output file")
-        self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", True))
-        files_form.addWidget(self.confirm_reuse_checkbox)
 
         xml_dir_row = QHBoxLayout()
         xml_dir_label = QLabel("XML file browser starts from")
@@ -1051,6 +1054,14 @@ class PreferencesDialog(QDialog):
         self.xml_browse_dir_btn.clicked.connect(self._browse_xml_default_dir)
         xml_dir_row.addWidget(self.xml_browse_dir_btn)
         files_form.addLayout(xml_dir_row)
+        self._reset_targets.append((self.xml_browse_dir_edit, "xml_browse_directory", "", "text"))
+
+        self.purpose_edit = add_row(files_form, "Default GDS layer purpose", "purpose", "0")
+        self.viamerge_edit = add_row(files_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
+        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an imported model's filename as the output file")
+        self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
+        files_form.addWidget(self.confirm_reuse_checkbox)
+        self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
 
         files_form.addStretch()
         self.tabs.addTab(files_widget, "Files")
@@ -1082,6 +1093,12 @@ class PreferencesDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        # ResetRole: Qt places this on the opposite side from Ok/Cancel's
+        # Accept/Reject roles (the left, on every style this app runs under),
+        # matching the "very left side, near Ok/Cancel" placement asked for -
+        # no separate layout needed, the button box's own role logic handles it
+        self.reset_button = buttons.addButton("Reset all to default", QDialogButtonBox.ResetRole)
+        self.reset_button.clicked.connect(self._reset_to_defaults)
         outer_layout.addWidget(buttons)
 
     def _browse_xml_default_dir(self):
@@ -1089,6 +1106,22 @@ class PreferencesDialog(QDialog):
         directory = QFileDialog.getExistingDirectory(self, "Select Default XML Folder", start)
         if directory:
             self.xml_browse_dir_edit.setText(directory)
+
+    def _reset_to_defaults(self):
+        confirm = QMessageBox.question(
+            self, "Reset Preferences",
+            "Reset all Preferences to their built-in defaults?\n\n"
+            "This clears every value you've changed here - it cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        clear_preferences(self.app_name)
+        for widget, _key, default, kind in self._reset_targets:
+            if kind == "text":
+                widget.setText(str(default))
+            elif kind == "bool":
+                widget.setChecked(bool(default))
 
     def accept(self):
         # via-merge distance and the two mesh sizes must parse as numbers; purpose is
