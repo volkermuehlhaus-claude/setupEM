@@ -17,7 +17,7 @@
 ########################################################################
 
 
-import sys, json, os, pathlib, ast, webbrowser, argparse, shutil, re, glob
+import sys, json, os, pathlib, ast, webbrowser, argparse, shutil, re, glob, subprocess
 import numpy as np
 import importlib.metadata
 import importlib.util
@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     )
 from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QFontMetrics, QSyntaxHighlighter, QPainter, QPen, QActionGroup
-from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths
+from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths, QTimer
 
 
 # Local dev: if the gds2palace_ihp_sg13g2 fork is checked out as a sibling repo next to
@@ -1569,7 +1569,11 @@ class CreateModelTab(CreateModelTabBase):
     # equivalent during PROM/adaptive offline construction (Beginning PROM construction
     # offline phase: / Adding excitation index 1 (1/2):) - both mean "now on port N/M".
     _RE_MPI = re.compile(r"Running with (\d+) MPI processes")
-    _RE_MEM_TOTAL = re.compile(r"Estimated (?:current|peak) per-rank memory usage is:.*Total\s+([\d.]+)([MG])")
+    # capture "current" vs "peak" (previously a non-capturing group) - the RAM-limit
+    # kill check (_check_ram_limit()) only acts on "current" (memory actually in use
+    # right now), not "peak" (Palace's own forward-looking estimate for its mesh/AMR
+    # planning, not memory already allocated) - see _parse_palace_status_line().
+    _RE_MEM_TOTAL = re.compile(r"Estimated (current|peak) per-rank memory usage is:.*Total\s+([\d.]+)([MG])")
     _RE_EXCITATION = re.compile(r"(?:Sweeping|Adding) excitation index \d+ \((\d+)/(\d+)\):")
     # "It i/n: ... (total elapsed time = t s, solve k/N)" in a uniform sweep, but only
     # "It i/n: ... (total elapsed time = t s)" - no trailing solve k/N - during PROM's online
@@ -1604,12 +1608,14 @@ class CreateModelTab(CreateModelTabBase):
         touching disk (config.json may not exist yet at construction time)."""
         self._status_mpi = None
         self._status_mem_gb = None
+        self._status_mem_current_gb = None
         self._status_port_cur = None
         self._status_port_total = None
         self._status_freq_display = None
         self._status_solve_display = ""
         self._status_amr_cur = None
         self._status_amr_max = None
+        self._ram_kill_triggered = False
         self._update_status_line()
 
     def _reset_status_for_run(self):
@@ -1649,8 +1655,12 @@ class CreateModelTab(CreateModelTabBase):
 
         m = self._RE_MEM_TOTAL.search(line)
         if m:
-            value, unit = float(m.group(1)), m.group(2)
-            self._status_mem_gb = value / 1024 if unit == "M" else value
+            kind, value, unit = m.group(1), float(m.group(2)), m.group(3)
+            gb = value / 1024 if unit == "M" else value
+            self._status_mem_gb = gb  # display: latest of either kind, as before
+            if kind == "current":
+                self._status_mem_current_gb = gb
+                self._check_ram_limit()
             self._update_status_line()
             return
 
@@ -1706,6 +1716,79 @@ class CreateModelTab(CreateModelTabBase):
                 self._status_amr_cur = int(m.group(1)) - 1
                 self._update_status_line()
                 return
+
+    def _check_ram_limit(self):
+        """Called every time a "current" memory reading updates
+        self._status_mem_current_gb - if it exceeds Preferences > Palace's
+        "Stop Palace if memory exceeds" limit, kill the solver and let
+        run_sim's own postprocessing step run on whatever it already
+        computed (see _kill_palace_process_for_ram_limit()). Guarded by
+        _ram_kill_triggered so this only ever fires once per run, even
+        though several more "current" lines may still arrive before the
+        kill actually takes effect.
+        """
+        if self._ram_kill_triggered or self._status_mem_current_gb is None:
+            return
+        if self.process.state() != QProcess.Running:
+            return
+        try:
+            limit_gb = float(get_preference(self.MainWindow.APP_NAME, "palace_max_ram_gb", "100"))
+        except (TypeError, ValueError):
+            limit_gb = 100.0
+        if limit_gb <= 0 or self._status_mem_current_gb <= limit_gb:
+            return
+
+        self._ram_kill_triggered = True
+        self.log_area.appendPlainText(
+            f"\n⚠️ Palace memory usage ({self._status_mem_current_gb:.2f} GB) exceeded the "
+            f"configured limit ({limit_gb:.0f} GB) - terminating the solver.\n"
+            "Running S-parameter postprocessing on whatever results were already computed...\n"
+        )
+        self._kill_palace_process_for_ram_limit()
+
+    def _kill_palace_process_for_ram_limit(self):
+        """Kill only the actual Palace solver process, not run_sim's own
+        wrapper shell (self.process) - run_sim is a plain 2-line script
+        (run_palace, then combine_snp) with no 'set -e', so bash continues
+        to the combine_snp line regardless of how the first one exited,
+        same as it already does today when run_palace simply isn't found
+        (see _check_run_script_ready()'s docstring). Leaving self.process
+        itself alone means that still happens here: on_finished() fires
+        normally once run_sim's whole script (both lines) completes, same
+        as any other run - no separate postprocessing step to launch.
+
+        self.process (wsl.exe, or the shell directly on Linux/Mac) is only
+        the wrapper - the real Palace binary(ies) run one or more layers
+        deeper (inside WSL, and/or under mpirun for multi-rank runs), so
+        this reaches in with pkill by process name instead of signaling
+        self.process. Best-effort: if the actual binary/launcher name ever
+        changes, or Palace is otherwise unkillable this way (hung mpirun,
+        etc.), _escalate_ram_kill_if_still_running() force-terminates
+        self.process (the whole wrapper) after a grace period instead -
+        at the cost of combine_snp not getting to run in that fallback.
+        """
+        try:
+            if os.name == "nt":
+                run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+                wsl_run_path = self._windows_to_wsl_path(run_path)
+                subprocess.run(
+                    ["wsl.exe", "--cd", wsl_run_path, "--", "bash", "-lc",
+                     "pkill -f palace-x86_64 || pkill -f run_palace"],
+                    capture_output=True, text=True, timeout=10)
+            else:
+                subprocess.run(["pkill", "-f", "palace-x86_64"], capture_output=True, text=True, timeout=10)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.log_area.appendPlainText(f"⚠️ Could not signal the Palace process directly: {e}\n")
+
+        QTimer.singleShot(10000, self._escalate_ram_kill_if_still_running)
+
+    def _escalate_ram_kill_if_still_running(self):
+        if self.process.state() == QProcess.Running:
+            self.log_area.appendPlainText(
+                "⚠️ Palace did not stop within 10s of the memory-limit kill signal - "
+                "forcefully terminating the run (S-parameter postprocessing will be skipped).\n"
+            )
+            self.terminate_run()
 
     def _update_status_line(self):
         mpi = self._status_mpi if self._status_mpi is not None else "n/a"
@@ -2450,6 +2533,11 @@ class PreferencesDialog(QDialog):
                      "(Norm/Max/Mean indicators) - not a change in S-parameters "
                      "between AMR iterations"))
         self.amr_maxdof_edit = add_row(palace_form, "AMR maximum DOF", "amr_max_dof", "2000000")
+        self.palace_max_ram_edit = add_row(
+            palace_form, "Stop Palace if memory exceeds (GB)", "palace_max_ram_gb", "100",
+            tooltip=("Terminates the solver once its reported memory usage exceeds this, "
+                     "then runs S-parameter postprocessing on whatever results were "
+                     "already computed, same as a normal completed run."))
         palace_form.addStretch()
         self.tabs.addTab(palace_widget, "Palace")
 
@@ -2568,6 +2656,9 @@ class PreferencesDialog(QDialog):
         try:
             float(self.amr_goal_edit.text())
             int(self.amr_maxdof_edit.text())
+            max_ram_gb = float(self.palace_max_ram_edit.text())
+            if max_ram_gb <= 0:
+                raise ValueError
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value in the Palace tab")
             return
@@ -2588,6 +2679,7 @@ class PreferencesDialog(QDialog):
         set_preference(self.app_name, "air_around", self.air_around_edit.text())
         set_preference(self.app_name, "amr_tol", self.amr_goal_edit.text())
         set_preference(self.app_name, "amr_max_dof", self.amr_maxdof_edit.text())
+        set_preference(self.app_name, "palace_max_ram_gb", self.palace_max_ram_edit.text())
         set_preference(self.app_name, "enable_model_fit_button", self.enable_model_fit_checkbox.isChecked())
         set_preference(self.app_name, "enable_status_bar", self.enable_status_bar_checkbox.isChecked())
         set_preference(self.app_name, "simplify_max_hole_area", self.simplify_max_hole_area_edit.text())
