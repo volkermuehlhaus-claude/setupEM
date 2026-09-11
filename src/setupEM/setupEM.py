@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog,
     QDialogButtonBox,
     )
-from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup
+from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QFontMetrics, QSyntaxHighlighter, QPainter, QPen, QActionGroup
 from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths
 
 
@@ -894,6 +894,12 @@ class MeshTab(QWidget):
         label_width = 250
         edit_width = 170
 
+        # every row label below is appended here as it's created, then
+        # widened at the end of __init__ to fit the longest one's actual
+        # rendered text - label_width above is only a starting point during
+        # construction; a fixed pixel guess doesn't survive different
+        # fonts/DPI scaling (labels were truncating on Linux at high DPI)
+        self._mesh_labels = []
 
         # ---------- MESH GROUP ----------
         self.mesh_group = QGroupBox("Mesh settings")
@@ -902,6 +908,7 @@ class MeshTab(QWidget):
         self.refinement_layout = QHBoxLayout()
         self.label2 = QLabel("Mesh refinement at metal edges (µm)")
         self.label2.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label2)
         self.refinement_layout.addWidget(self.label2)
         self.refinement_edit = QLineEdit("5")
         self.refinement_edit.setFixedWidth(edit_width)
@@ -921,6 +928,7 @@ class MeshTab(QWidget):
         self.cells_lambda_layout = QHBoxLayout()
         self.label4 = QLabel("Mesh cells per wavelength (min 10)")
         self.label4.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label4)
         self.cells_lambda_layout.addWidget(self.label4)
         self.cells_lambda_edit = QLineEdit("10")
         self.cells_lambda_edit.setFixedWidth(edit_width)
@@ -933,6 +941,7 @@ class MeshTab(QWidget):
         self.cells_maxsize_layout = QHBoxLayout()
         self.label6 = QLabel("Mesh cell maximum size absolute (µm)")
         self.label6.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label6)
         self.cells_maxsize_layout.addWidget(self.label6)
         self.cells_maxsize_edit = QLineEdit("100")
         self.cells_maxsize_edit.setFixedWidth(edit_width)
@@ -945,6 +954,7 @@ class MeshTab(QWidget):
         self.meshorder_layout = QHBoxLayout()
         self.label1 = QLabel("Mesh basis function")
         self.label1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label1)
         self.meshorder_layout.addWidget(self.label1)
 
         self.mesh_order_box = QComboBox()
@@ -970,6 +980,7 @@ class MeshTab(QWidget):
         self.solver_layout = QHBoxLayout()
         self.solverlabel = QLabel("Solver")
         self.solverlabel.setFixedWidth(label_width)
+        self._mesh_labels.append(self.solverlabel)
         self.solver_layout.addWidget(self.solverlabel)
 
         self.solver_box = QComboBox()
@@ -985,6 +996,7 @@ class MeshTab(QWidget):
         self.threads_layout = QHBoxLayout()
         self.labelthreads = QLabel("Multithreading:")
         self.labelthreads.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelthreads)
         self.threads_layout.addWidget(self.labelthreads)
         self.threads_box = QComboBox()
         self.threads_box.setFixedWidth(250)
@@ -1017,6 +1029,7 @@ class MeshTab(QWidget):
         self.show_advanced_layout = QHBoxLayout()
         self.label_show_advanced = QLabel("Show advanced configuration")
         self.label_show_advanced.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label_show_advanced)
         self.show_advanced_layout.addWidget(self.label_show_advanced)
         self.show_advanced_box = QComboBox()
         self.show_advanced_box.setFixedWidth(edit_width)
@@ -1029,6 +1042,7 @@ class MeshTab(QWidget):
         self.cells_AMRiterations_layout = QHBoxLayout()
         self.labelAMR1 = QLabel("Adaptive mesh iterations")
         self.labelAMR1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelAMR1)
         self.cells_AMRiterations_layout.addWidget(self.labelAMR1)
         self.AMR_iterations_edit = QLineEdit("0")
         self.AMR_iterations_edit.setFixedWidth(edit_width)
@@ -1042,6 +1056,7 @@ class MeshTab(QWidget):
         self.amr_goal_layout = QHBoxLayout()
         self.labelAMRgoal1 = QLabel("AMR goal (relative error tolerance)")
         self.labelAMRgoal1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelAMRgoal1)
         self.amr_goal_layout.addWidget(self.labelAMRgoal1)
         self.amr_goal_edit = QLineEdit("0.01")
         self.amr_goal_edit.setFixedWidth(edit_width)
@@ -1053,6 +1068,7 @@ class MeshTab(QWidget):
         self.amr_maxdof_layout = QHBoxLayout()
         self.labelAMRmaxdof1 = QLabel("AMR maximum DOF")
         self.labelAMRmaxdof1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelAMRmaxdof1)
         self.amr_maxdof_layout.addWidget(self.labelAMRmaxdof1)
         self.amr_maxdof_edit = QLineEdit("2000000")
         self.amr_maxdof_edit.setFixedWidth(edit_width)
@@ -1083,6 +1099,7 @@ class MeshTab(QWidget):
         self.boundary_layout = QHBoxLayout()
         self.label6 = QLabel("Boundary conditions")
         self.label6.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label6)
         self.boundary_layout.addWidget(self.label6)
         self.boundary_box = QComboBox()
         self.boundary_box.setFixedWidth(edit_width)
@@ -1095,6 +1112,7 @@ class MeshTab(QWidget):
         self.margins_layout = QHBoxLayout()
         self.label7 = QLabel("Dielectric stackup: oversize by")
         self.label7.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label7)
         self.margins_layout.addWidget(self.label7)
         self.margins_edit = QLineEdit("200")
         self.margins_edit.setFixedWidth(edit_width)
@@ -1109,6 +1127,7 @@ class MeshTab(QWidget):
         self.airaround_layout = QHBoxLayout()
         self.label9 = QLabel("Air layer thickness around stackup is")
         self.label9.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label9)
         self.airaround_layout.addWidget(self.label9)
 
         self.airaround_box = QComboBox()
@@ -1131,6 +1150,7 @@ class MeshTab(QWidget):
         self.airx_layout = QHBoxLayout()
         self.label11 = QLabel("at xmin, xmax")
         self.label11.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label11)
         self.label11.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.airx_layout.addWidget(self.label11)
         self.airxmin_edit = QLineEdit("200")
@@ -1149,6 +1169,7 @@ class MeshTab(QWidget):
         self.airy_layout = QHBoxLayout()
         self.label13 = QLabel("at ymin, ymax")
         self.label13.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label13)
         self.label13.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.airy_layout.addWidget(self.label13)
         self.airymin_edit = QLineEdit("200")
@@ -1167,6 +1188,7 @@ class MeshTab(QWidget):
         self.airz_layout = QHBoxLayout()
         self.label15 = QLabel("at zmin, zmax")
         self.label15.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label15)
         self.label15.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.airz_layout.addWidget(self.label15)
         self.airzmin_edit = QLineEdit("200")
@@ -1203,6 +1225,20 @@ class MeshTab(QWidget):
         self.mesh_group.setLayout(self.mesh_layout)
         self.main_layout.addWidget(self.mesh_group)
 
+        # widen every row label to fit the longest one's own rendered text.
+        # sizeHint() is no use here - once a label has an explicit
+        # setFixedWidth() (already applied above) and sits in a layout, Qt
+        # reports that fixed value back as its sizeHint() instead of the
+        # text's natural width, so every label would appear identically
+        # "already wide enough". Measure the actual glyph width directly via
+        # QFontMetrics instead, which reflects the real font/DPI regardless
+        # of any size already imposed on the widget - a fixed pixel guess
+        # doesn't survive different fonts/DPI scaling (labels were
+        # truncating on Linux at high DPI).
+        widest = max(QFontMetrics(lbl.font()).horizontalAdvance(lbl.text())
+                     for lbl in self._mesh_labels)
+        for lbl in self._mesh_labels:
+            lbl.setFixedWidth(widest + 10)
 
         self.setLayout(self.main_layout)
 
