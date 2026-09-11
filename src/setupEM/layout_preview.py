@@ -239,10 +239,11 @@ class LayoutPreviewWindow(QDialog):
         self.legend_layout = QVBoxLayout()
         self.legend_layout.setAlignment(Qt.AlignTop)
         # compact spacing so more layers/markers fit before the legend needs its
-        # own vertical scrollbar - the default style spacing is generous for a
-        # list that can run to dozens of rows (every drawn layer, plus a row per
-        # port/thermal source/boundary)
-        self.legend_layout.setSpacing(1)
+        # own vertical scrollbar - the default style spacing (6px) is generous for
+        # a list that can run to dozens of rows (every drawn layer, plus a row per
+        # port/thermal source/boundary); a fully tight 1px read as too cramped, so
+        # this splits the difference
+        self.legend_layout.setSpacing(3)
         legend_widget = QWidget()
         legend_widget.setLayout(self.legend_layout)
         legend_scroll = QScrollArea()
@@ -417,9 +418,9 @@ class LayoutPreviewWindow(QDialog):
         selectable = layer_name is not None
         row = _ClickableLegendRow() if selectable else QWidget()
         row_layout = QHBoxLayout(row)
-        # no vertical margin - keeps each row as short as its checkbox/text
-        # actually need, so more rows fit before the legend needs to scroll
-        row_layout.setContentsMargins(2, 0, 2, 0)
+        # small vertical margin (original was 2px, fully compact was 0) - keeps
+        # rows short enough to fit more of them, without feeling cramped
+        row_layout.setContentsMargins(2, 1, 2, 1)
 
         checkbox = QCheckBox()
         checkbox.setChecked(True)
@@ -545,12 +546,17 @@ class LayoutPreviewWindow(QDialog):
                 self._layer_items.append(item)
                 self._layer_items_by_name.setdefault(name, []).append(item)
 
-            layer_legend_rows.append((color.name(), tooltip, group, name))
+            zmin = metal.zmin if metal is not None else 0.0
+            zmax = metal.zmax if metal is not None else 0.0
+            layer_legend_rows.append((zmin, zmax, color.name(), tooltip, group, name))
 
-        # legend lists layers top-to-bottom (largest z first) - the reverse of
-        # the ascending zmin order used just above for the actual draw/z-stack
-        # order, which must stay bottom-to-top for correct on-canvas layering
-        for color_name, tooltip, group, name in reversed(layer_legend_rows):
+        # legend lists layers top-to-bottom by z position, largest first (the
+        # physically topmost layer at the top of the list) - sorted explicitly
+        # here rather than just reversing the ascending draw-order list above
+        # (needed there for correct on-canvas layering), so identical-zmin ties
+        # break consistently by zmax instead of arbitrarily
+        layer_legend_rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        for zmin, zmax, color_name, tooltip, group, name in layer_legend_rows:
             self._add_legend_row(color_name, tooltip, group, layer_name=name)
         self._update_legend_selection_styling()
 
