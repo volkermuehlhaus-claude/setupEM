@@ -141,6 +141,16 @@ def run_simplify(gds_path, metal_layers, output_path, cellname="",
         find_isolated_same_size_polygons_by_layer,
     )
 
+    # merge_polygons_by_layer()/find_isolated_same_size_polygons_by_layer()
+    # create cells via the bare gdspy.Cell(...) constructor, which
+    # auto-registers each one into gdspy's persistent global
+    # gdspy.current_library - harmless for the CLI (a fresh process every
+    # run) but in this long-running GUI, a second Run on the same file
+    # would reuse the same cell names and gdspy raises "already present in
+    # library". Starting from a fresh current_library each call clears that
+    # accumulated state without touching gds_prepare_for_EM itself.
+    gdspy.current_library = gdspy.GdsLibrary()
+
     lib = gdspy.GdsLibrary()
     lib.read_gds(gds_path)
     top_cell = lib.cells.get(cellname, lib.top_level()[0])
