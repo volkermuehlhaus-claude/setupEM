@@ -227,6 +227,16 @@ class LayoutPreviewWindow(QDialog):
     tweaking the Input Files/Ports tabs and click Refresh.
     """
 
+    # emitted when a Layers-section item is selected/deselected directly in
+    # this window's own legend (see _on_legend_layer_clicked()) - the GDS
+    # layer number, or None when cleared. MainWindow resolves this to a real
+    # metal/via <Layer> or a Dielectric's Boundary layer and mirrors it into
+    # the Stackup Preview/Editor - the reverse of the existing Stackup->Layout
+    # direction (set_highlighted_layer(), called by MainWindow). Selecting a
+    # marker (port/thermal source/boundary) never emits this - there's no
+    # stackup element for those to sync to.
+    layerSelected = Signal(object)
+
     def __init__(self, MainWindow):
         super().__init__()
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -285,6 +295,9 @@ class LayoutPreviewWindow(QDialog):
         # it directly from Layout Preview's own legend, independent of the
         # Stackup Preview/Editor cross-window highlight below
         self._legend_layer_rows = {}
+        # Layers-section name -> GDS layer number, for resolving a click there
+        # into the layerSelected signal above (markers are never in this dict)
+        self._layer_layernum_by_name = {}
         self._info_base_text = ""  # set by refresh(); _update_info_label() appends selection info
         self.opacity_label = QLabel()
         self.opacity_slider = QSlider(Qt.Horizontal)
@@ -340,6 +353,7 @@ class LayoutPreviewWindow(QDialog):
         self._layer_items_by_name = {}
         self._highlight_zvalue_by_name = {}
         self._legend_layer_rows = {}
+        self._layer_layernum_by_name = {}
         # the highlight items themselves were just destroyed by scene.clear()
         # in refresh() (called right before this) - drop the stale references,
         # but keep _highlighted_layer_name itself so it survives a refresh
@@ -402,14 +416,28 @@ class LayoutPreviewWindow(QDialog):
 
     def _on_legend_layer_clicked(self, name):
         # click the already-selected layer's row again to deselect it, same
-        # convention as the canvas/Stackup Preview highlight; this only ever
-        # changes Layout Preview's own highlight, it does not reach back into
-        # an open Stackup Preview/Editor's selection (one-way: stackup->layout,
-        # not layout->stackup)
+        # convention as the canvas/Stackup Preview highlight
         if self._highlighted_layer_name == name:
             self.set_highlighted_layer(None)
         else:
             self.set_highlighted_layer(name)
+        self._notify_layer_selection_changed()
+
+    def _notify_layer_selection_changed(self):
+        # forward a Layers-section selection/deselection made directly here to
+        # the Stackup Preview/Editor (MainWindow._forward_layout_selection_to_stackup,
+        # the reverse of set_highlighted_layer() above) - a marker selection
+        # never reaches here (see _add_legend_row(), only Layers-section rows
+        # populate _layer_layernum_by_name), so it leaves the Stackup Preview/
+        # Editor's own selection untouched
+        name = self._highlighted_layer_name
+        if name is None:
+            self.layerSelected.emit(None)
+            return
+        layernum = self._layer_layernum_by_name.get(name)
+        if layernum is None:
+            return
+        self.layerSelected.emit(layernum)
 
     def _update_info_label(self):
         text = self._info_base_text
@@ -561,6 +589,7 @@ class LayoutPreviewWindow(QDialog):
             else:
                 color = QColor(DEFAULT_LAYER_COLOR)
                 name = f"Layer {layernum}"
+            self._layer_layernum_by_name[name] = layernum
 
             group = _VisibilityGroup()
 

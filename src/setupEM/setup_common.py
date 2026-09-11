@@ -2630,15 +2630,70 @@ class MainWindowBase(QMainWindow):
     def _forward_stackup_selection_to_layout_preview(self, kind, key):
         """Slot for VectorWidget.elementSelected, connected from both the Stackup
         Preview popup and the Stackup Editor (they share the same VectorWidget
-        class/signal shape) - mirrors the selected metal/via layer as a red
-        outline in the Layout Preview window, if one is currently open.
-        Dielectrics have no GDS polygon of their own, so they resolve to "no
-        highlight" same as an empty selection.
+        class/signal shape) - mirrors the selected metal/via layer as a white
+        outline in the Layout Preview window, if one is currently open. A
+        Dielectric has no GDS polygon of its own, UNLESS it declares an
+        optional Boundary layer (its lateral extent, drawn in GDSII rather
+        than defaulting to the full simulation domain) - resolved to that
+        layer's Layout Preview name via _dielectric_boundary_layer_name().
+        Anything else (a plain Dielectric, or an empty selection) resolves to
+        "no highlight" same as an empty selection.
         """
         self._stackup_selection = (kind, key)
-        if getattr(self, "layout_preview_window", None) is not None:
-            name = key if (kind == "layer" and key) else None
-            self.layout_preview_window.set_highlighted_layer(name)
+        if getattr(self, "layout_preview_window", None) is None:
+            return
+        name = None
+        if kind == "layer" and key:
+            name = key
+        elif kind == "dielectric" and key:
+            name = self._dielectric_boundary_layer_name(key)
+        self.layout_preview_window.set_highlighted_layer(name)
+
+    def _dielectric_boundary_layer_name(self, dielectric_name):
+        """Resolve a Dielectric's optional Boundary GDS layer number to the
+        display name Layout Preview's legend uses for it: a real metal/via
+        <Layer>'s own name, if the same GDS layer also happens to be drawn as
+        one, else the "Layer N" fallback Layout Preview falls back to for a
+        layer with no <Layer> entry of its own. None if the dielectric has no
+        Boundary, or isn't found. Shared by both highlight-forwarding
+        directions between Stackup Preview/Editor and Layout Preview.
+        """
+        if self.dielectrics_list is None:
+            return None
+        dielectric = next((d for d in self.dielectrics_list.dielectrics if d.name == dielectric_name), None)
+        if dielectric is None or dielectric.gdsboundary is None:
+            return None
+        layernum = int(dielectric.gdsboundary)
+        metal = self.metals_list.getbylayernumber(layernum) if self.metals_list is not None else None
+        return metal.name if metal is not None else f"Layer {layernum}"
+
+    def _forward_layout_selection_to_stackup(self, layernum):
+        """Slot for LayoutPreviewWindow.layerSelected - mirrors a layer
+        selected directly in Layout Preview's own legend into the Stackup
+        Preview/Editor, the reverse of _forward_stackup_selection_to_layout_preview()
+        above. Resolves the GDS layer to a real metal/via <Layer> if it has
+        one, else to a Dielectric that uses it as its lateral Boundary, if
+        any - opening the Stackup Preview automatically if neither it nor the
+        Stackup Editor is already open, so the match is always visible.
+        """
+        kind, key = "", ""
+        if layernum is not None:
+            metal = self.metals_list.getbylayernumber(layernum) if self.metals_list is not None else None
+            if metal is not None:
+                kind, key = "layer", metal.name
+            elif self.dielectrics_list is not None:
+                dielectric = next((d for d in self.dielectrics_list.dielectrics
+                                    if d.gdsboundary is not None and int(d.gdsboundary) == layernum), None)
+                if dielectric is not None:
+                    kind, key = "dielectric", dielectric.name
+
+        if kind and getattr(self, "popup", None) is None and getattr(self, "stackup_editor_window", None) is None:
+            self.open_popup()
+
+        if getattr(self, "popup", None) is not None:
+            self.popup.vector_widget.select_element(kind, key)
+        if getattr(self, "stackup_editor_window", None) is not None:
+            self.stackup_editor_window.vector_widget.select_element(kind, key)
 
     def open_stackup_editor(self):
         # defense in depth: the menu action is already disabled/greyed out when
@@ -2715,6 +2770,7 @@ class MainWindowBase(QMainWindow):
 
         self.layout_preview_window = LayoutPreviewWindow(self)
         self.layout_preview_window.destroyed.connect(lambda: setattr(self, "layout_preview_window", None))
+        self.layout_preview_window.layerSelected.connect(self._forward_layout_selection_to_stackup)
         # sync immediately to whatever's already selected in an open Stackup
         # Preview/Editor, rather than waiting for the next selection change
         kind, key = getattr(self, "_stackup_selection", ("", ""))
