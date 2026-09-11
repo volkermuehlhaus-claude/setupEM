@@ -45,9 +45,14 @@ from PySide6.QtCore import Qt
 # here is not circular - setup_common.py only ever imports this module
 # lazily, at runtime (see MainWindowBase.open_simplify_gds())
 if __package__ in (None, ""):
-    from setup_common import get_preference, get_preference_bool
+    from setup_common import get_preference, get_preference_bool, shorten_path_for_display
 else:
-    from .setup_common import get_preference, get_preference_bool
+    from .setup_common import get_preference, get_preference_bool, shorten_path_for_display
+
+# fixed width for the first label in every single-label row, so their edit
+# boxes all start in the same column - matches the label_width convention
+# used in PreferencesDialog
+_LABEL_WIDTH = 130
 
 # same look as setup_common.py's EDIT_STYLE_OPTIONAL - kept as a local copy
 # rather than importing setup_common here, since setup_common.py is the one
@@ -212,26 +217,35 @@ class SimplifyGdsDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        info_label = QLabel(
-            f"Source GDS: {gds_path or '(none loaded)'}\n"
-            f"Metal layers from stackup XML: "
-            f"{', '.join(str(n) for n in self._metal_layers) or '(none - load a stackup XML first)'}\n"
+        def row_label(text, tooltip=None):
+            label = QLabel(text)
+            label.setFixedWidth(_LABEL_WIDTH)
+            if tooltip:
+                label.setToolTip(tooltip)
+            return label
+
+        metal_layers_tip = (
+            f"Metal layers considered: {', '.join(str(n) for n in self._metal_layers) or '(none)'}\n"
             f"Port/marker layers {port_layer_min}-{port_layer_max} are always passed through untouched."
         )
-        info_label.setWordWrap(True)
+
+        info_label = QLabel(
+            f"Source: {shorten_path_for_display(gds_path) if gds_path else '(none loaded)'}")
+        info_label.setToolTip(metal_layers_tip)
         layout.addWidget(info_label)
 
         excluded_row = QHBoxLayout()
-        excluded_row.addWidget(QLabel("Layers excluded from simplification"))
+        excluded_row.addWidget(row_label("Exclude layers", metal_layers_tip))
         self.excluded_layers_edit = QLineEdit(
             str(get_preference(app_name, "simplify_excluded_layers", "")))
         self.excluded_layers_edit.setStyleSheet(_EDIT_STYLE)
-        self.excluded_layers_edit.setPlaceholderText("e.g. 10,11 - blank = none")
+        self.excluded_layers_edit.setPlaceholderText("e.g. 10,11")
+        self.excluded_layers_edit.setToolTip(metal_layers_tip)
         excluded_row.addWidget(self.excluded_layers_edit, 1)
         layout.addLayout(excluded_row)
 
         output_row = QHBoxLayout()
-        output_row.addWidget(QLabel("Output GDS file"))
+        output_row.addWidget(row_label("Output file"))
         self.output_edit = QLineEdit(default_output)
         self.output_edit.setStyleSheet(_EDIT_STYLE)
         output_row.addWidget(self.output_edit, 1)
@@ -244,34 +258,32 @@ class SimplifyGdsDialog(QDialog):
         floating_group = QGroupBox("Remove floating (unconnected) metal")
         floating_group.setCheckable(True)
         floating_group.setChecked(True)
+        floating_group.setToolTip(
+            "A same-size group of isolated (unconnected) shapes on a metal layer is "
+            "treated as removable fill once it repeats at least this many times."
+        )
         floating_layout = QVBoxLayout(floating_group)
         self.floating_group = floating_group
 
         minsize_row = QHBoxLayout()
-        minsize_row.addWidget(QLabel("Min size (µm)"))
+        minsize_row.addWidget(row_label("Min size (µm)"))
         self.fill_minsize_edit = QLineEdit("1")
         self.fill_minsize_edit.setStyleSheet(_EDIT_STYLE)
         minsize_row.addWidget(self.fill_minsize_edit)
-        minsize_row.addWidget(QLabel("Max size (µm, blank = no limit)"))
+        minsize_row.addWidget(QLabel("Max size (µm)"))
         self.fill_maxsize_edit = QLineEdit(str(get_preference(app_name, "simplify_fill_maxsize", "20")))
         self.fill_maxsize_edit.setStyleSheet(_EDIT_STYLE)
+        self.fill_maxsize_edit.setToolTip("Leave blank for no upper size limit")
         minsize_row.addWidget(self.fill_maxsize_edit)
         floating_layout.addLayout(minsize_row)
 
         mincount_row = QHBoxLayout()
-        mincount_row.addWidget(QLabel("Min repeat count"))
+        mincount_row.addWidget(row_label("Min repeat count"))
         self.fill_mincount_edit = QLineEdit("20")
         self.fill_mincount_edit.setStyleSheet(_EDIT_STYLE)
         mincount_row.addWidget(self.fill_mincount_edit)
         mincount_row.addStretch(1)
         floating_layout.addLayout(mincount_row)
-
-        floating_note = QLabel(
-            "A same-size group of isolated (unconnected) shapes on a metal layer is "
-            "treated as removable fill once it repeats at least this many times."
-        )
-        floating_note.setWordWrap(True)
-        floating_layout.addWidget(floating_note)
 
         layout.addWidget(floating_group)
 
@@ -283,10 +295,12 @@ class SimplifyGdsDialog(QDialog):
         self.cutout_group = cutout_group
 
         maxarea_row = QHBoxLayout()
-        maxarea_row.addWidget(QLabel("Max cutout area (µm², blank = remove all)"))
+        maxarea_row.addWidget(row_label("Max area (µm²)"))
         self.max_hole_area_edit = QLineEdit(str(get_preference(app_name, "simplify_max_hole_area", "1")))
         self.max_hole_area_edit.setStyleSheet(_EDIT_STYLE)
+        self.max_hole_area_edit.setToolTip("Leave blank to remove every cutout found, regardless of size")
         maxarea_row.addWidget(self.max_hole_area_edit)
+        maxarea_row.addStretch(1)
         cutout_layout.addLayout(maxarea_row)
 
         layout.addWidget(cutout_group)
@@ -401,12 +415,19 @@ class SimplifyGdsDialog(QDialog):
 
         cellname = self.MainWindow.saved_values.get("cellname", "")
 
-        self.log_area.clear()
+        self.log_area.setPlainText("Running ...")
         self.compare_btn.setEnabled(False)
         self._simplified_gds_path = None
 
-        captured_stdout = io.StringIO()
+        self.run_btn.setEnabled(False)
+        self.run_btn.setText("Running ...")
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        # force a repaint now - run_simplify() below blocks the GUI thread,
+        # so without this the button/cursor changes above wouldn't actually
+        # show up on screen until after it's already done
+        QApplication.processEvents()
+
+        captured_stdout = io.StringIO()
         try:
             with contextlib.redirect_stdout(captured_stdout):
                 run_simplify(
@@ -423,6 +444,8 @@ class SimplifyGdsDialog(QDialog):
             return
         finally:
             QApplication.restoreOverrideCursor()
+            self.run_btn.setEnabled(True)
+            self.run_btn.setText("Run")
 
         self.log_area.setPlainText(captured_stdout.getvalue().strip() or "Done - no changes were needed.")
         self._simplified_gds_path = output_path
