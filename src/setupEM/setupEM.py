@@ -1006,6 +1006,26 @@ class MeshTab(QWidget):
         self.AMR_group = QGroupBox("Adaptive mesh refinement (AMR)")
         self.AMR_layout = QVBoxLayout()
 
+        # AMR goal/maximum DOF are rarely tuned away from their defaults -
+        # hidden until this is set to "Yes", to keep the common case
+        # (just choosing how many AMR iterations to run) uncluttered.
+        # Resets to "No" every time this tab is (re)constructed, same as
+        # e.g. the "at xmin, xmax/..." air-margin fields below, which also
+        # aren't persisted - this is a display toggle, not a simulation
+        # setting, and the AMR goal/max DOF values themselves are still
+        # saved/loaded normally regardless of whether they're shown.
+        self.show_advanced_layout = QHBoxLayout()
+        self.label_show_advanced = QLabel("Show advanced configuration")
+        self.label_show_advanced.setFixedWidth(label_width)
+        self.show_advanced_layout.addWidget(self.label_show_advanced)
+        self.show_advanced_box = QComboBox()
+        self.show_advanced_box.setFixedWidth(edit_width)
+        self.show_advanced_box.setStyleSheet(COMBO_STYLE_OPTIONAL)
+        self.show_advanced_box.addItems(["No", "Yes"])
+        self.show_advanced_layout.addWidget(self.show_advanced_box)
+        self.show_advanced_layout.addStretch()
+        self.AMR_layout.addLayout(self.show_advanced_layout)
+
         self.cells_AMRiterations_layout = QHBoxLayout()
         self.labelAMR1 = QLabel("Adaptive mesh iterations")
         self.labelAMR1.setFixedWidth(label_width)
@@ -1040,6 +1060,15 @@ class MeshTab(QWidget):
         self.amr_maxdof_layout.addWidget(self.amr_maxdof_edit)
         self.amr_maxdof_layout.addStretch()
         self.AMR_layout.addLayout(self.amr_maxdof_layout)
+
+        def on_show_advanced_changed(value):
+            show = (value == "Yes")
+            for item in [self.labelAMRgoal1, self.amr_goal_edit,
+                         self.labelAMRmaxdof1, self.amr_maxdof_edit]:
+                item.setVisible(show)
+
+        self.show_advanced_box.currentTextChanged.connect(on_show_advanced_changed)
+        on_show_advanced_changed(self.show_advanced_box.currentText())
 
         self.AMR_group.setLayout(self.AMR_layout)
         self.main_layout.addWidget(self.AMR_group)
