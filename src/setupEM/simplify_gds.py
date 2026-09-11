@@ -347,10 +347,38 @@ class SimplifyGdsDialog(QDialog):
         self.compare_btn.clicked.connect(self._open_comparison)
         button_layout.addWidget(self.compare_btn)
         button_layout.addStretch(1)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
-        button_layout.addWidget(close_btn)
+        self.delete_close_btn = QPushButton("Delete && Close")
+        self.delete_close_btn.clicked.connect(self._delete_and_close)
+        button_layout.addWidget(self.delete_close_btn)
+        # starts as a plain Close (nothing to accept yet) - _run() relabels it
+        # to "Accept & Close" once a run actually produces an output file,
+        # and back to "Close" at the start of the next run until it succeeds
+        self.accept_close_btn = QPushButton("Close")
+        self.accept_close_btn.setDefault(True)
+        self.accept_close_btn.clicked.connect(self._accept_and_close)
+        button_layout.addWidget(self.accept_close_btn)
         layout.addLayout(button_layout)
+
+    def _delete_and_close(self):
+        if self._simplified_gds_path and os.path.isfile(self._simplified_gds_path):
+            confirm = QMessageBox.question(
+                self, "Delete Output File",
+                f"Delete '{os.path.basename(self._simplified_gds_path)}'?\n\n"
+                "This cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if confirm != QMessageBox.Yes:
+                return
+            try:
+                os.remove(self._simplified_gds_path)
+            except OSError as e:
+                QMessageBox.warning(self, "Error", f"Could not delete file:\n\n{e}")
+                return
+        self.close()
+
+    def _accept_and_close(self):
+        if self._simplified_gds_path and os.path.isfile(self._simplified_gds_path):
+            self.MainWindow.file_tab.set_gds_file(self._simplified_gds_path)
+        self.close()
 
     def _on_floating_group_toggled(self, checked):
         """Floating-fill removal already ends with a flattened, per-layer-merged
@@ -417,6 +445,7 @@ class SimplifyGdsDialog(QDialog):
 
         self.log_area.setPlainText("Running ...")
         self.compare_btn.setEnabled(False)
+        self.accept_close_btn.setText("Close")
         self._simplified_gds_path = None
 
         self.run_btn.setEnabled(False)
@@ -450,6 +479,7 @@ class SimplifyGdsDialog(QDialog):
         self.log_area.setPlainText(captured_stdout.getvalue().strip() or "Done - no changes were needed.")
         self._simplified_gds_path = output_path
         self.compare_btn.setEnabled(True)
+        self.accept_close_btn.setText("Accept && Close")
 
     def _open_comparison(self):
         if not self._simplified_gds_path or not os.path.isfile(self._simplified_gds_path):
