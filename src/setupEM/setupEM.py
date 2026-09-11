@@ -1791,7 +1791,12 @@ class CreateModelTab(CreateModelTabBase):
 
     def _update_status_line(self):
         mpi = self._status_mpi if self._status_mpi is not None else "n/a"
-        mem = f"{self._status_mem_gb:.2f} GB" if self._status_mem_gb is not None else "n/a"
+        try:
+            mem_limit_gb = float(get_preference(self.MainWindow.APP_NAME, "palace_max_ram_gb", "100"))
+        except (TypeError, ValueError):
+            mem_limit_gb = 100.0
+        mem = (f"{self._status_mem_gb:.2f}/{mem_limit_gb:.0f} GB"
+               if self._status_mem_gb is not None else "n/a")
         port = (f"{self._status_port_cur}/{self._status_port_total}"
                 if self._status_port_cur is not None else "n/a")
         freq = self._status_freq_display if self._status_freq_display is not None else "n/a"
@@ -1799,7 +1804,7 @@ class CreateModelTab(CreateModelTabBase):
         amr = "n/a" if self._status_amr_max is None else f"{self._status_amr_cur}/{self._status_amr_max}"
 
         self.status_line.setText(
-            f"MPI processes: {mpi}    |    Est. total memory: {mem}    |    "
+            f"MPI processes: {mpi}    |    Est. memory: {mem}    |    "
             f"Port: {port}    |    Freq: {freq}{solve}    |    AMR iteration: {amr}"
         )
 
