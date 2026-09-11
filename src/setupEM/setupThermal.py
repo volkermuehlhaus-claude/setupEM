@@ -1101,6 +1101,11 @@ class PreferencesDialog(QDialog):
             simplify_form, "Layers excluded from simplification", "simplify_excluded_layers", "")
         self.simplify_excluded_layers_edit.setPlaceholderText("e.g. 10,11 - blank = none")
         self.simplify_excluded_layers_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_merge_per_layer_checkbox = QCheckBox("Merge polygons per layer (final step)")
+        self.simplify_merge_per_layer_checkbox.setChecked(
+            get_preference_bool(self.app_name, "simplify_merge_per_layer", True))
+        simplify_form.addWidget(self.simplify_merge_per_layer_checkbox)
+        self._reset_targets.append((self.simplify_merge_per_layer_checkbox, "simplify_merge_per_layer", True, "bool"))
         simplify_form.addStretch()
         self.tabs.addTab(simplify_widget, "Simplify GDS")
 
@@ -1175,6 +1180,7 @@ class PreferencesDialog(QDialog):
         set_preference(self.app_name, "simplify_max_hole_area", self.simplify_max_hole_area_edit.text())
         set_preference(self.app_name, "simplify_fill_maxsize", self.simplify_fill_maxsize_edit.text())
         set_preference(self.app_name, "simplify_excluded_layers", self.simplify_excluded_layers_edit.text())
+        set_preference(self.app_name, "simplify_merge_per_layer", self.simplify_merge_per_layer_checkbox.isChecked())
 
         super().accept()
 

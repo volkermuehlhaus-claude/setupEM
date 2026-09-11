@@ -35,7 +35,7 @@ import os, io, contextlib, traceback, tempfile
 import gdspy
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
-    QPushButton, QPlainTextEdit, QFileDialog, QMessageBox,
+    QPushButton, QPlainTextEdit, QFileDialog, QMessageBox, QCheckBox,
     QApplication,
 )
 from PySide6.QtGui import QFont
@@ -45,9 +45,9 @@ from PySide6.QtCore import Qt
 # here is not circular - setup_common.py only ever imports this module
 # lazily, at runtime (see MainWindowBase.open_simplify_gds())
 if __package__ in (None, ""):
-    from setup_common import get_preference
+    from setup_common import get_preference, get_preference_bool
 else:
-    from .setup_common import get_preference
+    from .setup_common import get_preference, get_preference_bool
 
 # same look as setup_common.py's EDIT_STYLE_OPTIONAL - kept as a local copy
 # rather than importing setup_common here, since setup_common.py is the one
@@ -105,16 +105,35 @@ def _parse_layer_list(text):
                           f"comma-separated list of layer numbers: {text!r}")
 
 
+def _flatten_cell(lib, cellname):
+    """Return (lib, top_cell) with top_cell flattened in place. Round-trips
+    through a temporary GDS file first: gdspy's flatten()/get_polygonsets()
+    hits an internal bug on some in-memory-only reference structures ('tuple'
+    object does not support item assignment) that only a GDS write+read
+    cycle avoids - same workaround gds_prepare_for_EM.py's own CLI pipeline
+    uses before every flatten() call in its main()."""
+    with tempfile.TemporaryDirectory(prefix="setupEM_simplify_") as tmp_dir:
+        tmp_path = os.path.join(tmp_dir, "pre_flatten.gds")
+        lib.write_gds(tmp_path)
+        lib = gdspy.GdsLibrary(infile=tmp_path)
+    top_cell = lib.cells.get(cellname, lib.top_level()[0])
+    top_cell.flatten()
+    return lib, top_cell
+
+
 def run_simplify(gds_path, metal_layers, output_path, cellname="",
                   do_cutouts=False, max_hole_area=None,
-                  do_floating=False, fill_minsize=1.0, fill_maxsize=None, fill_mincount=20):
-    """Load gds_path, optionally fill small cutouts and/or remove floating
-    metal fill on the given metal_layers, write the result to output_path.
-    Mirrors the step order gds_prepare_for_EM.py's own main() uses: cutout
-    removal first (works on the hierarchical design), floating-fill removal
-    last (needs a flattened, per-layer-merged cell first so that touching
-    fill tiles aren't mistaken for isolated ones - see
-    find_isolated_same_size_polygons_by_layer()'s own docstring).
+                  do_floating=False, fill_minsize=1.0, fill_maxsize=None, fill_mincount=20,
+                  do_merge=False):
+    """Load gds_path, optionally fill small cutouts, remove floating metal
+    fill, and/or merge (boolean OR) polygons per layer as a final pass, on
+    the given metal_layers, write the result to output_path. Mirrors the
+    step order gds_prepare_for_EM.py's own main() uses: cutout removal first
+    (works on the hierarchical design), floating-fill removal after that
+    (needs a flattened, per-layer-merged cell first so that touching fill
+    tiles aren't mistaken for isolated ones - see
+    find_isolated_same_size_polygons_by_layer()'s own docstring), per-layer
+    merge last.
     """
     from gds_prepare_for_EM import (
         remove_cutout_keep_hierarchy,
@@ -132,23 +151,24 @@ def run_simplify(gds_path, metal_layers, output_path, cellname="",
                                             max_hole_area=max_hole_area)
         top_cell = lib.cells.get(cellname, lib.top_level()[0])
 
+    # floating-fill removal already ends with a flattened, per-layer-merged
+    # cell (it needs that itself, to tell a floating fill cluster apart from
+    # touching real metal) - so a separate final merge pass is only extra
+    # work when floating-fill removal did NOT already run
+    already_merged_flat = False
+
     if do_floating:
-        # gdspy's flatten()/get_polygonsets() hits an internal bug on some
-        # in-memory-only reference structures ('tuple' object does not
-        # support item assignment) - round-tripping through a GDS file first
-        # avoids it, same workaround gds_prepare_for_EM.py's own CLI pipeline
-        # uses before every flatten() call in its main()
-        with tempfile.TemporaryDirectory(prefix="setupEM_simplify_") as tmp_dir:
-            tmp_path = os.path.join(tmp_dir, "pre_flatten.gds")
-            lib.write_gds(tmp_path)
-            lib = gdspy.GdsLibrary(infile=tmp_path)
-        top_cell = lib.cells.get(cellname, lib.top_level()[0])
-        top_cell.flatten()
+        lib, top_cell = _flatten_cell(lib, cellname)
         merged_lib = merge_polygons_by_layer(top_cell, layers_list=metal_layers)
         merged_top = merged_lib.top_level()[0]
         lib = find_isolated_same_size_polygons_by_layer(
             merged_top, metal_layers,
             minsize=fill_minsize, maxsize=fill_maxsize, mincount=fill_mincount)
+        already_merged_flat = True
+
+    if do_merge and not already_merged_flat:
+        lib, top_cell = _flatten_cell(lib, cellname)
+        lib = merge_polygons_by_layer(top_cell, layers_list=metal_layers)
 
     lib.write_gds(output_path)
 
@@ -261,6 +281,18 @@ class SimplifyGdsDialog(QDialog):
 
         layout.addWidget(cutout_group)
 
+        # ---- Merge per layer ----
+        self.merge_per_layer_checkbox = QCheckBox("Merge polygons per layer (final step)")
+        self.merge_per_layer_checkbox.setChecked(
+            get_preference_bool(app_name, "simplify_merge_per_layer", True))
+        self.merge_per_layer_checkbox.setToolTip(
+            "Boolean-OR touching/overlapping polygons on the same layer into the minimal "
+            "set of shapes. Runs automatically as part of 'Remove floating (unconnected) "
+            "metal' already - this only does extra work when that option is off, and it "
+            "flattens the design hierarchy to do so."
+        )
+        layout.addWidget(self.merge_per_layer_checkbox)
+
         # ---- Log area ----
         self.log_area = QPlainTextEdit()
         self.log_area.setReadOnly(True)
@@ -304,8 +336,9 @@ class SimplifyGdsDialog(QDialog):
 
         do_floating = self.floating_group.isChecked()
         do_cutouts = self.cutout_group.isChecked()
-        if not do_floating and not do_cutouts:
-            QMessageBox.warning(self, "Error", "Enable at least one of the two operations")
+        do_merge = self.merge_per_layer_checkbox.isChecked()
+        if not do_floating and not do_cutouts and not do_merge:
+            QMessageBox.warning(self, "Error", "Enable at least one operation")
             return
 
         output_path = self.output_edit.text().strip()
@@ -346,7 +379,8 @@ class SimplifyGdsDialog(QDialog):
                     gds_path, layers_to_process, output_path, cellname=cellname,
                     do_cutouts=do_cutouts, max_hole_area=max_hole_area,
                     do_floating=do_floating, fill_minsize=fill_minsize,
-                    fill_maxsize=fill_maxsize, fill_mincount=fill_mincount)
+                    fill_maxsize=fill_maxsize, fill_mincount=fill_mincount,
+                    do_merge=do_merge)
         except (Exception, SystemExit):
             printed = captured_stdout.getvalue().strip()
             details = (printed + "\n\n" + traceback.format_exc()) if printed else traceback.format_exc()
