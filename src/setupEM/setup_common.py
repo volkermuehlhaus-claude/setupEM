@@ -635,12 +635,17 @@ class FileInputTab(QWidget):
         previous_file = self.XML_file_edit.text()
         previous_directory = os.path.dirname(previous_file)
         if not os.path.isdir(previous_directory):
-            # try to get XML files bundled in setupEM package
-            package_data = os.path.join(os.path.dirname(__file__), "data")
-            if os.path.exists(package_data):
-                previous_directory = package_data
+            # user-configured default (Preferences > Files), falling back to
+            # the XML files bundled with setupEM if unset/invalid
+            custom_dir = get_preference(self.MainWindow.APP_NAME, "xml_browse_directory", "")
+            if custom_dir and os.path.isdir(custom_dir):
+                previous_directory = custom_dir
             else:
-                previous_directory = ""
+                package_data = os.path.join(os.path.dirname(__file__), "data")
+                if os.path.exists(package_data):
+                    previous_directory = package_data
+                else:
+                    previous_directory = ""
 
         filename, _ = QFileDialog.getOpenFileName(self, "Select XML Stackup File", previous_directory, "*.xml;;*.*")
         if filename:
@@ -2502,14 +2507,19 @@ class MainWindowBase(QMainWindow):
                 path_messages = resolve_missing_file_paths(saved_values, modelcode_path)
 
                 # ask whether future "Create Model" output should overwrite this same
-                # file, or start a fresh model (today's GDS-derived default)
-                reuse = QMessageBox.question(
-                    self, "Import Model",
-                    f"Use '{os.path.basename(file_path)}' as the output file for this model too?\n\n"
-                    "Yes: Create Model / Start Simulation will overwrite this file.\n"
-                    "No: pick a model name and target directory on the Create Model(s) tab.",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                ) == QMessageBox.Yes
+                # file, or start a fresh model (today's GDS-derived default) - unless
+                # the user has turned this question off in Preferences > Files, in
+                # which case silently agree (reuse the imported file) without asking
+                if get_preference_bool(self.APP_NAME, "confirm_reuse_import_filename", True):
+                    reuse = QMessageBox.question(
+                        self, "Import Model",
+                        f"Use '{os.path.basename(file_path)}' as the output file for this model too?\n\n"
+                        "Yes: Create Model / Start Simulation will overwrite this file.\n"
+                        "No: pick a model name and target directory on the Create Model(s) tab.",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                    ) == QMessageBox.Yes
+                else:
+                    reuse = True
                 if reuse:
                     saved_values['sim_path'] = os.path.dirname(file_path).replace('\\', '/')
                     saved_values['model_basename'] = pathlib.Path(file_path).stem

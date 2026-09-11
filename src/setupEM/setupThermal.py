@@ -1025,14 +1025,35 @@ class PreferencesDialog(QDialog):
             form_layout.addLayout(row)
             return edit
 
-        # ---------- Layout tab ----------
-        layout_widget = QWidget()
-        layout_form = QVBoxLayout(layout_widget)
-        layout_form.setAlignment(Qt.AlignTop)
-        self.purpose_edit = add_row(layout_form, "Default GDS layer purpose", "purpose", "0")
-        self.viamerge_edit = add_row(layout_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
-        layout_form.addStretch()
-        self.tabs.addTab(layout_widget, "Layout")
+        # ---------- Files tab ----------
+        files_widget = QWidget()
+        files_form = QVBoxLayout(files_widget)
+        files_form.setAlignment(Qt.AlignTop)
+        self.purpose_edit = add_row(files_form, "Default GDS layer purpose", "purpose", "0")
+        self.viamerge_edit = add_row(files_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
+        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an imported model's filename as the output file")
+        self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", True))
+        files_form.addWidget(self.confirm_reuse_checkbox)
+
+        xml_dir_row = QHBoxLayout()
+        xml_dir_label = QLabel("XML file browser starts from")
+        xml_dir_label.setFixedWidth(label_width)
+        xml_dir_row.addWidget(xml_dir_label)
+        self.xml_browse_dir_edit = QLineEdit(str(get_preference(self.app_name, "xml_browse_directory", "")))
+        self.xml_browse_dir_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.xml_browse_dir_edit.setPlaceholderText("(bundled with setupEM)")
+        self.xml_browse_dir_edit.setToolTip(
+            "Folder the XML Stackup File browse dialog starts from. "
+            "Leave empty to use the XML files bundled with setupEM."
+        )
+        xml_dir_row.addWidget(self.xml_browse_dir_edit, 1)
+        self.xml_browse_dir_btn = QPushButton("Browse ...")
+        self.xml_browse_dir_btn.clicked.connect(self._browse_xml_default_dir)
+        xml_dir_row.addWidget(self.xml_browse_dir_btn)
+        files_form.addLayout(xml_dir_row)
+
+        files_form.addStretch()
+        self.tabs.addTab(files_widget, "Files")
 
         # ---------- Ports tab ----------
         ports_widget = QWidget()
@@ -1063,9 +1084,15 @@ class PreferencesDialog(QDialog):
         buttons.rejected.connect(self.reject)
         outer_layout.addWidget(buttons)
 
+    def _browse_xml_default_dir(self):
+        start = self.xml_browse_dir_edit.text() or os.path.join(os.path.dirname(__file__), "data")
+        directory = QFileDialog.getExistingDirectory(self, "Select Default XML Folder", start)
+        if directory:
+            self.xml_browse_dir_edit.setText(directory)
+
     def accept(self):
         # via-merge distance and the two mesh sizes must parse as numbers; purpose is
-        # stored as free text, same tolerant convention the Layout tab itself uses
+        # stored as free text, same tolerant convention the Files tab itself uses
         try:
             float(self.viamerge_edit.text())
             float(self.refined_cellsize_edit.text())
@@ -1086,6 +1113,8 @@ class PreferencesDialog(QDialog):
 
         set_preference(self.app_name, "purpose", self.purpose_edit.text())
         set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
+        set_preference(self.app_name, "confirm_reuse_import_filename", self.confirm_reuse_checkbox.isChecked())
+        set_preference(self.app_name, "xml_browse_directory", self.xml_browse_dir_edit.text())
         set_preference(self.app_name, "port_layer_min", self.port_layer_min_edit.text())
         set_preference(self.app_name, "port_layer_max", self.port_layer_max_edit.text())
         set_preference(self.app_name, "refined_cellsize", self.refined_cellsize_edit.text())
