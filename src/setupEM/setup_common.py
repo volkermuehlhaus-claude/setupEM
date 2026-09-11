@@ -2239,6 +2239,10 @@ class MainWindowBase(QMainWindow):
         self.layout_preview_action.triggered.connect(lambda: self.open_layout_preview())
         tools_menu.addAction(self.layout_preview_action)
 
+        self.simplify_gds_action = QAction("Simplify GDS...", self)
+        self.simplify_gds_action.triggered.connect(lambda: self.open_simplify_gds())
+        tools_menu.addAction(self.simplify_gds_action)
+
         # one-time, non-blocking heads-up if gds2palace is too old for some features -
         # deferred so it appears after the window itself, not stalling startup
         if GDS2PALACE_OUTDATED:
@@ -2955,3 +2959,30 @@ class MainWindowBase(QMainWindow):
         kind, key = getattr(self, "_stackup_selection", ("", ""))
         self._forward_stackup_selection_to_layout_preview(kind, key)
         self.layout_preview_window.show()
+
+    def open_simplify_gds(self):
+        # local import: simplify_gds.py imports gds_prepare_for_EM lazily
+        # inside run_simplify() too, but import the dialog module itself here
+        # (not at module load time) for the same circular-import reason as
+        # open_stackup_editor()/open_layout_preview() above
+        if __package__ in (None, ""):
+            from simplify_gds import SimplifyGdsDialog
+        else:
+            from .simplify_gds import SimplifyGdsDialog
+
+        if getattr(self, "simplify_gds_window", None) is not None:
+            self.simplify_gds_window.raise_()
+            self.simplify_gds_window.activateWindow()
+            return
+
+        gds_path = self.saved_values.get("GdsFile") if isinstance(self.saved_values, dict) else None
+        if not gds_path or not os.path.isfile(gds_path):
+            QMessageBox.warning(self, "Error", "Load a GDSII file on the Input Files tab first")
+            return
+        if self.metals_list is None:
+            QMessageBox.warning(self, "Error", "Load an XML stackup file on the Input Files tab first")
+            return
+
+        self.simplify_gds_window = SimplifyGdsDialog(self)
+        self.simplify_gds_window.destroyed.connect(lambda: setattr(self, "simplify_gds_window", None))
+        self.simplify_gds_window.show()

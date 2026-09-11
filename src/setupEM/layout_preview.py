@@ -237,12 +237,17 @@ class LayoutPreviewWindow(QDialog):
     # stackup element for those to sync to.
     layerSelected = Signal(object)
 
-    def __init__(self, MainWindow):
+    def __init__(self, MainWindow, gds_override_path=None, title_suffix=""):
         super().__init__()
         self.setAttribute(Qt.WA_DeleteOnClose)
-        self.setWindowTitle("Layout Preview")
+        self.setWindowTitle("Layout Preview" + (f" - {title_suffix}" if title_suffix else ""))
         self.resize(1100, 750)
         self.MainWindow = MainWindow
+        # when set, read this GDS file instead of MainWindow.file_tab's live
+        # value/saved_values["GdsFile"] - used by Tools > Simplify GDS... to
+        # show the simplified output next to the original, both still colored
+        # by the (unchanged) stackup XML the MainWindow already has loaded
+        self._gds_override_path = gds_override_path
 
         self.canvas = LayoutCanvas()
 
@@ -516,7 +521,7 @@ class LayoutPreviewWindow(QDialog):
         # can be stale (holding a *previous* successful load) if the XML field was
         # since changed to a path that doesn't exist, since read_XML() silently
         # no-ops on a missing file rather than clearing the old stackup data
-        gdsfile = self.MainWindow.file_tab.gds_file_edit.text()
+        gdsfile = self._gds_override_path or self.MainWindow.file_tab.gds_file_edit.text()
         xmlfile = self.MainWindow.file_tab.XML_file_edit.text()
         if not os.path.isfile(gdsfile) or not os.path.isfile(xmlfile):
             QMessageBox.warning(self, "Error", "Load a GDSII file and XML stackup first")
@@ -540,11 +545,12 @@ class LayoutPreviewWindow(QDialog):
         layernumbers = metals_list.getlayernumbers()
         layernumbers.extend(marker_by_layernum.keys())
 
+        gds_path_to_read = self._gds_override_path or saved_values["GdsFile"]
         captured_stdout = io.StringIO()
         try:
             with contextlib.redirect_stdout(captured_stdout):
                 allpolygons = gds_reader.read_gds(
-                    saved_values["GdsFile"], layernumbers,
+                    gds_path_to_read, layernumbers,
                     cellname=saved_values["cellname"],
                     purposelist=saved_values["purpose"],
                     metals_list=metals_list,
@@ -740,7 +746,7 @@ class LayoutPreviewWindow(QDialog):
                                       layer_name=tooltip if highlightable else None)
 
         self._info_base_text = (
-            f"GDS: {os.path.basename(saved_values['GdsFile'])}   "
+            f"GDS: {os.path.basename(gds_path_to_read)}   "
             f"Cell: {saved_values['cellname'] or '(top cell)'}   "
             f"Purpose: {saved_values['purpose']}")
 

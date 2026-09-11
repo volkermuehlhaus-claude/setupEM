@@ -1085,6 +1085,25 @@ class PreferencesDialog(QDialog):
         mesh_form.addStretch()
         self.tabs.addTab(mesh_widget, "Mesh")
 
+        # ---------- Simplify GDS tab ----------
+        simplify_widget = QWidget()
+        simplify_form = QVBoxLayout(simplify_widget)
+        simplify_form.setAlignment(Qt.AlignTop)
+        self.simplify_max_hole_area_edit = add_row(
+            simplify_form, "Maximum cutout area to remove (µm²)", "simplify_max_hole_area", "1")
+        self.simplify_max_hole_area_edit.setPlaceholderText("blank = remove all cutouts")
+        self.simplify_max_hole_area_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_fill_maxsize_edit = add_row(
+            simplify_form, "Maximum floating fill size (µm)", "simplify_fill_maxsize", "20")
+        self.simplify_fill_maxsize_edit.setPlaceholderText("blank = no size limit")
+        self.simplify_fill_maxsize_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_excluded_layers_edit = add_row(
+            simplify_form, "Layers excluded from simplification", "simplify_excluded_layers", "")
+        self.simplify_excluded_layers_edit.setPlaceholderText("e.g. 10,11 - blank = none")
+        self.simplify_excluded_layers_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        simplify_form.addStretch()
+        self.tabs.addTab(simplify_widget, "Simplify GDS")
+
         # widen enough that every tab label fits without scroll arrows - a fixed
         # pixel guess doesn't survive different fonts/DPI scaling, so measure the
         # actual tab bar instead, now that every tab has been added
@@ -1153,6 +1172,9 @@ class PreferencesDialog(QDialog):
         set_preference(self.app_name, "refined_cellsize", self.refined_cellsize_edit.text())
         set_preference(self.app_name, "meshsize_max", self.meshsize_max_edit.text())
         set_preference(self.app_name, "margin", self.margin_edit.text())
+        set_preference(self.app_name, "simplify_max_hole_area", self.simplify_max_hole_area_edit.text())
+        set_preference(self.app_name, "simplify_fill_maxsize", self.simplify_fill_maxsize_edit.text())
+        set_preference(self.app_name, "simplify_excluded_layers", self.simplify_excluded_layers_edit.text())
 
         super().accept()
 

@@ -87,6 +87,7 @@ sudo apt install libxcb-cursor0 libxcb-xinerama0 libxcb-xkb1 libxcb-icccm4 libxc
 ## Dependencies
 The setupEM module also installs these dependencies:
 - gds2palace
+- gds_prepare_for_EM
 - PySide6
 - shiboken6
 - scipy
