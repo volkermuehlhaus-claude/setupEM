@@ -1,19 +1,9 @@
 
-# What's New - September 11, 2026
+# What's New - September 8-11, 2026
 
-The Preferences dialog now has a **Ports** tab to configure the auto-assign source layer range (default 201-299), used both for the port-layer suggestion and the "(missing in layout)" check.
+Added a live solver-status line below the log during a Palace run, showing MPI process count, estimated total memory, current port/frequency progress, and AMR iteration - updates as Palace's own console output streams in, without waiting for the run to finish. It clears when loading a different model/config file or creating a new mesh, instead of showing a previous run's stale data.
 
-<img src="./png/preferences1.png" alt="preferences" width="450">
-
-The Mesh tab's Adaptive mesh refinement group has two new fields, **AMR goal** (relative error tolerance) and **AMR maximum DOF** - previously hardcoded in gds2palace, now configurable per project and, via a new **Palace** tab in Preferences, per user default.
-
-<img src="./png/preferences_palace1.png" alt="preferences palace tab" width="450">
-
-Layers can now be selected directly from **Layout Preview**'s own legend (click a row to highlight it, click again to clear), not just from Stackup Preview. For consistency, clicking an already-selected shape in Stackup Preview now also deselects it.
-
-In the **Stackup Editor**'s Layers tab, click a column header to sort the list - "Name" sorts alphabetically, "Zmin (resulting)"/"Zmax (resulting)" sorts by actual z-position with the topmost layer first. This is a one-time sort, not a persistent mode, so a layer you're still setting up won't jump around before you're done with it.
-
-# What's New - September 10, 2026
+The Result Viewer can now show S-parameter results from a still-running (or crashed/stopped) multi-iteration AMR run, reading Palace's raw per-iteration output directly instead of waiting for the whole run to finish. 
 
 Added a **Layout Preview** which can be accessed from Input Files tab or Tools menu, including display of port location and direction. Layout layers selected in Stackup Preview will be highlighted in Layout preview.
 
@@ -23,17 +13,9 @@ Added a **File > Preferences...** dialog (setupEM and setupThermal) for changing
 
 The **Cellname** dropdown now shows an explicit "(default)" entry instead of a blank one.
 
-<img src="./png/inputfiles1.png" alt="input files" width="700">
+The Preferences dialog now has a **Ports** tab to configure the auto-assign source layer range (default 201-299), used both for the port-layer suggestion and the "(missing in layout)" check.
 
-File menu entries that saved/loaded a project were renamed from "Settings" to "Config".
-
-# What's New - September 8, 2026
-
-Added a live solver-status line below the log during a Palace run, showing MPI process count, estimated total memory, current port/frequency progress, and AMR iteration - updates as Palace's own console output streams in, without waiting for the run to finish. It clears when loading a different model/config file or creating a new mesh, instead of showing a previous run's stale data.
-
-The Result Viewer can now show S-parameter results from a still-running (or crashed/stopped) multi-iteration AMR run, reading Palace's raw per-iteration output directly instead of waiting for the whole run to finish. 
-
-# What's New - September 6, 2026
+# What's New - September 1-6, 2026
 
 The stackup cross-section preview (**Show stackup**, and the Stackup Editor's live preview) is now interactive: click a dielectric, metal, or via to see its name, material, and z-position/thickness in a flyout. In the Stackup Editor, clicking a shape also selects the matching row in the Dielectric Stack/Layers tables, and selecting a row highlights the matching shape in the preview.
 
