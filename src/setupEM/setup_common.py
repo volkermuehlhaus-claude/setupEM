@@ -1349,12 +1349,17 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
         pos = 1
         w = (xmax - xmin) / 10
 
-        setBrush(QColor(136, 192, 200, 80))
         for metal in metals_list.metals:
             if metal.is_via or metal.is_dielectric:
 
                 material = materials_list.get_by_name(metal.material)
                 label_suffix = via_label_suffix_fn(metal, material)
+
+                # metal_color_fn(material) can override this box's default
+                # color too (e.g. setupThermal's thermal-conductivity scale) -
+                # None means "no override", same default color as before
+                override_color = metal_color_fn(material)
+                setBrush(override_color if override_color is not None else QColor(136, 192, 200, 80))
 
                 y1 = z_to_y(metal.zmin)
                 y2 = z_to_y(metal.zmax)

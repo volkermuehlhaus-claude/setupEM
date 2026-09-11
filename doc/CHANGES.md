@@ -1,8 +1,6 @@
 
 # What's New - September 8-11, 2026
 
-setupThermal's stackup preview (Show Stackup and the Stackup Editor's live preview) now color-codes dielectrics and metals by **thermal conductivity** - a log-scale, single-hue saturation ramp from 0.1 to 300 W/(m·K), with a colorbar legend and a distinct "no data" gray for materials with no thermal conductivity defined. A temperature-dependent conductivity table resolves to its value at/near room temperature for coloring purposes. setupEM's electrical stackup preview is unaffected.
-
 Added a **live solver-status line** below the log during a Palace run, showing MPI process count, estimated total memory, current port/frequency progress, and AMR iteration - updates as Palace's own console output streams in, without waiting for the run to finish. It clears when loading a different model/config file or creating a new mesh, instead of showing a previous run's stale data.
 
 Added a **memory limit** for Palace runs (Preferences > Palace, "Stop Palace if memory exceeds", default 100 GB): if the solver's own reported memory usage crosses this, setupEM terminates it automatically and still runs S-parameter postprocessing on whatever results were already computed, instead of losing the whole run to an out-of-memory crash.

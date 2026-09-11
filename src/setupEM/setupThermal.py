@@ -1187,33 +1187,50 @@ class PreferencesDialog(QDialog):
 
 # ---------- Thermal conductivity color scale (stackup preview) ----------
 #
-# Log10 scale clipped to [THERMAL_COND_MIN, THERMAL_COND_MAX] W/(m*K) - roughly
-# spans typical dielectrics/air (~0.03-5) up through silicon/metals (~150-400).
-# Single warm hue (pale = low conductivity/insulating, more saturated = high
-# conductivity), rather than a cold-to-hot two-color gradient - saturation and
-# value are kept low/high respectively throughout the range so the black text
+# Log10 scale clipped to [THERMAL_COND_MIN, THERMAL_COND_MAX] W/(m*K) - covers
+# typical metals/vias/silicon (~50-400); materials below THERMAL_COND_MIN
+# (air ~0.026, many dielectrics ~0.3-0.5) clip to the same pale color as
+# THERMAL_COND_MIN itself, since nothing below ~1 W/(m*K) needed to be told
+# apart in practice. Warm-family hue sweep (yellow -> orange -> red) plus a
+# saturation ramp, rather than a cold-to-hot two-color gradient - value is
+# kept at maximum and saturation moderate throughout so the black text
 # labels drawn on top of these shapes (metal/dielectric name, kappa value)
-# stay legible at every point on the scale, not just at the pale end.
+# stay legible everywhere on the scale, not just at the pale end.
+#
+# A plain linear map of log10(k) to hue/saturation left 50-400 W/(m*K) (most
+# real metals/vias/silicon) looking nearly identical: that whole decade-and-a-
+# bit only covers about the top third of the full log range, so a linear ramp
+# spends most of its visual range on values that don't need distinguishing.
+# _WEIGHT bends the normalized position with a power curve (t**_WEIGHT)
+# before mapping to hue/saturation, shifting more of the visible change into
+# the upper end of the range at the cost of compressing the low end further.
 
-THERMAL_COND_MIN = 0.1
-THERMAL_COND_MAX = 300.0
-_THERMAL_HUE = 25 / 360.0  # warm orange - reads as "heat"/conductivity
+THERMAL_COND_MIN = 1.0
+THERMAL_COND_MAX = 400.0
+_THERMAL_HUE_LOW = 45 / 360.0    # yellow-orange - mild/insulating
+_THERMAL_HUE_HIGH = 0 / 360.0    # red - highly conductive
+_WEIGHT = 2.0  # >1 biases the color change toward the high end of the range
 
-def thermal_conductivity_to_color(thermalcond):
+DIELECTRIC_ALPHA = 95   # dielectric slabs stay fairly translucent
+METAL_ALPHA = 210       # metals/vias render more solid/opaque than dielectrics
+
+def thermal_conductivity_to_color(thermalcond, alpha=DIELECTRIC_ALPHA):
     """QColor for a material's thermalcond (W/(m*K)) on the log10 scale above.
     thermalcond <= 0 (util_stackup_reader.py's default when a material's XML
     has no ThermalConductivity= attribute - never None, but not a real
-    measurement either) gets a distinct flat "no data" gray instead of being
-    silently clamped into the scale as if it were an extreme insulator.
+    measurement either) gets a distinct flat white instead of being silently
+    clamped into the scale as if it were an extreme insulator.
     """
     if thermalcond is None or thermalcond <= 0:
-        return QColor(230, 230, 230, 95)
+        return QColor(255, 255, 255, alpha)
     k = min(max(thermalcond, THERMAL_COND_MIN), THERMAL_COND_MAX)
     t = ((math.log10(k) - math.log10(THERMAL_COND_MIN))
          / (math.log10(THERMAL_COND_MAX) - math.log10(THERMAL_COND_MIN)))
-    saturation = 0.12 + 0.55 * t
-    color = QColor.fromHsvF(_THERMAL_HUE, saturation, 1.0)
-    color.setAlpha(95)
+    t_weighted = t ** _WEIGHT
+    hue = _THERMAL_HUE_LOW + (_THERMAL_HUE_HIGH - _THERMAL_HUE_LOW) * t_weighted
+    saturation = 0.12 + 0.55 * t_weighted
+    color = QColor.fromHsvF(hue, saturation, 1.0)
+    color.setAlpha(alpha)
     return color
 
 
@@ -1248,21 +1265,42 @@ class ThermalConductivityLegend(QWidget):
     color scale, shown next to it (setupThermal only - see
     MainWindow.stackup_color_legend())."""
 
-    TICK_VALUES = [0.1, 1, 10, 100, 300]
+    TICK_VALUES = [1, 10, 100, 400]
+
+    # explicit row heights, stacked top to bottom with no overlap - the title
+    # previously shared the same vertical band as the tick labels (both
+    # centered on the widget), so a tick label near the horizontal middle
+    # (e.g. "10" or "100") visually collided with the title text
+    _TOP_MARGIN = 4
+    _BAR_HEIGHT = 16
+    _TICK_MARK_HEIGHT = 4
+    _TICK_LABEL_HEIGHT = 14
+    _ROW_GAP = 2
+    _TITLE_HEIGHT = 14
 
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(46)
+        self.setFixedHeight(
+            self._TOP_MARGIN + self._BAR_HEIGHT + self._TICK_MARK_HEIGHT
+            + self._TICK_LABEL_HEIGHT + self._ROW_GAP + self._TITLE_HEIGHT + self._TOP_MARGIN)
         self.setMinimumWidth(220)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
+        bar_top = self._TOP_MARGIN
+        bar_bottom = bar_top + self._BAR_HEIGHT
+        tick_mark_bottom = bar_bottom + self._TICK_MARK_HEIGHT
+        tick_label_top = tick_mark_bottom
+        title_top = tick_label_top + self._TICK_LABEL_HEIGHT + self._ROW_GAP
+
         # horizontal inset wide enough that the end ticks' centered labels
-        # ("0.1", "300") stay fully inside the widget instead of overhanging
+        # ("1", "400") stay fully inside the widget instead of overhanging
         # past its left/right edges
-        bar_rect = self.rect().adjusted(18, 4, -18, -26)
+        bar_rect = self.rect().adjusted(18, 0, -18, 0)
+        bar_rect.setTop(bar_top)
+        bar_rect.setBottom(bar_bottom)
         gradient = QLinearGradient(bar_rect.left(), 0, bar_rect.right(), 0)
         steps = 20
         for i in range(steps + 1):
@@ -1279,13 +1317,13 @@ class ThermalConductivityLegend(QWidget):
         for value in self.TICK_VALUES:
             t = (math.log10(value) - log_min) / (log_max - log_min)
             x = bar_rect.left() + t * bar_rect.width()
-            painter.drawLine(int(x), bar_rect.bottom(), int(x), bar_rect.bottom() + 4)
+            painter.drawLine(int(x), bar_bottom, int(x), tick_mark_bottom)
             label = f"{value:g}"
-            painter.drawText(int(x) - 15, bar_rect.bottom() + 6, 30, 16,
+            painter.drawText(int(x) - 15, tick_label_top, 30, self._TICK_LABEL_HEIGHT,
                               Qt.AlignHCenter | Qt.AlignTop, label)
 
-        painter.drawText(bar_rect.adjusted(0, 0, 0, 20), Qt.AlignHCenter | Qt.AlignBottom,
-                          "Thermal conductivity κ, W/(m·K)")
+        painter.drawText(QRect(0, title_top, self.width(), self._TITLE_HEIGHT),
+                          Qt.AlignHCenter | Qt.AlignTop, "Thermal conductivity κ, W/(m·K)")
 
 
 # ---------- MAIN WINDOW ----------
@@ -1422,7 +1460,7 @@ class MainWindow(MainWindowBase):
         return thermal_conductivity_to_color(_thermal_conductivity_for_color(material))
 
     def stackup_metal_color(self, material):
-        return thermal_conductivity_to_color(_thermal_conductivity_for_color(material))
+        return thermal_conductivity_to_color(_thermal_conductivity_for_color(material), alpha=METAL_ALPHA)
 
     def stackup_color_legend(self):
         return ThermalConductivityLegend()
