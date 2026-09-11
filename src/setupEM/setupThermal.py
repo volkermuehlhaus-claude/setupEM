@@ -781,29 +781,41 @@ class CreateModelTab(CreateModelTabBase):
     def run_model(self):
         # Run model that we created before
 
-        # clear log
-        self.log_area.clear()
-        self._process_purpose = "run_simulation"
-
         # try to start from output directory
         run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
 
-        if os.name == "nt":
-            #  Windows
+        # ---------- pre-flight checks: fail fast, before touching QProcess ----------
+        # ELMERSOLVER_STARTINFO (written by "Create Mesh", alongside case.sif) is
+        # the exact file a bare "ElmerSolver" invocation reads from its working
+        # directory - a more precise proxy than just checking run_path exists,
+        # which could be a stale/empty leftover directory.
+        startinfo_path = os.path.join(run_path, "ELMERSOLVER_STARTINFO")
+        if not os.path.isfile(startinfo_path):
+            self.log_area.appendPlainText(
+                f"⚠️ No simulation settings found in {run_path}.\n"
+                "Click 'Create mesh and simulation settings file' first.\n"
+            )
+            return
+        if self._check_command_on_path(
+            "ElmerSolver", "Install Elmer FEM and make sure ElmerSolver is on PATH."
+        ) is None:
+            return
 
+        try:
+            # clear log
+            self.log_area.clear()
+            self._process_purpose = "run_simulation"
+
+            # Windows and Linux/Mac both just resolve ElmerSolver via PATH
             self.log_area.appendPlainText('Setting work directory ' + run_path)
-
-
             self.process.setWorkingDirectory(run_path)
             # start simulation
             self.process.start("ElmerSolver")
-        else:
-            # Linux
-            self.log_area.appendPlainText('Setting work directory ' + run_path)
-
-            self.process.setWorkingDirectory(run_path)
-            # start simulation
-            self.process.start("ElmerSolver")
+        except Exception as e:
+            # defense in depth: the checks above cover every known missing-
+            # prerequisite case, this is a last-resort net against anything
+            # unanticipated, so it never surfaces as an uncaught traceback
+            self.log_area.appendPlainText(f"⚠️ Unexpected error while starting the simulation: {e}\n")
 
 
 

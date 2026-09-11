@@ -1904,111 +1904,127 @@ class CreateModelTab(CreateModelTabBase):
             run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
         else:
             run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
-        self._confirm_clear_previous_results(run_path)
 
-        # clear log
-        self.log_area.clear()
-        self._reset_status_for_run()
-        self._process_purpose = "run_simulation"
-
+        # ---------- pre-flight checks: fail fast, before asking to delete
+        # previous results or touching QProcess at all - see setup_common.py's
+        # _check_*/_check_wsl_* helpers for the shared checking logic ----------
         if self.MainWindow.PalaceMode:
-            self.log_area.appendPlainText("Trying to start Palace using script ./run_sim now")
-            run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
-
+            if self._check_run_script_ready(run_path, "run_sim") is None:
+                return
             if os.name == "nt":
-                #  Windows
-
-                def windows_to_wsl_path(win_path: str) -> str:
-                    """
-                    Convert a Windows-style path like:
-                        C:\\Users\\Volker\\Projects\\SimApp
-                    into a WSL-style path like:
-                        /mnt/c/Users/Volker/Projects/SimApp
-                    """
-                    win_path = win_path.strip()
-                    if not win_path or ":" not in win_path:
-                        return win_path  # Already looks like a Linux path or invalid
-                    drive, rest = win_path.split(":", 1)
-                    drive = drive.lower()
-                    rest = rest.replace("\\", "/").lstrip("/")
-                    return f"/mnt/{drive}/{rest}"
-
-
-                wsl_run_path = windows_to_wsl_path(run_path)
-                self.log_area.appendPlainText("Running on Windows with WSL: starting ./run_sim ...")
-                self.log_area.appendPlainText("Note that this works for LOCAL drives only, we can't open WSL on network drive.\n")
-                # Run wsl.exe directly as self.process (no terminal emulator in between), so Palace's
-                # stdout/stderr stream into this log via the existing on_stdout/on_stderr handlers, and
-                # on_finished fires with the real exit code when ./run_sim actually completes -- instead
-                # of opening a detached terminal window, whose own quoting/tokenization rules (cmd's
-                # "start", and wt.exe's own use of ";" as a pane/command separator) make embedding a
-                # multi-step shell command fragile, and whose completion can't be tracked anyway.
-                # bash -lc: login shell so ~/.profile (where PATH additions for run_palace/combine_snp
-                # usually live, per gds2palace's scripts/README.md) gets sourced, same as a manually
-                # typed ./run_sim in a fresh WSL login shell would.
-                self.process.start("wsl.exe", [
-                    "--cd", wsl_run_path,
-                    "--", "bash", "-lc", "./run_sim"
-                ])
-            else:
-                # Linux
-                self.log_area.appendPlainText('Setting work directory ' + run_path)
-                # make file executable
-                run_file = os.path.join(run_path, 'run_sim')
-                os.chmod(run_file, 0o755)
-
-                self.process.setWorkingDirectory(run_path)
-                # start simulation
-                self.process.start(".//run_sim")
-
-        else:
-            # Elmer mode
-
-            # try to start from output directory
-            run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
-
-            if os.name == "nt":
-                #  Windows
-
-                self.log_area.appendPlainText('Setting work directory ' + run_path)
-
-                # create_elmer_run_script() (util_utilities.py) writes run_elmer.bat
-                # directly on Windows (proper .bat content - no "#!/bin/bash" shebang,
-                # and MS-MPI's "mpiexec -n N" instead of the Linux-only "mpirun -np N"),
-                # so no rename step is needed here any more.
-                if saved_values.get('ELMER_MPI_THREADS', 1) > 1 and shutil.which("mpiexec") is None:
-                    self.log_area.appendPlainText(
-                        "⚠️ This model requests MPI multithreading, but 'mpiexec' was not "
-                        "found on PATH. On Windows, Elmer uses Microsoft MPI - download and "
-                        "install it from "
-                        "https://learn.microsoft.com/en-us/message-passing-interface/microsoft-mpi "
-                        "and restart setupEM, or switch to 1 thread (no multithreading) on the "
-                        "Mesh and Boundaries tab.\n"
-                    )
+                if not self._check_wsl_ready():
                     return
-                self.process.setWorkingDirectory(run_path)
-                # start simulation - full path, not just "run_elmer.bat": Windows'
-                # CreateProcess resolves a bare relative program name against the
-                # CALLING process's own cwd/PATH, not the child's setWorkingDirectory(),
-                # so a bare filename here silently fails with FailedToStart even though
-                # setWorkingDirectory() is set correctly.
-                self.process.start(os.path.join(run_path, "run_elmer.bat"))
+                wsl_run_path = self._windows_to_wsl_path(run_path)
+                if not self._check_wsl_commands_ready(wsl_run_path, ["run_palace", "combine_snp"]):
+                    return
             else:
-                # Linux
+                palace_hint = ("Install Palace and make sure it is on PATH "
+                                "(see the gds2palace scripts/README.md).")
+                if self._check_command_on_path("run_palace", palace_hint) is None:
+                    return
+                if self._check_command_on_path("combine_snp", palace_hint) is None:
+                    return
+        else:
+            elmer_script = "run_elmer.bat" if os.name == "nt" else "run_elmer"
+            if self._check_run_script_ready(run_path, elmer_script) is None:
+                return
+            elmer_hint = "Install Elmer FEM and make sure ElmerSolver is on PATH."
+            if self._check_command_on_path("ElmerSolver", elmer_hint) is None:
+                return
+            if saved_values.get('ELMER_MPI_THREADS', 1) > 1:
+                if os.name == "nt":
+                    mpi_hint = (
+                        "On Windows, Elmer uses Microsoft MPI - download and install it "
+                        "from https://learn.microsoft.com/en-us/message-passing-interface/microsoft-mpi "
+                        "and restart setupEM, or switch to 1 thread (no multithreading) on "
+                        "the Mesh and Boundaries tab."
+                    )
+                    if self._check_command_on_path("mpiexec", mpi_hint,
+                                                    reason="This model requests MPI multithreading") is None:
+                        return
+                else:
+                    mpi_hint = (
+                        "Install an MPI implementation (e.g. OpenMPI or MPICH), "
+                        "or switch to 1 thread (no multithreading) on the "
+                        "Mesh and Boundaries tab."
+                    )
+                    if self._check_command_on_path("mpirun", mpi_hint,
+                                                    reason="This model requests MPI multithreading") is None:
+                        return
+
+        try:
+            self._confirm_clear_previous_results(run_path)
+
+            # clear log
+            self.log_area.clear()
+            self._reset_status_for_run()
+            self._process_purpose = "run_simulation"
+
+            if self.MainWindow.PalaceMode:
+                self.log_area.appendPlainText("Trying to start Palace using script ./run_sim now")
+
+                if os.name == "nt":
+                    #  Windows
+                    wsl_run_path = self._windows_to_wsl_path(run_path)
+                    self.log_area.appendPlainText("Running on Windows with WSL: starting ./run_sim ...")
+                    self.log_area.appendPlainText("Note that this works for LOCAL drives only, we can't open WSL on network drive.\n")
+                    # Run wsl.exe directly as self.process (no terminal emulator in between), so Palace's
+                    # stdout/stderr stream into this log via the existing on_stdout/on_stderr handlers, and
+                    # on_finished fires with the real exit code when ./run_sim actually completes -- instead
+                    # of opening a detached terminal window, whose own quoting/tokenization rules (cmd's
+                    # "start", and wt.exe's own use of ";" as a pane/command separator) make embedding a
+                    # multi-step shell command fragile, and whose completion can't be tracked anyway.
+                    # bash -lc: login shell so ~/.profile (where PATH additions for run_palace/combine_snp
+                    # usually live, per gds2palace's scripts/README.md) gets sourced, same as a manually
+                    # typed ./run_sim in a fresh WSL login shell would.
+                    self.process.start("wsl.exe", [
+                        "--cd", wsl_run_path,
+                        "--", "bash", "-lc", "./run_sim"
+                    ])
+                else:
+                    # Linux
+                    self.log_area.appendPlainText('Setting work directory ' + run_path)
+                    # make file executable
+                    run_file = os.path.join(run_path, 'run_sim')
+                    os.chmod(run_file, 0o755)
+
+                    self.process.setWorkingDirectory(run_path)
+                    # start simulation
+                    self.process.start(".//run_sim")
+
+            else:
+                # Elmer mode
                 self.log_area.appendPlainText('Setting work directory ' + run_path)
-                # make file executable
-                run_file = os.path.join(run_path, 'run_elmer')
-                os.chmod(run_file, 0o755)
 
-                self.process.setWorkingDirectory(run_path)
-                # start simulation
-                self.process.start(".//run_elmer")
+                if os.name == "nt":
+                    #  Windows
+                    self.process.setWorkingDirectory(run_path)
+                    # start simulation - full path, not just "run_elmer.bat": Windows'
+                    # CreateProcess resolves a bare relative program name against the
+                    # CALLING process's own cwd/PATH, not the child's setWorkingDirectory(),
+                    # so a bare filename here silently fails with FailedToStart even though
+                    # setWorkingDirectory() is set correctly.
+                    self.process.start(os.path.join(run_path, "run_elmer.bat"))
+                else:
+                    # Linux
+                    # make file executable
+                    run_file = os.path.join(run_path, 'run_elmer')
+                    os.chmod(run_file, 0o755)
 
-        # If the result viewer is already open, arm its live-preview polling
-        # immediately rather than waiting for some other trigger (e.g. the window's
-        # own showEvent(), which won't fire again for an already-visible window).
-        if self.MainWindow.result_viewer_window is not None:
-            self.MainWindow.result_viewer_window._rescan_files()
+                    self.process.setWorkingDirectory(run_path)
+                    # start simulation
+                    self.process.start(".//run_elmer")
+
+            # If the result viewer is already open, arm its live-preview polling
+            # immediately rather than waiting for some other trigger (e.g. the window's
+            # own showEvent(), which won't fire again for an already-visible window).
+            if self.MainWindow.result_viewer_window is not None:
+                self.MainWindow.result_viewer_window._rescan_files()
+        except Exception as e:
+            # defense in depth: the checks above cover every known missing-
+            # prerequisite case, this is a last-resort net against anything
+            # unanticipated, so it never surfaces as an uncaught traceback
+            self.log_area.appendPlainText(f"⚠️ Unexpected error while starting the simulation: {e}\n")
 
 
 class ModelEditorTab(QWidget):

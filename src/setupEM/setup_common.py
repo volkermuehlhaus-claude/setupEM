@@ -1949,6 +1949,158 @@ class CreateModelTabBase(QWidget):
             if not self.process.waitForFinished(2000):
                 self.process.kill()
 
+    # ---------- Start Simulation pre-flight checks ----------
+    #
+    # Shared by both apps' run_model() overrides (setupEM.py / setupThermal.py):
+    # confirm the solver/toolchain is actually reachable *before* calling
+    # QProcess.start(), with a clear, actionable log message and an early abort
+    # if not - instead of an uncaught exception (missing run_sim/run_elmer) or
+    # a generic "the program could not be started" line that doesn't say which
+    # program or why. Log-panel-only (no QMessageBox), matching the one
+    # pre-existing check of this kind (the Elmer/Windows MPI check this
+    # replaces) - log_area sits in the same group box as the Start Simulation
+    # button itself, so there's no visibility gap a modal would fix.
+
+    @staticmethod
+    def _windows_to_wsl_path(win_path):
+        """Convert a Windows-style path like C:\\Users\\... into a WSL-style
+        path like /mnt/c/Users/... . Needed both for the WSL pre-flight checks
+        below and for the actual wsl.exe launch (setupEM.py's run_model()).
+        """
+        win_path = win_path.strip()
+        if not win_path or ":" not in win_path:
+            return win_path  # already looks like a Linux path, or invalid
+        drive, rest = win_path.split(":", 1)
+        drive = drive.lower()
+        rest = rest.replace("\\", "/").lstrip("/")
+        return f"/mnt/{drive}/{rest}"
+
+    def _check_run_script_ready(self, run_path, script_name):
+        """Return the full path to script_name inside run_path if it's a real
+        file, else log a "run Create Mesh first" message and return None.
+        Fixes an uncaught FileNotFoundError os.chmod() would otherwise raise
+        on Linux/Mac when "Create Mesh" was never run for this target dir/
+        model name, and gives the same-quality message on Windows too
+        (previously only caught generically, post-hoc, by on_process_error's
+        "could not be started" line).
+        """
+        script_path = os.path.join(run_path, script_name)
+        if not os.path.isfile(script_path):
+            self.log_area.appendPlainText(
+                f"⚠️ '{script_name}' not found in {run_path}.\n"
+                "Click 'Create mesh and simulation settings file' first.\n"
+            )
+            return None
+        return script_path
+
+    def _check_command_on_path(self, command, hint, reason=None):
+        """shutil.which() wrapper: return the resolved path if command is on
+        PATH, else log a message and return None. `hint` is free-form
+        guidance text (install link, PATH instructions, etc.). `reason`, if
+        given, is prepended as "<reason>, but '<command>' was not found on
+        PATH." instead of the bare "'<command>' was not found on PATH." -
+        lets a check that only fires under an extra condition (e.g. MPI
+        threads > 1) explain why it ran.
+        """
+        resolved = shutil.which(command)
+        if resolved is None:
+            lead = f"{reason}, but '{command}'" if reason else f"'{command}'"
+            self.log_area.appendPlainText(
+                f"⚠️ {lead} was not found on PATH.\n{hint}\n"
+            )
+            return None
+        return resolved
+
+    def _check_wsl_ready(self):
+        """Windows-only: confirm wsl.exe is on PATH and at least one WSL
+        distro is installed and enumerable. Returns True if both hold, else
+        logs a message with the WSL install docs/command and returns False.
+        Never raises: a hung/misbehaving wsl.exe is caught and logged, not
+        left to crash the app or freeze it indefinitely.
+        """
+        if shutil.which("wsl.exe") is None and shutil.which("wsl") is None:
+            self.log_area.appendPlainText(
+                "⚠️ WSL (Windows Subsystem for Linux) was not found. Palace on "
+                "Windows runs inside WSL - install it from an elevated PowerShell "
+                "with 'wsl --install', restart Windows, then set up Palace inside "
+                "WSL (see https://learn.microsoft.com/en-us/windows/wsl/install).\n"
+            )
+            return False
+
+        env = os.environ.copy()
+        # wsl.exe writes its own diagnostic/list output (like this -l -q
+        # listing) as UTF-16LE by default when stdout isn't a real console -
+        # WSL_UTF8=1 switches it to plain UTF-8. This only affects wsl.exe's
+        # own text, not the piped stdout of a command run *inside* WSL (see
+        # _check_wsl_commands_ready below, which needs no such handling).
+        env["WSL_UTF8"] = "1"
+        try:
+            result = subprocess.run(
+                ["wsl.exe", "-l", "-q"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                env=env, timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            self.log_area.appendPlainText(
+                "⚠️ 'wsl.exe -l -q' timed out; WSL may be in a bad state. Try "
+                "'wsl --shutdown' in PowerShell, then retry.\n"
+            )
+            return False
+        except OSError as e:
+            self.log_area.appendPlainText(f"⚠️ Could not run wsl.exe: {e}\n")
+            return False
+
+        has_distro = bool(result.stdout.strip())
+        if result.returncode != 0 or not has_distro:
+            self.log_area.appendPlainText(
+                "⚠️ WSL is installed, but no Linux distribution is set up in it. "
+                "Run 'wsl --install' (or 'wsl --install -d Ubuntu') in an elevated "
+                "PowerShell, then set up Palace inside that distro (see "
+                "https://learn.microsoft.com/en-us/windows/wsl/install).\n"
+            )
+            return False
+        return True
+
+    def _check_wsl_commands_ready(self, wsl_path, commands):
+        """Windows+Palace only: confirm each name in `commands` resolves
+        inside a WSL login shell rooted at wsl_path, via the same 'bash -lc'
+        invocation run_model() itself uses to launch run_sim - so PATH/
+        ~/.profile is checked under the exact conditions the real run will
+        use. Returns True only if every command resolves; else logs one
+        combined message and returns False.
+        """
+        missing = []
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    ["wsl.exe", "--cd", wsl_path, "--", "bash", "-lc", f"command -v {command}"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                self.log_area.appendPlainText(f"⚠️ Checking for '{command}' inside WSL timed out.\n")
+                missing.append(command)
+                continue
+            except OSError as e:
+                self.log_area.appendPlainText(f"⚠️ Could not check for '{command}' inside WSL: {e}\n")
+                missing.append(command)
+                continue
+            if result.returncode != 0 or not result.stdout.strip():
+                missing.append(command)
+
+        if missing:
+            self.log_area.appendPlainText(
+                "⚠️ The following required command(s) were not found on PATH inside "
+                "WSL: " + ", ".join(f"'{c}'" for c in missing) + ".\n"
+                "Install Palace inside WSL (via apptainer/~/palace.sif, see "
+                "https://awslabs.github.io/palace/stable/install/, or 'spack load "
+                "palace'), and add the gds2palace scripts folder (run_palace, "
+                "combine_snp) to PATH via ~/.profile inside WSL - see "
+                "gds2palace's scripts/README.md.\n"
+            )
+            return False
+        return True
+
     # create_model() and run_model() are app-specific and implemented in
     # each app's CreateModelTab subclass (see setupEM.py / setupThermal.py)
 
