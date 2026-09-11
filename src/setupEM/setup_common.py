@@ -1421,8 +1421,21 @@ class InteractiveRegionItem(QGraphicsRectItem):
             painter.drawRect(self.rect())
 
     def mousePressEvent(self, event):
+        # just record pre-click state here; deciding to deselect has to wait
+        # until mouseReleaseEvent (see below) - QGraphicsScene re-selects a
+        # lone already-selected item on release (to support dragging a multi-
+        # selection), which would silently undo a deselect made here on press
+        self._was_selected_before_press = self.isSelected()
         super().mousePressEvent(event)  # keeps native click-to-select behavior
-        if self.info_text:
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if getattr(self, "_was_selected_before_press", False) and self.isSelected():
+            # clicking (press+release) an already-selected shape deselects it,
+            # instead of Qt's default of leaving a lone selected item selected
+            # - matches Layout Preview's legend row click-to-toggle behavior
+            self.setSelected(False)
+        if self.isSelected() and self.info_text:
             QToolTip.showText(event.screenPos(), self.info_text)
 
 
