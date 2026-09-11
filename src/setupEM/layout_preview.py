@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel,
     QScrollArea, QCheckBox, QMessageBox, QGraphicsView, QGraphicsScene,
     QGraphicsItem, QGraphicsPolygonItem, QGraphicsSimpleTextItem,
-    QGraphicsEllipseItem, QGraphicsPathItem, QSlider, QSplitter,
+    QGraphicsEllipseItem, QGraphicsPathItem, QSlider, QSplitter, QApplication,
     )
 from PySide6.QtGui import QColor, QBrush, QPen, QPolygonF, QPainter, QFont, QPainterPath, QTransform
 from PySide6.QtCore import Qt, QPointF, Signal
@@ -546,216 +546,228 @@ class LayoutPreviewWindow(QDialog):
         layernumbers.extend(marker_by_layernum.keys())
 
         gds_path_to_read = self._gds_override_path or saved_values["GdsFile"]
-        captured_stdout = io.StringIO()
+
+        # reading/preprocessing the GDS and building every polygon item below
+        # can take a while for a large layout - show a wait cursor for the
+        # whole stretch, not just the read_gds() call, since building the
+        # scene/legend afterward can itself be slow for a high polygon count.
+        # processEvents() forces the cursor to actually paint before this
+        # thread blocks on the (synchronous, no other yield point) work below.
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
         try:
-            with contextlib.redirect_stdout(captured_stdout):
-                allpolygons = gds_reader.read_gds(
-                    gds_path_to_read, layernumbers,
-                    cellname=saved_values["cellname"],
-                    purposelist=saved_values["purpose"],
-                    metals_list=metals_list,
-                    preprocess=saved_values["preprocess_gds"],
-                    merge_polygon_size=saved_values["merge_polygon_size"],
-                    gds_boundary_layers=dielectrics_list.get_boundary_layers(),
-                    mirror=False, offset_x=0, offset_y=0, layernumber_offset=0)
-        except (Exception, SystemExit) as e:
-            details = captured_stdout.getvalue().strip() or str(e)
-            QMessageBox.critical(self, "Error", f"Could not read GDSII layout:\n\n{details}")
-            return
+            captured_stdout = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(captured_stdout):
+                    allpolygons = gds_reader.read_gds(
+                        gds_path_to_read, layernumbers,
+                        cellname=saved_values["cellname"],
+                        purposelist=saved_values["purpose"],
+                        metals_list=metals_list,
+                        preprocess=saved_values["preprocess_gds"],
+                        merge_polygon_size=saved_values["merge_polygon_size"],
+                        gds_boundary_layers=dielectrics_list.get_boundary_layers(),
+                        mirror=False, offset_x=0, offset_y=0, layernumber_offset=0)
+            except (Exception, SystemExit) as e:
+                details = captured_stdout.getvalue().strip() or str(e)
+                QMessageBox.critical(self, "Error", f"Could not read GDSII layout:\n\n{details}")
+                return
 
-        polygons_by_layer = {}
-        for poly in allpolygons.polygons:
-            polygons_by_layer.setdefault(poly.layernum, []).append(poly)
+            polygons_by_layer = {}
+            for poly in allpolygons.polygons:
+                polygons_by_layer.setdefault(poly.layernum, []).append(poly)
 
-        scene = self.canvas.scene()
-        scene.clear()
-        self._clear_legend()
+            scene = self.canvas.scene()
+            scene.clear()
+            self._clear_legend()
 
-        # regular stackup layers, bottom (lowest zmin) to top - so later (higher)
-        # layers are drawn last and are not hidden by lower ones underneath
-        regular_layers = []
-        for layernum, polys in polygons_by_layer.items():
-            if layernum in marker_by_layernum:
-                continue
-            metal = metals_list.getbylayernumber(layernum)
-            regular_layers.append((metal, layernum, polys))
-        regular_layers.sort(key=lambda entry: entry[0].zmin if entry[0] is not None else 0.0)
-        # sits strictly above every regular layer's zValue (0..len-1) and
-        # strictly below the marker tier (len+1 and up, see marker_zvalue
-        # below) - the highlight must never cover a port/source/boundary
-        self._highlight_zvalue = len(regular_layers)
-
-        self.legend_layout.addWidget(self._section_label("Layers"))
-        layer_legend_rows = []
-        for zindex, (metal, layernum, polys) in enumerate(regular_layers):
-            if metal is not None:
-                material = materials_list.get_by_name(metal.material)
-                color = _material_qcolor(material)
-                name = metal.name
-            else:
-                color = QColor(DEFAULT_LAYER_COLOR)
-                name = f"Layer {layernum}"
-            self._layer_layernum_by_name[name] = layernum
-
-            group = _VisibilityGroup()
-
-            tooltip = f"{name} [{layernum}]"
-            for poly in polys:
-                item = QGraphicsPolygonItem(self._polygon_points(poly))
-                item.setBrush(QBrush(color))
-                item.setPen(Qt.NoPen)
-                item.setToolTip(tooltip)
-                item.setAcceptHoverEvents(True)
-                item.setZValue(zindex)
-                item.setOpacity(self.opacity_slider.value() / 100.0)
-                scene.addItem(item)
-                group.add(item)
-                self._layer_items.append(item)
-                self._layer_items_by_name.setdefault(name, []).append(item)
-                self._highlight_zvalue_by_name[name] = self._highlight_zvalue
-
-            zmin = metal.zmin if metal is not None else 0.0
-            zmax = metal.zmax if metal is not None else 0.0
-            layer_legend_rows.append((zmin, zmax, color.name(), tooltip, group, name))
-
-        # legend lists layers top-to-bottom by z position, largest first (the
-        # physically topmost layer at the top of the list) - sorted explicitly
-        # here rather than just reversing the ascending draw-order list above
-        # (needed there for correct on-canvas layering), so identical-zmin ties
-        # break consistently by zmax instead of arbitrarily
-        layer_legend_rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
-        for zmin, zmax, color_name, tooltip, group, name in layer_legend_rows:
-            self._add_legend_row(color_name, tooltip, group, layer_name=name)
-        self._update_legend_selection_styling()
-
-        # marker shapes (EM ports / thermal sources / thermal boundaries),
-        # always drawn on top of every regular layer, highlighted and always
-        # labeled (not just on hover), grouped into their own legend sections
-        present_groups = [name for name in MARKER_GROUP_ORDER
-                           if any(m["group"] == name for m in marker_by_layernum.values())]
-        marker_zvalue = len(regular_layers) + 1
-        for group_name in present_groups:
-            self.legend_layout.addWidget(self._section_label(group_name))
+            # regular stackup layers, bottom (lowest zmin) to top - so later (higher)
+            # layers are drawn last and are not hidden by lower ones underneath
+            regular_layers = []
             for layernum, polys in polygons_by_layer.items():
-                marker = marker_by_layernum.get(layernum)
-                if marker is None or marker["group"] != group_name:
+                if layernum in marker_by_layernum:
                     continue
+                metal = metals_list.getbylayernumber(layernum)
+                regular_layers.append((metal, layernum, polys))
+            regular_layers.sort(key=lambda entry: entry[0].zmin if entry[0] is not None else 0.0)
+            # sits strictly above every regular layer's zValue (0..len-1) and
+            # strictly below the marker tier (len+1 and up, see marker_zvalue
+            # below) - the highlight must never cover a port/source/boundary
+            self._highlight_zvalue = len(regular_layers)
 
-                kind = marker["kind"]
-                fill_color, outline_color = MARKER_STYLES[kind]
+            self.legend_layout.addWidget(self._section_label("Layers"))
+            layer_legend_rows = []
+            for zindex, (metal, layernum, polys) in enumerate(regular_layers):
+                if metal is not None:
+                    material = materials_list.get_by_name(metal.material)
+                    color = _material_qcolor(material)
+                    name = metal.name
+                else:
+                    color = QColor(DEFAULT_LAYER_COLOR)
+                    name = f"Layer {layernum}"
+                self._layer_layernum_by_name[name] = layernum
+
                 group = _VisibilityGroup()
 
-                if kind == "port":
-                    portnumber = marker["portnumber"]
-                    label_text = f"P{portnumber}"
-                    tooltip = f"Port {portnumber} [{layernum}] {_signed_direction(marker.get('direction', ''))}"
-                    if float(marker.get("voltage", 1)) == 0:
-                        tooltip += " (inactive)"
-                elif kind == "source":
-                    label_text = _format_value(marker["power"], "W")
-                    tooltip = f"Source [{layernum}] {label_text}"
-                else:  # "boundary"
-                    label_text = _format_value(marker["temp"], "K")
-                    tooltip = f"Boundary [{layernum}] {label_text}"
-
+                tooltip = f"{name} [{layernum}]"
                 for poly in polys:
                     item = QGraphicsPolygonItem(self._polygon_points(poly))
-                    item.setBrush(QBrush(fill_color))
-                    # cosmetic pen: stroke stays MARKER_OUTLINE_WIDTH device
-                    # pixels regardless of canvas zoom, instead of scaling
-                    # with it - what keeps a near-zero-width marker visible
-                    marker_pen = QPen(QColor(outline_color), MARKER_OUTLINE_WIDTH)
-                    marker_pen.setCosmetic(True)
-                    item.setPen(marker_pen)
+                    item.setBrush(QBrush(color))
+                    item.setPen(Qt.NoPen)
                     item.setToolTip(tooltip)
                     item.setAcceptHoverEvents(True)
-                    item.setZValue(marker_zvalue)
+                    item.setZValue(zindex)
+                    item.setOpacity(self.opacity_slider.value() / 100.0)
                     scene.addItem(item)
                     group.add(item)
-                    # keyed by tooltip (this marker's own, unique-in-practice
-                    # label) rather than name - a marker has no other stable
-                    # identity to select it by. Highlight z sits above this
-                    # marker's own label tier (marker_zvalue+2, see below) so
-                    # the hatch is actually visible instead of hidden under it.
-                    # Skip a degenerate (zero-area) shape - typically a Z/-Z via
-                    # port with no real drawn geometry - a hatch-fill highlight
-                    # on it could never actually be visible
-                    if self._polygon_has_area(poly):
-                        self._layer_items_by_name.setdefault(tooltip, []).append(item)
-                        self._highlight_zvalue_by_name[tooltip] = marker_zvalue + 3
+                    self._layer_items.append(item)
+                    self._layer_items_by_name.setdefault(name, []).append(item)
+                    self._highlight_zvalue_by_name[name] = self._highlight_zvalue
 
-                    center_x = (poly.xmin + poly.xmax) / 2
-                    center_y = -(poly.ymin + poly.ymax) / 2
+                zmin = metal.zmin if metal is not None else 0.0
+                zmax = metal.zmax if metal is not None else 0.0
+                layer_legend_rows.append((zmin, zmax, color.name(), tooltip, group, name))
 
-                    # a real marker polygon is often a thin sliver that all but
-                    # disappears at normal zoom, so also mark its centroid with
-                    # a fixed-pixel-size symbol - stays visible at any zoom
-                    # level, same trick as the label below. In-plane ports
-                    # (X/Y/-X/-Y) get a direction arrow; Z/-Z via ports get a
-                    # polarity marker; thermal sources/boundaries have no
-                    # direction to show, so just a plain marker dot.
+            # legend lists layers top-to-bottom by z position, largest first (the
+            # physically topmost layer at the top of the list) - sorted explicitly
+            # here rather than just reversing the ascending draw-order list above
+            # (needed there for correct on-canvas layering), so identical-zmin ties
+            # break consistently by zmax instead of arbitrarily
+            layer_legend_rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
+            for zmin, zmax, color_name, tooltip, group, name in layer_legend_rows:
+                self._add_legend_row(color_name, tooltip, group, layer_name=name)
+            self._update_legend_selection_styling()
+
+            # marker shapes (EM ports / thermal sources / thermal boundaries),
+            # always drawn on top of every regular layer, highlighted and always
+            # labeled (not just on hover), grouped into their own legend sections
+            present_groups = [name for name in MARKER_GROUP_ORDER
+                               if any(m["group"] == name for m in marker_by_layernum.values())]
+            marker_zvalue = len(regular_layers) + 1
+            for group_name in present_groups:
+                self.legend_layout.addWidget(self._section_label(group_name))
+                for layernum, polys in polygons_by_layer.items():
+                    marker = marker_by_layernum.get(layernum)
+                    if marker is None or marker["group"] != group_name:
+                        continue
+
+                    kind = marker["kind"]
+                    fill_color, outline_color = MARKER_STYLES[kind]
+                    group = _VisibilityGroup()
+
                     if kind == "port":
-                        direction_text = marker.get("direction", "")
-                        vector = _direction_vector(direction_text)
-                        if vector is not None:
-                            arrow = QGraphicsPathItem(_arrow_path(*vector))
-                            arrow.setPen(QPen(QColor(outline_color), 3))
-                            marker_items = [arrow]
+                        portnumber = marker["portnumber"]
+                        label_text = f"P{portnumber}"
+                        tooltip = f"Port {portnumber} [{layernum}] {_signed_direction(marker.get('direction', ''))}"
+                        if float(marker.get("voltage", 1)) == 0:
+                            tooltip += " (inactive)"
+                    elif kind == "source":
+                        label_text = _format_value(marker["power"], "W")
+                        tooltip = f"Source [{layernum}] {label_text}"
+                    else:  # "boundary"
+                        label_text = _format_value(marker["temp"], "K")
+                        tooltip = f"Boundary [{layernum}] {label_text}"
+
+                    for poly in polys:
+                        item = QGraphicsPolygonItem(self._polygon_points(poly))
+                        item.setBrush(QBrush(fill_color))
+                        # cosmetic pen: stroke stays MARKER_OUTLINE_WIDTH device
+                        # pixels regardless of canvas zoom, instead of scaling
+                        # with it - what keeps a near-zero-width marker visible
+                        marker_pen = QPen(QColor(outline_color), MARKER_OUTLINE_WIDTH)
+                        marker_pen.setCosmetic(True)
+                        item.setPen(marker_pen)
+                        item.setToolTip(tooltip)
+                        item.setAcceptHoverEvents(True)
+                        item.setZValue(marker_zvalue)
+                        scene.addItem(item)
+                        group.add(item)
+                        # keyed by tooltip (this marker's own, unique-in-practice
+                        # label) rather than name - a marker has no other stable
+                        # identity to select it by. Highlight z sits above this
+                        # marker's own label tier (marker_zvalue+2, see below) so
+                        # the hatch is actually visible instead of hidden under it.
+                        # Skip a degenerate (zero-area) shape - typically a Z/-Z via
+                        # port with no real drawn geometry - a hatch-fill highlight
+                        # on it could never actually be visible
+                        if self._polygon_has_area(poly):
+                            self._layer_items_by_name.setdefault(tooltip, []).append(item)
+                            self._highlight_zvalue_by_name[tooltip] = marker_zvalue + 3
+
+                        center_x = (poly.xmin + poly.xmax) / 2
+                        center_y = -(poly.ymin + poly.ymax) / 2
+
+                        # a real marker polygon is often a thin sliver that all but
+                        # disappears at normal zoom, so also mark its centroid with
+                        # a fixed-pixel-size symbol - stays visible at any zoom
+                        # level, same trick as the label below. In-plane ports
+                        # (X/Y/-X/-Y) get a direction arrow; Z/-Z via ports get a
+                        # polarity marker; thermal sources/boundaries have no
+                        # direction to show, so just a plain marker dot.
+                        if kind == "port":
+                            direction_text = marker.get("direction", "")
+                            vector = _direction_vector(direction_text)
+                            if vector is not None:
+                                arrow = QGraphicsPathItem(_arrow_path(*vector))
+                                arrow.setPen(QPen(QColor(outline_color), 3))
+                                marker_items = [arrow]
+                            else:
+                                negative = str(direction_text).strip().upper() == "-Z"
+                                marker_items = _via_marker_items(negative)
                         else:
-                            negative = str(direction_text).strip().upper() == "-Z"
-                            marker_items = _via_marker_items(negative)
-                    else:
-                        marker_items = _plain_marker_items(outline_color)
+                            marker_items = _plain_marker_items(outline_color)
 
-                    for marker_item in marker_items:
-                        marker_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-                        marker_item.setPos(center_x, center_y)
-                        marker_item.setZValue(marker_zvalue + 1)
-                        marker_item.setToolTip(tooltip)
-                        scene.addItem(marker_item)
-                        group.add(marker_item)
+                        for marker_item in marker_items:
+                            marker_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+                            marker_item.setPos(center_x, center_y)
+                            marker_item.setZValue(marker_zvalue + 1)
+                            marker_item.setToolTip(tooltip)
+                            scene.addItem(marker_item)
+                            group.add(marker_item)
 
-                    text = QGraphicsSimpleTextItem(label_text)
-                    font = QFont()
-                    font.setBold(True)
-                    text.setFont(font)
-                    text.setBrush(QBrush(QColor("white")))
-                    text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-                    # setPos() below places the *item's own origin* (top-left of
-                    # its bounding rect, not its center) at the marker location -
-                    # use a local setTransform() to center the glyph on that
-                    # origin first; it combines independently of the setPos()
-                    # that follows
-                    text_rect = text.boundingRect()
-                    text.setTransform(QTransform.fromTranslate(-text_rect.width() / 2, -text_rect.height() / 2))
-                    text.setPos(center_x, center_y)
-                    # a *uniform* z-value across every marker (not just "above
-                    # this marker's own symbol") - two nearby markers' items
-                    # interleave by scene insertion order at equal z, so
-                    # without this a later-drawn marker could cover an
-                    # earlier one's label
-                    text.setZValue(marker_zvalue + 2)
-                    scene.addItem(text)
-                    group.add(text)
+                        text = QGraphicsSimpleTextItem(label_text)
+                        font = QFont()
+                        font.setBold(True)
+                        text.setFont(font)
+                        text.setBrush(QBrush(QColor("white")))
+                        text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+                        # setPos() below places the *item's own origin* (top-left of
+                        # its bounding rect, not its center) at the marker location -
+                        # use a local setTransform() to center the glyph on that
+                        # origin first; it combines independently of the setPos()
+                        # that follows
+                        text_rect = text.boundingRect()
+                        text.setTransform(QTransform.fromTranslate(-text_rect.width() / 2, -text_rect.height() / 2))
+                        text.setPos(center_x, center_y)
+                        # a *uniform* z-value across every marker (not just "above
+                        # this marker's own symbol") - two nearby markers' items
+                        # interleave by scene insertion order at equal z, so
+                        # without this a later-drawn marker could cover an
+                        # earlier one's label
+                        text.setZValue(marker_zvalue + 2)
+                        scene.addItem(text)
+                        group.add(text)
 
-                # only selectable if at least one of its polygons actually has
-                # area to highlight (see _polygon_has_area()) - otherwise the
-                # row would look clickable but could never show anything
-                highlightable = tooltip in self._layer_items_by_name
-                self._add_legend_row(outline_color, tooltip, group,
-                                      layer_name=tooltip if highlightable else None)
+                    # only selectable if at least one of its polygons actually has
+                    # area to highlight (see _polygon_has_area()) - otherwise the
+                    # row would look clickable but could never show anything
+                    highlightable = tooltip in self._layer_items_by_name
+                    self._add_legend_row(outline_color, tooltip, group,
+                                          layer_name=tooltip if highlightable else None)
 
-        self._info_base_text = (
-            f"GDS: {os.path.basename(gds_path_to_read)}   "
-            f"Cell: {saved_values['cellname'] or '(top cell)'}   "
-            f"Purpose: {saved_values['purpose']}")
+            self._info_base_text = (
+                f"GDS: {os.path.basename(gds_path_to_read)}   "
+                f"Cell: {saved_values['cellname'] or '(top cell)'}   "
+                f"Purpose: {saved_values['purpose']}")
 
-        # re-apply any active cross-window highlight - the polygon items it
-        # outlines were just rebuilt from scratch above; this also refreshes
-        # info_label (base text + selection, if any) via _update_info_label()
-        self.set_highlighted_layer(self._highlighted_layer_name)
+            # re-apply any active cross-window highlight - the polygon items it
+            # outlines were just rebuilt from scratch above; this also refreshes
+            # info_label (base text + selection, if any) via _update_info_label()
+            self.set_highlighted_layer(self._highlighted_layer_name)
 
-        rect = scene.itemsBoundingRect()
-        if not rect.isEmpty():
-            scene.setSceneRect(rect)
-            self.canvas.fitInView(rect, Qt.KeepAspectRatio)
+            rect = scene.itemsBoundingRect()
+            if not rect.isEmpty():
+                scene.setSceneRect(rect)
+                self.canvas.fitInView(rect, Qt.KeepAspectRatio)
+        finally:
+            QApplication.restoreOverrideCursor()
