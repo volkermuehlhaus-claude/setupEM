@@ -5,6 +5,14 @@ The Preferences dialog now has a **Ports** tab to configure the auto-assign sour
 
 <img src="./png/preferences1.png" alt="preferences" width="450">
 
+The Mesh tab's Adaptive mesh refinement group has two new fields, **AMR goal** (relative error tolerance) and **AMR maximum DOF** - previously hardcoded in gds2palace, now configurable per project and, via a new **Palace** tab in Preferences, per user default.
+
+<img src="./png/preferences_palace1.png" alt="preferences palace tab" width="450">
+
+Layers can now be selected directly from **Layout Preview**'s own legend (click a row to highlight it, click again to clear), not just from Stackup Preview. For consistency, clicking an already-selected shape in Stackup Preview now also deselects it.
+
+In the **Stackup Editor**'s Layers tab, click a column header to sort the list - "Name" sorts alphabetically, "Zmin (resulting)"/"Zmax (resulting)" sorts by actual z-position with the topmost layer first. This is a one-time sort, not a persistent mode, so a layer you're still setting up won't jump around before you're done with it.
+
 # What's New - September 10, 2026
 
 Added a **Layout Preview** which can be accessed from Input Files tab or Tools menu, including display of port location and direction. Layout layers selected in Stackup Preview will be highlighted in Layout preview.

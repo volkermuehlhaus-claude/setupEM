@@ -203,7 +203,7 @@ Controls the mesh used for simulation, trading off accuracy against simulation t
 
 <img src="./png/mesh1.png" alt="mesh" width="700">
 
-**Mesh cell maximum size absolute** works together with cells/wavelength - the smaller of the two wins. **Mesh basis function** should stay at "most accurate" (order 2) unless you specifically want a faster, less accurate run. **Adaptive mesh iterations** (AMR) is usually unnecessary if you're already using order 2 with a ~2 µm initial mesh - a fine initial mesh without AMR is typically faster than a coarse mesh plus AMR.
+**Mesh cell maximum size absolute** works together with cells/wavelength - the smaller of the two wins. **Mesh basis function** should stay at "most accurate" (order 2) unless you specifically want a faster, less accurate run. **Adaptive mesh iterations** (AMR) is usually unnecessary if you're already using order 2 with a ~2 µm initial mesh - a fine initial mesh without AMR is typically faster than a coarse mesh plus AMR. When AMR iterations is non-zero, **AMR goal** (relative error tolerance) and **AMR maximum DOF** control when Palace stops refining - whichever of the two is hit first. Both have sensible defaults and rarely need changing.
 
 The oversize of dielectrics from the drawn geometry, and the additional air layer around everything, are also set here - **both must be non-zero**, or meshing will fail.
 
@@ -287,7 +287,7 @@ Save and load simulation configurations (JSON, extension `.simcfg` for setupEM /
 
 **Import from \*.py model** loads settings from existing model code (e.g. the examples in the gds2palace repository), by detecting known keywords with or without the `settings[...]` dict syntax - this also works for openEMS Python models, though you'll likely need to adjust `refined_cellsize` afterward (openEMS models the MIM differently and typically needs a finer mesh).
 
-**Preferences ...** changes the built-in defaults that a brand-new/blank field starts out showing (e.g. fstart/fstop, mesh refinement, dielectric oversize margin, the Ports tab's auto-assign source layer range) - saved per-user via Qt's settings mechanism, separate from any project's `.simcfg`/`.tsimcfg` file and from "Save as Default Config".
+**Preferences ...** changes the built-in defaults that a brand-new/blank field starts out showing (e.g. fstart/fstop, mesh refinement, dielectric oversize margin, the Ports tab's auto-assign source layer range, the Palace tab's AMR goal/maximum DOF) - saved per-user via Qt's settings mechanism, separate from any project's `.simcfg`/`.tsimcfg` file and from "Save as Default Config".
 
 <img src="./png/preferences1.png" alt="preferences" width="500">
 
