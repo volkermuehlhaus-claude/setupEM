@@ -2353,6 +2353,11 @@ class PreferencesDialog(QDialog):
         create_form.addStretch()
         self.tabs.addTab(create_widget, "Create Model")
 
+        # widen enough that every tab label fits without scroll arrows - a fixed
+        # pixel guess doesn't survive different fonts/DPI scaling, so measure the
+        # actual tab bar instead, now that every tab has been added
+        self.setMinimumWidth(max(420, self.tabs.tabBar().sizeHint().width() + 40))
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
