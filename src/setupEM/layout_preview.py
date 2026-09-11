@@ -262,16 +262,28 @@ class LayoutPreviewWindow(QDialog):
         # opaque so they keep standing out) - lets overlapping layers below
         # show through instead of being fully covered by the one on top
         self._layer_items = []
-        # cross-window highlight: which layer name (if any) to outline in red,
-        # set via set_highlighted_layer() by MainWindow when a layer is
-        # selected in the Stackup Preview/Editor - persists across refresh()
+        # highlight: which item (if any) to outline in white, keyed by layer
+        # name for a drawn layer or by the marker's own tooltip text for a port/
+        # thermal source/boundary (unique enough in practice, and there's no
+        # other persistent per-marker identity to key on) - set either via
+        # set_highlighted_layer() (MainWindow, when a layer is selected in the
+        # Stackup Preview/Editor) or by clicking the item's own legend row
+        # (_on_legend_layer_clicked() below). One shared highlight slot for
+        # everything in this window - selecting a marker clears a selected
+        # layer and vice versa. Persists across refresh().
         self._layer_items_by_name = {}
+        # z-value the highlight should render at for a given key - below every
+        # marker for a layer (so the hatch never covers a port/source/boundary
+        # sitting on top of it), above a marker's own label for a marker (so
+        # the hatch is actually visible instead of hidden under it)
+        self._highlight_zvalue_by_name = {}
         self._highlighted_layer_name = None
         self._highlight_items = []
         self._highlight_zvalue = 0  # recomputed each refresh() from the layer count
-        # legend rows for drawn layers (name -> _ClickableLegendRow), so a click
-        # can select/deselect a layer directly from Layout Preview's own legend,
-        # independent of the Stackup Preview/Editor cross-window highlight below
+        # legend rows for every selectable item - drawn layers and markers alike
+        # (name/tooltip -> _ClickableLegendRow), so a click can select/deselect
+        # it directly from Layout Preview's own legend, independent of the
+        # Stackup Preview/Editor cross-window highlight below
         self._legend_layer_rows = {}
         self._info_base_text = ""  # set by refresh(); _update_info_label() appends selection info
         self.opacity_label = QLabel()
@@ -326,6 +338,7 @@ class LayoutPreviewWindow(QDialog):
         self._checkboxes = []
         self._layer_items = []
         self._layer_items_by_name = {}
+        self._highlight_zvalue_by_name = {}
         self._legend_layer_rows = {}
         # the highlight items themselves were just destroyed by scene.clear()
         # in refresh() (called right before this) - drop the stale references,
@@ -347,20 +360,24 @@ class LayoutPreviewWindow(QDialog):
             item.setOpacity(value / 100.0)
 
     def set_highlighted_layer(self, name):
-        """Outline (+ hatch-fill) every drawn shape on layer `name` in white,
-        above every regular layer but below every port/source/boundary marker
-        - called by MainWindow when a layer is selected in the Stackup
-        Preview/Editor (None/an unknown name clears it), and also by clicking
-        a layer's own legend row (see _on_legend_layer_clicked()) - either way
-        this is the single source of truth for "what's highlighted right now".
+        """Outline (+ hatch-fill) every drawn shape for `name` in white - a
+        drawn layer's name, or a marker's (port/thermal source/boundary) own
+        tooltip text. Rendered above every regular layer but below every
+        marker for a layer, or above a marker's own label for a marker (see
+        _highlight_zvalue_by_name) - called by MainWindow when a layer is
+        selected in the Stackup Preview/Editor (None/an unknown name clears
+        it), and also by clicking any item's own legend row (see
+        _on_legend_layer_clicked()) - either way this is the single source of
+        truth for "what's highlighted right now" across the whole window.
         Persists across refresh() via self._highlighted_layer_name. Also
-        updates info_label with the selected layer name and its polygon count.
+        updates info_label with the selection and its polygon count.
         """
         self._highlighted_layer_name = name
         scene = self.canvas.scene()
         for item in self._highlight_items:
             scene.removeItem(item)
         self._highlight_items = []
+        highlight_zvalue = self._highlight_zvalue_by_name.get(name, self._highlight_zvalue)
         for polygon_item in self._layer_items_by_name.get(name, []):
             outline = QGraphicsPolygonItem(polygon_item.polygon())
             # diagonal hatch fill (built into Qt, no new dependency) in
@@ -370,7 +387,7 @@ class LayoutPreviewWindow(QDialog):
             pen = QPen(QColor(HIGHLIGHT_COLOR), HIGHLIGHT_WIDTH)
             pen.setCosmetic(True)  # stays a thin fixed-pixel line at any zoom
             outline.setPen(pen)
-            outline.setZValue(self._highlight_zvalue)
+            outline.setZValue(highlight_zvalue)
             scene.addItem(outline)
             self._highlight_items.append(outline)
         self._update_info_label()
@@ -413,8 +430,9 @@ class LayoutPreviewWindow(QDialog):
         return label
 
     def _add_legend_row(self, color_name, text, group, layer_name=None):
-        # layer_name is only set for a drawn-layer row (not a marker group row,
-        # e.g. Ports/Sources/Boundaries) - those aren't selectable, only shown
+        # layer_name is the row's highlight key when it's selectable - a drawn
+        # layer's name, or a marker's own tooltip text (see the marker loop
+        # below) - omit it for a non-selectable row (there currently isn't one)
         selectable = layer_name is not None
         row = _ClickableLegendRow() if selectable else QWidget()
         row_layout = QHBoxLayout(row)
@@ -442,7 +460,7 @@ class LayoutPreviewWindow(QDialog):
             swatch.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             row.setCursor(Qt.PointingHandCursor)
-            row.setToolTip("Click to select/deselect this layer")
+            row.setToolTip("Click to select/deselect this item")
             row.clicked.connect(lambda name=layer_name: self._on_legend_layer_clicked(name))
             self._legend_layer_rows[layer_name] = row
 
@@ -450,6 +468,20 @@ class LayoutPreviewWindow(QDialog):
 
     def _polygon_points(self, poly):
         return QPolygonF([QPointF(float(x), float(-y)) for x, y in zip(poly.pts_x, poly.pts_y)])
+
+    def _polygon_has_area(self, poly):
+        # a Z/-Z via port is often exported as a degenerate (zero-area) point
+        # or sliver rather than a real drawn shape - a hatch-fill highlight on
+        # that is inherently invisible (there's nothing to fill), so callers
+        # use this to skip making such a marker selectable in the first place
+        # rather than offering a highlight that can never actually show
+        x, y = poly.pts_x, poly.pts_y
+        n = len(x)
+        area2 = 0.0
+        for i in range(n):
+            j = (i + 1) % n
+            area2 += float(x[i]) * float(y[j]) - float(x[j]) * float(y[i])
+        return abs(area2) > 1e-9
 
     def refresh(self):
         # check the live field text, not just MainWindow.metals_list below - that
@@ -545,6 +577,7 @@ class LayoutPreviewWindow(QDialog):
                 group.add(item)
                 self._layer_items.append(item)
                 self._layer_items_by_name.setdefault(name, []).append(item)
+                self._highlight_zvalue_by_name[name] = self._highlight_zvalue
 
             zmin = metal.zmin if metal is not None else 0.0
             zmax = metal.zmax if metal is not None else 0.0
@@ -604,6 +637,17 @@ class LayoutPreviewWindow(QDialog):
                     item.setZValue(marker_zvalue)
                     scene.addItem(item)
                     group.add(item)
+                    # keyed by tooltip (this marker's own, unique-in-practice
+                    # label) rather than name - a marker has no other stable
+                    # identity to select it by. Highlight z sits above this
+                    # marker's own label tier (marker_zvalue+2, see below) so
+                    # the hatch is actually visible instead of hidden under it.
+                    # Skip a degenerate (zero-area) shape - typically a Z/-Z via
+                    # port with no real drawn geometry - a hatch-fill highlight
+                    # on it could never actually be visible
+                    if self._polygon_has_area(poly):
+                        self._layer_items_by_name.setdefault(tooltip, []).append(item)
+                        self._highlight_zvalue_by_name[tooltip] = marker_zvalue + 3
 
                     center_x = (poly.xmin + poly.xmax) / 2
                     center_y = -(poly.ymin + poly.ymax) / 2
@@ -659,7 +703,12 @@ class LayoutPreviewWindow(QDialog):
                     scene.addItem(text)
                     group.add(text)
 
-                self._add_legend_row(outline_color, tooltip, group)
+                # only selectable if at least one of its polygons actually has
+                # area to highlight (see _polygon_has_area()) - otherwise the
+                # row would look clickable but could never show anything
+                highlightable = tooltip in self._layer_items_by_name
+                self._add_legend_row(outline_color, tooltip, group,
+                                      layer_name=tooltip if highlightable else None)
 
         self._info_base_text = (
             f"GDS: {os.path.basename(saved_values['GdsFile'])}   "
