@@ -1569,11 +1569,13 @@ class CreateModelTab(CreateModelTabBase):
     # equivalent during PROM/adaptive offline construction (Beginning PROM construction
     # offline phase: / Adding excitation index 1 (1/2):) - both mean "now on port N/M".
     _RE_MPI = re.compile(r"Running with (\d+) MPI processes")
-    # capture "current" vs "peak" (previously a non-capturing group) - the RAM-limit
-    # kill check (_check_ram_limit()) only acts on "current" (memory actually in use
-    # right now), not "peak" (Palace's own forward-looking estimate for its mesh/AMR
-    # planning, not memory already allocated) - see _parse_palace_status_line().
-    _RE_MEM_TOTAL = re.compile(r"Estimated (current|peak) per-rank memory usage is:.*Total\s+([\d.]+)([MG])")
+    # "current" vs "peak" is NOT current-vs-forecast: real testing (AMR run, limit set
+    # to 4GB) showed "current" stays low while "peak" reports each iteration's real,
+    # already-incurred high-water mark (3.79 -> 5.08 -> 9.85 GB) - a current-only RAM
+    # check never saw those numbers and never fired. _check_ram_limit() now checks
+    # self._status_mem_gb, the same latest-of-either-kind value already shown on the
+    # live status line, instead of singling out one kind - see _parse_palace_status_line().
+    _RE_MEM_TOTAL = re.compile(r"Estimated (?:current|peak) per-rank memory usage is:.*Total\s+([\d.]+)([MG])")
     _RE_EXCITATION = re.compile(r"(?:Sweeping|Adding) excitation index \d+ \((\d+)/(\d+)\):")
     # "It i/n: ... (total elapsed time = t s, solve k/N)" in a uniform sweep, but only
     # "It i/n: ... (total elapsed time = t s)" - no trailing solve k/N - during PROM's online
@@ -1608,7 +1610,6 @@ class CreateModelTab(CreateModelTabBase):
         touching disk (config.json may not exist yet at construction time)."""
         self._status_mpi = None
         self._status_mem_gb = None
-        self._status_mem_current_gb = None
         self._status_port_cur = None
         self._status_port_total = None
         self._status_freq_display = None
@@ -1655,12 +1656,9 @@ class CreateModelTab(CreateModelTabBase):
 
         m = self._RE_MEM_TOTAL.search(line)
         if m:
-            kind, value, unit = m.group(1), float(m.group(2)), m.group(3)
-            gb = value / 1024 if unit == "M" else value
-            self._status_mem_gb = gb  # display: latest of either kind, as before
-            if kind == "current":
-                self._status_mem_current_gb = gb
-                self._check_ram_limit()
+            value, unit = float(m.group(1)), m.group(2)
+            self._status_mem_gb = value / 1024 if unit == "M" else value
+            self._check_ram_limit()
             self._update_status_line()
             return
 
@@ -1718,16 +1716,17 @@ class CreateModelTab(CreateModelTabBase):
                 return
 
     def _check_ram_limit(self):
-        """Called every time a "current" memory reading updates
-        self._status_mem_current_gb - if it exceeds Preferences > Palace's
-        "Stop Palace if memory exceeds" limit, kill the solver and let
-        run_sim's own postprocessing step run on whatever it already
-        computed (see _kill_palace_process_for_ram_limit()). Guarded by
-        _ram_kill_triggered so this only ever fires once per run, even
-        though several more "current" lines may still arrive before the
-        kill actually takes effect.
+        """Called every time self._status_mem_gb updates - the same latest-
+        of-either-("current"-or-"peak")-kind value already shown on the live
+        status line (see _parse_palace_status_line()/_update_status_line()).
+        If it exceeds Preferences > Palace's "Stop Palace if memory exceeds"
+        limit, kill the solver and let run_sim's own postprocessing step run
+        on whatever it already computed (see
+        _kill_palace_process_for_ram_limit()). Guarded by _ram_kill_triggered
+        so this only ever fires once per run, even though more memory lines
+        may still arrive before the kill actually takes effect.
         """
-        if self._ram_kill_triggered or self._status_mem_current_gb is None:
+        if self._ram_kill_triggered or self._status_mem_gb is None:
             return
         if self.process.state() != QProcess.Running:
             return
@@ -1735,12 +1734,12 @@ class CreateModelTab(CreateModelTabBase):
             limit_gb = float(get_preference(self.MainWindow.APP_NAME, "palace_max_ram_gb", "100"))
         except (TypeError, ValueError):
             limit_gb = 100.0
-        if limit_gb <= 0 or self._status_mem_current_gb <= limit_gb:
+        if limit_gb <= 0 or self._status_mem_gb <= limit_gb:
             return
 
         self._ram_kill_triggered = True
         self.log_area.appendPlainText(
-            f"\n⚠️ Palace memory usage ({self._status_mem_current_gb:.2f} GB) exceeded the "
+            f"\n⚠️ Palace memory usage ({self._status_mem_gb:.2f} GB) exceeded the "
             f"configured limit ({limit_gb:.0f} GB) - terminating the solver.\n"
             "Running S-parameter postprocessing on whatever results were already computed...\n"
         )
