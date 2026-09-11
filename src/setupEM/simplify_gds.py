@@ -31,7 +31,7 @@ into MainWindow.metals_list (gds2palace's stackup_reader), same as every
 other setupEM feature that needs to know "which GDS layers are metal".
 """
 
-import os, io, contextlib, traceback
+import os, io, contextlib, traceback, tempfile
 import gdspy
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
@@ -133,6 +133,16 @@ def run_simplify(gds_path, metal_layers, output_path, cellname="",
         top_cell = lib.cells.get(cellname, lib.top_level()[0])
 
     if do_floating:
+        # gdspy's flatten()/get_polygonsets() hits an internal bug on some
+        # in-memory-only reference structures ('tuple' object does not
+        # support item assignment) - round-tripping through a GDS file first
+        # avoids it, same workaround gds_prepare_for_EM.py's own CLI pipeline
+        # uses before every flatten() call in its main()
+        with tempfile.TemporaryDirectory(prefix="setupEM_simplify_") as tmp_dir:
+            tmp_path = os.path.join(tmp_dir, "pre_flatten.gds")
+            lib.write_gds(tmp_path)
+            lib = gdspy.GdsLibrary(infile=tmp_path)
+        top_cell = lib.cells.get(cellname, lib.top_level()[0])
         top_cell.flatten()
         merged_lib = merge_polygons_by_layer(top_cell, layers_list=metal_layers)
         merged_top = merged_lib.top_level()[0]
