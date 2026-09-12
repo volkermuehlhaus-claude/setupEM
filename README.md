@@ -2,7 +2,7 @@
 
 ## What's New
 
-Results viewer, Model Fit, Layout Preview, GDSII Layout Simplification, XML Stackup Editor, setupThermal for Elmer thermal simulation.
+Reserved PEC/AIR stackup materials, Layout Preview, Results viewer, Model Fit, GDSII Layout Simplification, XML Stackup Editor, setupThermal for Elmer thermal simulation.
 
 See [CHANGES.md](doc/CHANGES.md) for details.
 
@@ -28,21 +28,18 @@ Two more external tools are used by parts of the workflow, and are not installed
 For development of this workflow, Palace was installed using the Singularity/Apptainer installation method. This was rather simple and straightforward, even with no knowledge about container usage. The resulting apptainer file palace.sif can be integrated very easily in a Linux system like the Ubuntu 24.04 system used here, and can then be moved to other Linux machines using simple copy of the container file. The script to start Palace from the apptainer is included in the scripts directory in this repository.
 
 Notes on installing the Palace solver using **apptainer** container manager:
-[Installing Palace using Apptainer](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/Installing_Palace_using_Apptainer.pdf) 
+[Installing Palace using Apptainer](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/building-palace-apptainer.md) 
 
 Using the spack package manager, Palace can also be created from source with a few simple commands. All tools required by the build process will be downloaded and installed automatically by spack, so you can sit and watch while your system builds the software.
 
 Notes in compiling Palace using the **spack package manager for Linux**:
-[Installing Palace using spack](./doc/Installing_Palace_using_Spack.pdf) 
-
-Thread on compiling Palace using the **spack package manager for MacOS**:
-[Spack install for MacOS outdated?](https://github.com/awslabs/palace/issues/581) 
+[Installing Palace using spack](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/building-palace-spack.md) 
 
 You can use any of the installation methods described on the AWS Palace web site. The gds2palace workflow does not change, it only creates the input files for Palace and does not care how you installed Palace, or on what platform you run the actual Palace simulation from these model files. To start Palace from setupEM, a wrapper script **run_palace** is used, and this is where you point to your actual installation (even remote copy & remote simulation is possible).
 
 
 # Installation of setupEM (including gds2palace workflow files)
-As a Python program that uses the Qt library, setupEM works on Linux, Windows, MacOS and other platforms. The Palace solver itself is designed for Linux systems, but can you install it using the Windows Subsystem for Linux (WSL). Palace also works well on MacOS, installed using spack as described [above](https://github.com/awslabs/palace/issues/581).
+As a Python program that uses the Qt library, setupEM works on Linux, Windows, MacOS and other platforms. The Palace solver itself is designed for Linux systems, but can you install it using the Windows Subsystem for Linux (WSL). Palace also works well on MacOS, installed using spack.
 
 To install setupEM, activate the Python venv where you want to install.
 
