@@ -115,7 +115,7 @@ There isn't a single dialog. SetupEM defauls are set using File > Preferences. S
 
 ### What boundary condition types are available, and how do they compare to a radiation boundary?
 
-Each of the six outer box faces, xmin, xmax, ymin, ymax, zmin, zmax, can independently be set to ABC (absorbing boundary), PML, PEC. ABC plays the role of HFSS's radiation boundary. PML is not implemented yet in the AWS Palace solver. PEC and PMC let you terminate a face as an ideal conductor or ideal magnetic wall, for example to represent a backside ground plane directly as the boundary.
+Each of the six outer box faces, xmin, xmax, ymin, ymax, zmin, zmax, can independently be set to ABC (absorbing boundary), PEC and PMC. ABC plays the role of HFSS's radiation boundary. PML is not implemented yet in the AWS Palace solver. PEC and PMC let you terminate a face as an ideal conductor or ideal magnetic wall, for example to represent a backside ground plane directly as the boundary.
 
 ### Is there a symmetry-plane feature to halve simulation time, like HFSS's symmetry boundary?
 
