@@ -1263,7 +1263,7 @@ class StackupEditorWindow(QDialog):
             move_fn=stackup_writer.move_dielectric,
             default_attrs_fn=self._default_dielectric_attrs,
             on_changed=self._on_dielectrics_changed,
-            material_choices_fn=self._material_names,
+            material_choices_fn=self._dielectric_material_choices,
             reference_choices_fn=self._dielectric_names,
             gray_fn=_dielectric_gray_fn,
             compute_fn=self._compute_dielectric_zpositions_bound,
@@ -1289,7 +1289,7 @@ class StackupEditorWindow(QDialog):
             descending_attrs={"ResultZmin", "ResultZmax"},
             default_attrs_fn=self._default_layer_attrs,
             on_changed=self._on_changed,
-            material_choices_fn=self._material_names,
+            material_choices_fn=self._layer_material_choices,
             reference_choices_fn=self._reference_target_names,
             type_choices=list(stackup_writer.VALID_LAYER_TYPES),
             compute_fn=self._compute_layer_zpositions_and_thickness,
@@ -1764,6 +1764,26 @@ class StackupEditorWindow(QDialog):
         if self.tree is None:
             return []
         return [m.get("Name") for m in self._materials_container(self.tree.getroot()) if m.get("Name")]
+
+    def _dielectric_material_choices(self):
+        # AIR is always usable without a <Materials> entry (stackup_reader.parse_substrate()
+        # injects a default) - offer it in the dropdown even when the file doesn't define one
+        names = self._material_names()
+        if not any(n.upper() == "AIR" for n in names):
+            names = names + ["AIR"]
+        return names
+
+    def _layer_material_choices(self):
+        # PEC and AIR are both usable on a Layer without a <Materials> entry - offer them in
+        # the dropdown even when the file doesn't define one (see stackup_reader.PEC_MATERIAL_NAME
+        # and the built-in default AIR material in stackup_reader.parse_substrate())
+        names = self._material_names()
+        extras = []
+        if not any(n.upper() == stackup_reader.PEC_MATERIAL_NAME.upper() for n in names):
+            extras.append(stackup_reader.PEC_MATERIAL_NAME)
+        if not any(n.upper() == "AIR" for n in names):
+            extras.append("AIR")
+        return names + extras
 
     def _layer_names(self):
         if self.tree is None:
@@ -2770,6 +2790,7 @@ class StackupEditorWindow(QDialog):
             return
         root = self.tree.getroot()
         errors = stackup_writer.validate_stackup(root)
+        warnings = stackup_writer.find_reserved_material_definitions(root)
 
         was_valid = self._was_valid
         self._was_valid = not errors
@@ -2794,7 +2815,7 @@ class StackupEditorWindow(QDialog):
             QTimer.singleShot(0, self._reload_all_editors)
 
         self._refresh_preview(root, errors)
-        self._refresh_validation_status(errors)
+        self._refresh_validation_status(errors, warnings)
 
     # ---------- undo (bounded multi-level) ----------
 
@@ -2913,13 +2934,17 @@ class StackupEditorWindow(QDialog):
         else:
             self.vector_widget.scene().clearSelection()
 
-    def _refresh_validation_status(self, errors):
-        if not errors:
-            self.status_label.setText("Valid.")
-            self.status_label.setStyleSheet("color: green;")
-        else:
+    def _refresh_validation_status(self, errors, warnings=None):
+        warnings = warnings or []
+        if errors:
             self.status_label.setText(f"{len(errors)} problem(s) - see Save for details.")
             self.status_label.setStyleSheet("color: darkred;")
+        elif warnings:
+            self.status_label.setText(f"Valid - {len(warnings)} note(s): " + "; ".join(warnings))
+            self.status_label.setStyleSheet("color: #b8860b;")
+        else:
+            self.status_label.setText("Valid.")
+            self.status_label.setStyleSheet("color: green;")
 
     def _on_tab_changed(self, index):
         if self.tabs.widget(index) is self.xml_preview_tab:

@@ -38,9 +38,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QBrush, QPen, QPolygonF, QPainter, QFont, QPainterPath, QTransform
 from PySide6.QtCore import Qt, QPointF, Signal
 
-from gds2palace import gds_reader
+from gds2palace import gds_reader, stackup_reader
 
 DEFAULT_LAYER_COLOR = "#a0a0a0"   # stackup_material.color has no default (None) if XML omits Color=
+PEC_LAYER_COLOR = "#b4dcff"       # matches setup_common.PEC_MATERIAL_COLOR's soft blue
 PORT_OUTLINE_COLOR = "#ff33ff"
 PORT_FILL_COLOR = QColor(255, 51, 255, 100)
 SOURCE_OUTLINE_COLOR = "#ff8800"      # orange: thermal heat source
@@ -155,7 +156,10 @@ def _plain_marker_items(color):
     return [circle]
 
 
-def _material_qcolor(material):
+def _material_qcolor(material, materialname=None):
+    if material is None and materialname is not None and \
+            materialname.strip().upper() == stackup_reader.PEC_MATERIAL_NAME.upper():
+        return QColor(PEC_LAYER_COLOR)
     color = getattr(material, "color", None) if material is not None else None
     if not color:
         return QColor(DEFAULT_LAYER_COLOR)
@@ -600,7 +604,7 @@ class LayoutPreviewWindow(QDialog):
             for zindex, (metal, layernum, polys) in enumerate(regular_layers):
                 if metal is not None:
                     material = materials_list.get_by_name(metal.material)
-                    color = _material_qcolor(material)
+                    color = _material_qcolor(material, metal.material)
                     name = metal.name
                 else:
                     color = QColor(DEFAULT_LAYER_COLOR)

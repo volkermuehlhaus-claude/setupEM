@@ -1,5 +1,7 @@
 
-# What's New - September 8-11, 2026
+# What's New - September 8-12, 2026
+
+Added two reserved stackup materials that need no `<Materials>` entry: `PEC` (ideal conductor, on conductor/via/sheet Layers) and `AIR` (built-in default dielectric, overridable).  
 
 Added a **live solver-status line** below the log during a Palace run, showing MPI process count, estimated total memory, current port/frequency progress, and AMR iteration - updates as Palace's own console output streams in, without waiting for the run to finish. It clears when loading a different model/config file or creating a new mesh, instead of showing a previous run's stale data.
 
