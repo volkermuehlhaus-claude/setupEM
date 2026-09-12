@@ -17,7 +17,7 @@
 ########################################################################
 
 
-import sys, json, os, pathlib, ast, webbrowser, argparse, shutil, re, glob
+import sys, json, os, pathlib, ast, webbrowser, argparse, shutil, re, glob, subprocess
 import numpy as np
 import importlib.metadata
 import importlib.util
@@ -28,10 +28,11 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QLineEdit,QComboBox,QTableWidget,QHeaderView,
     QPushButton, QFileDialog, QTabWidget, QMessageBox, QGroupBox,
-    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog
+    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog,
+    QDialogButtonBox,
     )
-from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup
-from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths
+from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QFontMetrics, QSyntaxHighlighter, QPainter, QPen, QActionGroup
+from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths, QTimer
 
 
 # Local dev: if the gds2palace_ihp_sg13g2 fork is checked out as a sibling repo next to
@@ -51,17 +52,23 @@ from gds2palace import *
 if __package__ in (None, ""):
     from setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        SECONDARY_BUTTON_WIDTH,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
+        next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference, clear_preferences,
     )
     from palace_results import build_results_summary, find_output_dir, find_paraview_files
 else:
     from .setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        SECONDARY_BUTTON_WIDTH,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
         epsilon_to_color, default_stackup_dielectric_label, default_stackup_metal_label,
+        next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference, clear_preferences,
     )
     from .palace_results import build_results_summary, find_output_dir, find_paraview_files
 
@@ -205,14 +212,14 @@ class FrequenciesTab(QWidget):
                 saved_values.pop("fstart", None) # don't leave stale sweep data behind
             else:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstart")
-                self.start_edit.setText("0")
+                self.start_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstart", "0")))
                 return False
         else:
             try:
                 fstart = float(self.start_edit.text())
             except Exception:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstart")
-                self.start_edit.setText("0")
+                self.start_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstart", "0")))
                 return False
             saved_values ["fstart"] = fstart
 
@@ -222,14 +229,14 @@ class FrequenciesTab(QWidget):
                 saved_values.pop("fstop", None) # don't leave stale sweep data behind
             else:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstop")
-                self.stop_edit.setText("50")
+                self.stop_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstop", "50")))
                 return False
         else:
             try:
                 fstop = float(self.stop_edit.text())
             except Exception:
                 QMessageBox.warning(self, "Error", "Not a valid value for fstop")
-                self.stop_edit.setText("50")
+                self.stop_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "fstop", "50")))
                 return False
             saved_values ["fstop"] = fstop
 
@@ -298,8 +305,8 @@ class FrequenciesTab(QWidget):
         fdump_given = saved_values.get("fdump_enabled", False) if self.MainWindow.ElmerMode \
                       else ("fdump" in saved_values)
         discrete_freqs_given = ("fpoint" in saved_values) or fdump_given
-        fstart_default = "" if discrete_freqs_given else "0"
-        fstop_default  = "" if discrete_freqs_given else "50"
+        fstart_default = "" if discrete_freqs_given else str(get_preference(self.MainWindow.APP_NAME, "fstart", "0"))
+        fstop_default  = "" if discrete_freqs_given else str(get_preference(self.MainWindow.APP_NAME, "fstop", "50"))
         self.start_edit.setText(str(saved_values.get("fstart",fstart_default)))
         self.stop_edit.setText(str(saved_values.get("fstop",fstop_default)))
         self.step_edit.setText(str(saved_values.get("fstep","")))
@@ -356,7 +363,12 @@ class PortsTab(QWidget):
         label = QLabel("Port geometry on layer number")
         self.sourcelayer_layout.addWidget(label)
         label.setFixedWidth(left_label_width)
-        self.sourcelayer_edit = QLineEdit("201")
+        # no hardcoded "201" default - selectRow(0) below fires before the
+        # itemSelectionChanged connection even exists, so this would otherwise
+        # sit unrefreshed (looking like a real suggestion) until the user
+        # happens to select a different row and back; update_layers() below
+        # recomputes it for real once a GDS file is actually loaded
+        self.sourcelayer_edit = QLineEdit("")
         self.sourcelayer_edit.setFixedWidth(80)
         self.sourcelayer_edit.setStyleSheet(EDIT_STYLE_REQUIRED)
         self.sourcelayer_layout.addWidget(self.sourcelayer_edit)
@@ -523,6 +535,8 @@ class PortsTab(QWidget):
             for col, value in enumerate(data):
                 self.portslist.setItem(selected_row, col, QTableWidgetItem(str(value)))
 
+            self.refresh_missing_layer_annotations()
+
 
     # callback when applying changes to the selected port
     def get_port_values_from_table(self):
@@ -570,6 +584,7 @@ class PortsTab(QWidget):
             for col, value in enumerate(data):
                 # self.portslist.setItem(selected_row, col, QTableWidgetItem(str(value)))
                 self.portslist.setItem(selected_row, col, None)
+            self.portslist.setItem(selected_row, 7, None)  # clear any "(missing in layout)" note too
 
 
     def portslist_selection_changed(self):
@@ -582,7 +597,66 @@ class PortsTab(QWidget):
                 if item.text() != "":
                     self.get_port_values_from_table()
             else:
-                self.sourcelayer_edit.setText(str(201+selected_row))
+                suggestion = self._suggest_source_layer()
+                if suggestion is not None:
+                    self.sourcelayer_edit.setText(str(suggestion))
+                else:
+                    # no GDS-backed candidate - don't fabricate a number that
+                    # may not exist in the layout, leave it visibly empty
+                    self.sourcelayer_edit.clear()
+                    self.sourcelayer_edit.setPlaceholderText("no unused GDS layer found")
+
+    def _used_source_layers(self):
+        """Layer numbers (column 2) already entered in the table, across all
+        rows - used to avoid suggesting a layer another port already uses.
+        """
+        used = set()
+        for row in range(self.portslist.rowCount()):
+            item = self.portslist.item(row, 2)
+            if item is not None and item.text():
+                try:
+                    used.add(int(item.text()))
+                except ValueError:
+                    pass
+        return used
+
+    def _port_layer_range(self):
+        """Auto-assign source layer range, configurable via File > Preferences
+        > Ports (falls back to the historical 201-299 range if unset/invalid).
+        """
+        app_name = self.MainWindow.APP_NAME
+        try:
+            layer_min = int(get_preference(app_name, "port_layer_min", "201"))
+        except (TypeError, ValueError):
+            layer_min = 201
+        try:
+            layer_max = int(get_preference(app_name, "port_layer_max", "299"))
+        except (TypeError, ValueError):
+            layer_max = 299
+        return layer_min, layer_max
+
+    def _suggest_source_layer(self):
+        """Next GDS layer number in the auto-assign range that actually has
+        geometry and isn't already a stackup layer or another port's source
+        layer, or None if no such layer can be determined (e.g. no GDS file
+        loaded yet, or every present layer is already spoken for).
+        """
+        layer_min, layer_max = self._port_layer_range()
+        gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
+        xml_layers = set(self.MainWindow.metals_list.getlayernumbers()) if self.MainWindow.metals_list else set()
+        excluded = xml_layers | self._used_source_layers()
+        return next_available_source_layer(gds_layers, excluded, start=layer_min)
+
+    def refresh_missing_layer_annotations(self):
+        """Flag any port row whose source layer has no geometry in the
+        currently loaded GDS - see update_missing_layer_column()."""
+        layer_min, layer_max = self._port_layer_range()
+        gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
+        update_missing_layer_column(self.portslist, source_col=2, comment_col=7, gds_layers_present=gds_layers)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_missing_layer_annotations()
 
 
     def save_values(self):
@@ -646,6 +720,11 @@ class PortsTab(QWidget):
         index = self.from_box.findText('Metal1')  # returns -1 if not found
         if index != -1:
             self.from_box.setCurrentIndex(index)
+        self.refresh_missing_layer_annotations()
+        # re-evaluate the currently selected row's source-layer suggestion too -
+        # a GDS/XML (re)load is exactly when a stale/unset suggestion (e.g. an
+        # unapplied new row selected before any file was loaded) needs it most
+        self.portslist_selection_changed()
 
 
     def update_port_from_import (self, ports):
@@ -815,6 +894,12 @@ class MeshTab(QWidget):
         label_width = 250
         edit_width = 170
 
+        # every row label below is appended here as it's created, then
+        # widened at the end of __init__ to fit the longest one's actual
+        # rendered text - label_width above is only a starting point during
+        # construction; a fixed pixel guess doesn't survive different
+        # fonts/DPI scaling (labels were truncating on Linux at high DPI)
+        self._mesh_labels = []
 
         # ---------- MESH GROUP ----------
         self.mesh_group = QGroupBox("Mesh settings")
@@ -823,6 +908,7 @@ class MeshTab(QWidget):
         self.refinement_layout = QHBoxLayout()
         self.label2 = QLabel("Mesh refinement at metal edges (µm)")
         self.label2.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label2)
         self.refinement_layout.addWidget(self.label2)
         self.refinement_edit = QLineEdit("5")
         self.refinement_edit.setFixedWidth(edit_width)
@@ -842,6 +928,7 @@ class MeshTab(QWidget):
         self.cells_lambda_layout = QHBoxLayout()
         self.label4 = QLabel("Mesh cells per wavelength (min 10)")
         self.label4.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label4)
         self.cells_lambda_layout.addWidget(self.label4)
         self.cells_lambda_edit = QLineEdit("10")
         self.cells_lambda_edit.setFixedWidth(edit_width)
@@ -854,6 +941,7 @@ class MeshTab(QWidget):
         self.cells_maxsize_layout = QHBoxLayout()
         self.label6 = QLabel("Mesh cell maximum size absolute (µm)")
         self.label6.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label6)
         self.cells_maxsize_layout.addWidget(self.label6)
         self.cells_maxsize_edit = QLineEdit("100")
         self.cells_maxsize_edit.setFixedWidth(edit_width)
@@ -866,6 +954,7 @@ class MeshTab(QWidget):
         self.meshorder_layout = QHBoxLayout()
         self.label1 = QLabel("Mesh basis function")
         self.label1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label1)
         self.meshorder_layout.addWidget(self.label1)
 
         self.mesh_order_box = QComboBox()
@@ -891,6 +980,7 @@ class MeshTab(QWidget):
         self.solver_layout = QHBoxLayout()
         self.solverlabel = QLabel("Solver")
         self.solverlabel.setFixedWidth(label_width)
+        self._mesh_labels.append(self.solverlabel)
         self.solver_layout.addWidget(self.solverlabel)
 
         self.solver_box = QComboBox()
@@ -906,6 +996,7 @@ class MeshTab(QWidget):
         self.threads_layout = QHBoxLayout()
         self.labelthreads = QLabel("Multithreading:")
         self.labelthreads.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelthreads)
         self.threads_layout.addWidget(self.labelthreads)
         self.threads_box = QComboBox()
         self.threads_box.setFixedWidth(250)
@@ -927,9 +1018,31 @@ class MeshTab(QWidget):
         self.AMR_group = QGroupBox("Adaptive mesh refinement (AMR)")
         self.AMR_layout = QVBoxLayout()
 
+        # AMR goal/maximum DOF are rarely tuned away from their defaults -
+        # hidden until this is set to "Yes", to keep the common case
+        # (just choosing how many AMR iterations to run) uncluttered.
+        # Resets to "No" every time this tab is (re)constructed, same as
+        # e.g. the "at xmin, xmax/..." air-margin fields below, which also
+        # aren't persisted - this is a display toggle, not a simulation
+        # setting, and the AMR goal/max DOF values themselves are still
+        # saved/loaded normally regardless of whether they're shown.
+        self.show_advanced_layout = QHBoxLayout()
+        self.label_show_advanced = QLabel("Show advanced configuration")
+        self.label_show_advanced.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label_show_advanced)
+        self.show_advanced_layout.addWidget(self.label_show_advanced)
+        self.show_advanced_box = QComboBox()
+        self.show_advanced_box.setFixedWidth(edit_width)
+        self.show_advanced_box.setStyleSheet(COMBO_STYLE_OPTIONAL)
+        self.show_advanced_box.addItems(["No", "Yes"])
+        self.show_advanced_layout.addWidget(self.show_advanced_box)
+        self.show_advanced_layout.addStretch()
+        self.AMR_layout.addLayout(self.show_advanced_layout)
+
         self.cells_AMRiterations_layout = QHBoxLayout()
         self.labelAMR1 = QLabel("Adaptive mesh iterations")
         self.labelAMR1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelAMR1)
         self.cells_AMRiterations_layout.addWidget(self.labelAMR1)
         self.AMR_iterations_edit = QLineEdit("0")
         self.AMR_iterations_edit.setFixedWidth(edit_width)
@@ -939,6 +1052,39 @@ class MeshTab(QWidget):
         self.cells_AMRiterations_layout.addWidget(self.labelAMR2)
         self.cells_AMRiterations_layout.addStretch()
         self.AMR_layout.addLayout(self.cells_AMRiterations_layout)
+
+        self.amr_goal_layout = QHBoxLayout()
+        self.labelAMRgoal1 = QLabel("AMR goal (relative error tolerance)")
+        self.labelAMRgoal1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelAMRgoal1)
+        self.amr_goal_layout.addWidget(self.labelAMRgoal1)
+        self.amr_goal_edit = QLineEdit("0.01")
+        self.amr_goal_edit.setFixedWidth(edit_width)
+        self.amr_goal_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.amr_goal_layout.addWidget(self.amr_goal_edit)
+        self.amr_goal_layout.addStretch()
+        self.AMR_layout.addLayout(self.amr_goal_layout)
+
+        self.amr_maxdof_layout = QHBoxLayout()
+        self.labelAMRmaxdof1 = QLabel("AMR maximum DOF")
+        self.labelAMRmaxdof1.setFixedWidth(label_width)
+        self._mesh_labels.append(self.labelAMRmaxdof1)
+        self.amr_maxdof_layout.addWidget(self.labelAMRmaxdof1)
+        self.amr_maxdof_edit = QLineEdit("2000000")
+        self.amr_maxdof_edit.setFixedWidth(edit_width)
+        self.amr_maxdof_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.amr_maxdof_layout.addWidget(self.amr_maxdof_edit)
+        self.amr_maxdof_layout.addStretch()
+        self.AMR_layout.addLayout(self.amr_maxdof_layout)
+
+        def on_show_advanced_changed(value):
+            show = (value == "Yes")
+            for item in [self.labelAMRgoal1, self.amr_goal_edit,
+                         self.labelAMRmaxdof1, self.amr_maxdof_edit]:
+                item.setVisible(show)
+
+        self.show_advanced_box.currentTextChanged.connect(on_show_advanced_changed)
+        on_show_advanced_changed(self.show_advanced_box.currentText())
 
         self.AMR_group.setLayout(self.AMR_layout)
         self.main_layout.addWidget(self.AMR_group)
@@ -953,6 +1099,7 @@ class MeshTab(QWidget):
         self.boundary_layout = QHBoxLayout()
         self.label6 = QLabel("Boundary conditions")
         self.label6.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label6)
         self.boundary_layout.addWidget(self.label6)
         self.boundary_box = QComboBox()
         self.boundary_box.setFixedWidth(edit_width)
@@ -965,6 +1112,7 @@ class MeshTab(QWidget):
         self.margins_layout = QHBoxLayout()
         self.label7 = QLabel("Dielectric stackup: oversize by")
         self.label7.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label7)
         self.margins_layout.addWidget(self.label7)
         self.margins_edit = QLineEdit("200")
         self.margins_edit.setFixedWidth(edit_width)
@@ -979,6 +1127,7 @@ class MeshTab(QWidget):
         self.airaround_layout = QHBoxLayout()
         self.label9 = QLabel("Air layer thickness around stackup is")
         self.label9.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label9)
         self.airaround_layout.addWidget(self.label9)
 
         self.airaround_box = QComboBox()
@@ -1001,6 +1150,7 @@ class MeshTab(QWidget):
         self.airx_layout = QHBoxLayout()
         self.label11 = QLabel("at xmin, xmax")
         self.label11.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label11)
         self.label11.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.airx_layout.addWidget(self.label11)
         self.airxmin_edit = QLineEdit("200")
@@ -1019,6 +1169,7 @@ class MeshTab(QWidget):
         self.airy_layout = QHBoxLayout()
         self.label13 = QLabel("at ymin, ymax")
         self.label13.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label13)
         self.label13.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.airy_layout.addWidget(self.label13)
         self.airymin_edit = QLineEdit("200")
@@ -1037,6 +1188,7 @@ class MeshTab(QWidget):
         self.airz_layout = QHBoxLayout()
         self.label15 = QLabel("at zmin, zmax")
         self.label15.setFixedWidth(label_width)
+        self._mesh_labels.append(self.label15)
         self.label15.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.airz_layout.addWidget(self.label15)
         self.airzmin_edit = QLineEdit("200")
@@ -1073,6 +1225,20 @@ class MeshTab(QWidget):
         self.mesh_group.setLayout(self.mesh_layout)
         self.main_layout.addWidget(self.mesh_group)
 
+        # widen every row label to fit the longest one's own rendered text.
+        # sizeHint() is no use here - once a label has an explicit
+        # setFixedWidth() (already applied above) and sits in a layout, Qt
+        # reports that fixed value back as its sizeHint() instead of the
+        # text's natural width, so every label would appear identically
+        # "already wide enough". Measure the actual glyph width directly via
+        # QFontMetrics instead, which reflects the real font/DPI regardless
+        # of any size already imposed on the widget - a fixed pixel guess
+        # doesn't survive different fonts/DPI scaling (labels were
+        # truncating on Linux at high DPI).
+        widest = max(QFontMetrics(lbl.font()).horizontalAdvance(lbl.text())
+                     for lbl in self._mesh_labels)
+        for lbl in self._mesh_labels:
+            lbl.setFixedWidth(widest + 10)
 
         self.setLayout(self.main_layout)
 
@@ -1126,7 +1292,7 @@ class MeshTab(QWidget):
             value = float(self.refinement_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for mesh refinement")
-            self.refinement_edit.setText("5")
+            self.refinement_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "refined_cellsize", "5")))
             return False
         saved_values ["refined_cellsize"] = float(value)
         saved_values ["refined_cellsize_override"] = self._refined_cellsize_override
@@ -1137,7 +1303,7 @@ class MeshTab(QWidget):
             value = float(self.cells_lambda_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for cells/wavelength")
-            self.cells_lambda_edit.setText("10")
+            self.cells_lambda_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "cells_per_wavelength", "10")))
             return False
         saved_values ["cells_per_wavelength"] = float(value)
 
@@ -1145,7 +1311,7 @@ class MeshTab(QWidget):
             value = float(self.cells_maxsize_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for max. meshsize")
-            self.cells_maxsize_edit.setText("100")
+            self.cells_maxsize_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "meshsize_max", "100")))
             return False
         saved_values ["meshsize_max"] = float(value)
 
@@ -1153,9 +1319,25 @@ class MeshTab(QWidget):
             value = int(self.AMR_iterations_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for AMR iterations")
-            self.AMR_iterations_edit.setText("0")
+            self.AMR_iterations_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "adaptive_mesh_iterations", "0")))
             return False
         saved_values ["adaptive_mesh_iterations"] = int(value)
+
+        try:
+            value = float(self.amr_goal_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value for AMR goal")
+            self.amr_goal_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "amr_tol", "0.01")))
+            return False
+        saved_values ["amr_tol"] = float(value)
+
+        try:
+            value = int(self.amr_maxdof_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value for AMR maximum DOF")
+            self.amr_maxdof_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "amr_max_dof", "2000000")))
+            return False
+        saved_values ["amr_max_dof"] = int(value)
 
 
         # iterative or direct solver for Elmer
@@ -1174,7 +1356,7 @@ class MeshTab(QWidget):
             value = float(self.margins_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for dielectric oversize margin")
-            self.margins_edit.setText("200")
+            self.margins_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "margin", "200")))
             return False
         saved_values ["margin"] = float(value)
 
@@ -1230,13 +1412,16 @@ class MeshTab(QWidget):
 
 
     def load_values(self):
-        self.refinement_edit.setText(str(saved_values.get("refined_cellsize","5")))
+        app_name = self.MainWindow.APP_NAME
+        self.refinement_edit.setText(str(saved_values.get("refined_cellsize", get_preference(app_name, "refined_cellsize", "5"))))
         self._refined_cellsize_override = list(saved_values.get("refined_cellsize_override", []))
         self._update_refined_override_button_label()
-        self.cells_lambda_edit.setText(str(saved_values.get("cells_per_wavelength","10")))
-        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max","100")))
-        self.AMR_iterations_edit.setText(str(saved_values.get("adaptive_mesh_iterations","0")))
-        self.margins_edit.setText(str(saved_values.get("margin","200")))
+        self.cells_lambda_edit.setText(str(saved_values.get("cells_per_wavelength", get_preference(app_name, "cells_per_wavelength", "10"))))
+        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max", get_preference(app_name, "meshsize_max", "100"))))
+        self.AMR_iterations_edit.setText(str(saved_values.get("adaptive_mesh_iterations", get_preference(app_name, "adaptive_mesh_iterations", "0"))))
+        self.amr_goal_edit.setText(str(saved_values.get("amr_tol", get_preference(app_name, "amr_tol", "0.01"))))
+        self.amr_maxdof_edit.setText(str(saved_values.get("amr_max_dof", get_preference(app_name, "amr_max_dof", "2000000"))))
+        self.margins_edit.setText(str(saved_values.get("margin", get_preference(app_name, "margin", "200"))))
 
         self.mesh_order_box.setCurrentIndex(int(saved_values.get("order", 2))-1)
 
@@ -1256,8 +1441,14 @@ class MeshTab(QWidget):
         # check if air layer is defined at all, or single value or list
         air = saved_values.get("air_around","")
         if air == "":
-            # no value defined, use same value as dielectric margins
-            self.airaround_edit.setText(saved_values.get("margin","200"))
+            # no value defined: an explicit air_around preference wins, otherwise
+            # fall back to the (also preference-aware) dielectric margin value -
+            # this mirrors the tab's original "same as margins" convenience default
+            air_pref = get_preference(self.MainWindow.APP_NAME, "air_around", "")
+            if str(air_pref) != "":
+                self.airaround_edit.setText(str(air_pref))
+            else:
+                self.airaround_edit.setText(str(saved_values.get("margin", get_preference(self.MainWindow.APP_NAME, "margin", "200"))))
             self.airaround_box.setCurrentIndex(0)
         else:
             # native JSON round-trip stores this as a real list of floats;
@@ -1315,15 +1506,15 @@ class CreateModelTab(CreateModelTabBase):
 
         # S-parameter result viewer + model fit: appended here (not in the shared
         # CreateModelTabBase) since setupThermal has no S-parameters and must not
-        # show these buttons. Added as a row of the base class's buttons_grid
-        # (not a separate layout) so this row's two-thirds/one-third split lines
-        # up exactly with Preview/Create Mesh/Start Simulation above, in the same
-        # Actions group.
+        # show these buttons. Added as a row of the base class's buttons_grid (not a
+        # separate layout) so this row's column widths line up exactly with
+        # Preview/Create Mesh/Start Simulation above, in the same Actions group.
         row = self.buttons_grid.rowCount()
         self.view_results_btn = QPushButton("📈 View S-Parameters...")
         self.view_results_btn.clicked.connect(self.MainWindow.open_result_viewer)
         self.buttons_grid.addWidget(self.view_results_btn, row, 0)
         self.model_fit_btn = QPushButton("🧩 Model Fit...")
+        self.model_fit_btn.setFixedWidth(SECONDARY_BUTTON_WIDTH)
         self.model_fit_btn.clicked.connect(self.open_model_fit)
         self.buttons_grid.addWidget(self.model_fit_btn, row, 1)
 
@@ -1339,6 +1530,291 @@ class CreateModelTab(CreateModelTabBase):
         self.paraview_btn.clicked.connect(self.launch_paraview)
         self.buttons_grid.addWidget(self.paraview_btn, row, 0)
         self._update_paraview_button_visibility()
+
+        # Live solver-progress status line, below the log area. Palace-only: visibility is
+        # driven by MainWindow.setPalaceMode()/setElmerMode() combined with the
+        # "enable_status_bar" preference (see apply_preference_visibility()); this is
+        # just a placeholder default, replaced immediately below.
+        self.status_line = QLabel()
+        self.actions_layout.addWidget(self.status_line)
+        self._init_status_state()
+        self.apply_preference_visibility()
+
+    def apply_preference_visibility(self):
+        # Called from __init__, from MainWindow.setPalaceMode()/setElmerMode() (mode
+        # switch also affects status_line visibility), and from MainWindow's Preferences
+        # dialog on accept (live update, no restart needed).
+        enable_fit = get_preference_bool(self.MainWindow.APP_NAME, "enable_model_fit_button", True)
+        self.model_fit_btn.setVisible(enable_fit)
+        enable_status = get_preference_bool(self.MainWindow.APP_NAME, "enable_status_bar", True)
+        self.status_line.setVisible(enable_status and self.MainWindow.PalaceMode)
+
+    # --- Live Palace solver status line ------------------------------------------------
+    #
+    # Regexes matched against real Palace 0.16.0 stdout (see palace-x86_64.bin console
+    # output), one AMR iteration's worth of an 8-port sweep:
+    #   "Running with 16 MPI processes"
+    #   "Estimated current per-rank memory usage is: Min. 84.8M, Max. 87.1M, Avg. 85.7M, Total 1.3G"
+    #   "Estimated peak per-rank memory usage is: Min. 1.5G, Max. 1.6G, Avg. 1.5G, Total 24.2G"
+    #   "Sweeping excitation index 2 (2/8):"
+    #   "It 1/1: ω/2π = 9.300e+01 GHz (total elapsed time = 1.52e+01 s, solve 1/8)"
+    #   "Completed 1 iteration of adaptive mesh refinement (AMR):"
+    # "Estimated ... memory usage" appears both early (current, post mesh-partition) and
+    # again per AMR iteration (peak); the parser just keeps the latest value seen, whichever
+    # wording it came from. Deliberately per-rank, not per-node: per-rank Total is the sum
+    # of every individual rank's own estimate, i.e. the actual total memory footprint of the
+    # whole job, regardless of how ranks are distributed across nodes (per-node Total is only
+    # numerically the same thing when everything happens to run on a single node).
+    # "Sweeping excitation" marks a port in a uniform sweep; "Adding excitation" is the
+    # equivalent during PROM/adaptive offline construction (Beginning PROM construction
+    # offline phase: / Adding excitation index 1 (1/2):) - both mean "now on port N/M".
+    _RE_MPI = re.compile(r"Running with (\d+) MPI processes")
+    # "current" vs "peak" is NOT current-vs-forecast: real testing (AMR run, limit set
+    # to 4GB) showed "current" stays low while "peak" reports each iteration's real,
+    # already-incurred high-water mark (3.79 -> 5.08 -> 9.85 GB) - a current-only RAM
+    # check never saw those numbers and never fired. _check_ram_limit() now checks
+    # self._status_mem_gb, the same latest-of-either-kind value already shown on the
+    # live status line, instead of singling out one kind - see _parse_palace_status_line().
+    _RE_MEM_TOTAL = re.compile(r"Estimated (?:current|peak) per-rank memory usage is:.*Total\s+([\d.]+)([MG])")
+    _RE_EXCITATION = re.compile(r"(?:Sweeping|Adding) excitation index \d+ \((\d+)/(\d+)\):")
+    # "It i/n: ... (total elapsed time = t s, solve k/N)" in a uniform sweep, but only
+    # "It i/n: ... (total elapsed time = t s)" - no trailing solve k/N - during PROM's online
+    # (interpolated-evaluation) phase, so the solve suffix is matched separately and is
+    # optional; its presence is what distinguishes a real full-order solve from a PROM
+    # evaluation (see _parse_palace_status_line).
+    _RE_FREQ = re.compile(r"It (\d+)/(\d+):")
+    _RE_SOLVE_SUFFIX = re.compile(r"solve (\d+)/(\d+)\)")
+    # PROM's offline phase (building the reduced-order model) has no "It i/n" progress at
+    # all - only these per-port greedy-sampling steps, with no fixed total to divide by:
+    #   "Greedy iteration 1 (n = 4): ω* = 2.716e+01 GHz (4.986e-01), error = 7.573e-03, memory = 1/2"
+    _RE_GREEDY = re.compile(r"Greedy iteration (\d+) \(n = (\d+)\):")
+    # Different Palace releases report each just-finished AMR pass differently, but both
+    # number 1-based from the very first (unrefined-mesh) solve - there is no "iteration 0"
+    # in either wording. Confirmed two ways: the "global unknowns" figure on these lines
+    # matches the DOF count of the solve that just finished (not a next/refined mesh), and
+    # palace_results.py's own output-folder naming (iteration1/, iteration2/, ...) uses the
+    # same 1-based scheme.
+    #   "Completed 1 iteration of adaptive mesh refinement (AMR): Indicator norm=..., global unknowns=..."   (older release)
+    #   "Adaptive mesh refinement (AMR) iteration 1: Indicator norm=..., global unknowns=..."                 (v0.16.0-34-gea2e7b23)
+    # The newer release also prints "Proceeding with solve/estimate iteration 2..." right
+    # after refining/rebalancing, announcing the *next* iteration before its ports start
+    # solving - matched separately so the display updates immediately instead of lagging one
+    # iteration behind until that next iteration's own report line finally appears.
+    _RE_AMR_ITER_A = re.compile(r"Completed (\d+) iteration.*adaptive mesh refinement \(AMR\)")
+    _RE_AMR_ITER_B = re.compile(r"Adaptive mesh refinement \(AMR\) iteration (\d+):")
+    _RE_AMR_PROCEEDING = re.compile(r"Proceeding with solve/estimate iteration (\d+)")
+
+    def _init_status_state(self):
+        """Reset the tracked fields to unknown ('n/a'). Split out from
+        _reset_status_for_run() so __init__ can establish the attributes without
+        touching disk (config.json may not exist yet at construction time)."""
+        self._status_mpi = None
+        self._status_mem_gb = None
+        self._status_port_cur = None
+        self._status_port_total = None
+        self._status_freq_display = None
+        self._status_solve_display = ""
+        self._status_amr_cur = None
+        self._status_amr_max = None
+        self._ram_kill_triggered = False
+        self._ram_kill_message = None
+        self._update_status_line()
+
+    def _reset_status_for_run(self):
+        """Called from run_model() right after the log is cleared. Re-reads MaxIts out
+        of the just-generated config.json so the AMR field has a known ceiling from the
+        start, instead of only appearing once the first iteration-report line shows up
+        in the log."""
+        self._init_status_state()
+        if self.MainWindow.PalaceMode:
+            run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+            try:
+                with open(os.path.join(run_path, "config.json")) as f:
+                    config_data = json.load(f)
+                max_its = config_data.get("Model", {}).get("Refinement", {}).get("MaxIts", 0)
+                # 0 (AMR off) is a known value, distinct from None (unknown, e.g. config
+                # unreadable) - _update_status_line() shows "0/0" for the former, "n/a" for
+                # the latter.
+                self._status_amr_max = max_its
+                self._status_amr_cur = 0  # the initial, unrefined-mesh solve displays as "0"
+            except (OSError, ValueError, KeyError):
+                pass
+            self._update_status_line()
+
+    def _on_stdout_line(self, line):
+        if self.MainWindow.PalaceMode:
+            self._parse_palace_status_line(line)
+
+    def _reset_live_status(self):
+        self._init_status_state()
+
+    def _parse_palace_status_line(self, line):
+        m = self._RE_MPI.search(line)
+        if m:
+            self._status_mpi = int(m.group(1))
+            self._update_status_line()
+            return
+
+        m = self._RE_MEM_TOTAL.search(line)
+        if m:
+            value, unit = float(m.group(1)), m.group(2)
+            self._status_mem_gb = value / 1024 if unit == "M" else value
+            self._check_ram_limit()
+            self._update_status_line()
+            return
+
+        m = self._RE_EXCITATION.search(line)
+        if m:
+            self._status_port_cur = int(m.group(1))
+            self._status_port_total = int(m.group(2))
+            # New port: the previous port's frequency/solve position no longer applies.
+            self._status_freq_display = None
+            self._status_solve_display = ""
+            self._update_status_line()
+            return
+
+        m = self._RE_FREQ.search(line)
+        if m:
+            solve_m = self._RE_SOLVE_SUFFIX.search(line)
+            if solve_m:
+                # Real per-frequency full-order solve (uniform sweep) - meaningful progress.
+                self._status_freq_display = f"{m.group(1)}/{m.group(2)}"
+                self._status_solve_display = f" (solve {solve_m.group(1)}/{solve_m.group(2)})"
+            else:
+                # PROM online phase: cheap interpolated evaluation of the already-built
+                # reduced-order model, not a real solve (the whole sweep runs in ~1-2s) -
+                # still real progress through the output frequency list, just far cheaper
+                # than "It i/n" would mean for a uniform sweep, hence the distinct label.
+                self._status_freq_display = f"{m.group(1)}/{m.group(2)} (PROM eval)"
+                self._status_solve_display = ""
+            self._update_status_line()
+            return
+
+        m = self._RE_GREEDY.search(line)
+        if m:
+            # PROM offline phase: building the reduced-order model. No fixed total to show
+            # progress against, so just the greedy-sampling iteration and sample count.
+            self._status_freq_display = f"ROM build: iter {m.group(1)} (n={m.group(2)})"
+            self._status_solve_display = ""
+            self._update_status_line()
+            return
+
+        for amr_re in (self._RE_AMR_ITER_A, self._RE_AMR_ITER_B, self._RE_AMR_PROCEEDING):
+            m = amr_re.search(line)
+            if m and self._status_amr_max:
+                # Palace's own log numbers the initial, unrefined-mesh solve as "iteration
+                # 1" (confirmed earlier against DOF counts and palace_results.py's own
+                # iteration1/iteration2/... folder naming). Displayed here shifted down by
+                # 1 instead, so the initial solve reads "0" and each subsequent number
+                # counts completed *refinements* - e.g. the 2nd refinement (Palace's
+                # "iteration 3") reads "2/2" against a MaxIts=2 config, not "3/2". Not
+                # clamped to amr_max: MaxIts caps refinement actions, not solve passes, so
+                # the last legitimate pass is Palace's "iteration MaxIts+1" (displayed
+                # "MaxIts") - showing whatever Palace actually reports is more honest than
+                # silently capping it.
+                self._status_amr_cur = int(m.group(1)) - 1
+                self._update_status_line()
+                return
+
+    def _check_ram_limit(self):
+        """Called every time self._status_mem_gb updates - the same latest-
+        of-either-("current"-or-"peak")-kind value already shown on the live
+        status line (see _parse_palace_status_line()/_update_status_line()).
+        If it exceeds Preferences > Palace's "Stop Palace if memory exceeds"
+        limit, kill the solver and let run_sim's own postprocessing step run
+        on whatever it already computed (see
+        _kill_palace_process_for_ram_limit()). Guarded by _ram_kill_triggered
+        so this only ever fires once per run, even though more memory lines
+        may still arrive before the kill actually takes effect.
+        """
+        if self._ram_kill_triggered or self._status_mem_gb is None:
+            return
+        if self.process.state() != QProcess.Running:
+            return
+        try:
+            limit_gb = float(get_preference(self.MainWindow.APP_NAME, "palace_max_ram_gb", "100"))
+        except (TypeError, ValueError):
+            limit_gb = 100.0
+        if limit_gb <= 0 or self._status_mem_gb <= limit_gb:
+            return
+
+        self._ram_kill_triggered = True
+        # also re-appended at the very end of the log once the run actually
+        # finishes (on_finished(), after the results summary) - by then
+        # Palace's own remaining output plus combine_snp's could easily push
+        # this first appearance out of view
+        self._ram_kill_message = (
+            f"⚠️ Palace memory usage ({self._status_mem_gb:.2f} GB) exceeded the "
+            f"configured limit ({limit_gb:.0f} GB) - terminated the solver."
+        )
+        self.log_area.appendPlainText(
+            f"\n{self._ram_kill_message}\n"
+            "Running S-parameter postprocessing on whatever results were already computed...\n"
+        )
+        self._kill_palace_process_for_ram_limit()
+
+    def _kill_palace_process_for_ram_limit(self):
+        """Kill only the actual Palace solver process, not run_sim's own
+        wrapper shell (self.process) - run_sim is a plain 2-line script
+        (run_palace, then combine_snp) with no 'set -e', so bash continues
+        to the combine_snp line regardless of how the first one exited,
+        same as it already does today when run_palace simply isn't found
+        (see _check_run_script_ready()'s docstring). Leaving self.process
+        itself alone means that still happens here: on_finished() fires
+        normally once run_sim's whole script (both lines) completes, same
+        as any other run - no separate postprocessing step to launch.
+
+        self.process (wsl.exe, or the shell directly on Linux/Mac) is only
+        the wrapper - the real Palace binary(ies) run one or more layers
+        deeper (inside WSL, and/or under mpirun for multi-rank runs), so
+        this reaches in with pkill by process name instead of signaling
+        self.process. Best-effort: if the actual binary/launcher name ever
+        changes, or Palace is otherwise unkillable this way (hung mpirun,
+        etc.), _escalate_ram_kill_if_still_running() force-terminates
+        self.process (the whole wrapper) after a grace period instead -
+        at the cost of combine_snp not getting to run in that fallback.
+        """
+        try:
+            if os.name == "nt":
+                run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+                wsl_run_path = self._windows_to_wsl_path(run_path)
+                subprocess.run(
+                    ["wsl.exe", "--cd", wsl_run_path, "--", "bash", "-lc",
+                     "pkill -f palace-x86_64 || pkill -f run_palace"],
+                    capture_output=True, text=True, timeout=10)
+            else:
+                subprocess.run(["pkill", "-f", "palace-x86_64"], capture_output=True, text=True, timeout=10)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.log_area.appendPlainText(f"⚠️ Could not signal the Palace process directly: {e}\n")
+
+        QTimer.singleShot(10000, self._escalate_ram_kill_if_still_running)
+
+    def _escalate_ram_kill_if_still_running(self):
+        if self.process.state() == QProcess.Running:
+            self.log_area.appendPlainText(
+                "⚠️ Palace did not stop within 10s of the memory-limit kill signal - "
+                "forcefully terminating the run (S-parameter postprocessing will be skipped).\n"
+            )
+            self.terminate_run()
+
+    def _update_status_line(self):
+        mpi = self._status_mpi if self._status_mpi is not None else "n/a"
+        try:
+            mem_limit_gb = float(get_preference(self.MainWindow.APP_NAME, "palace_max_ram_gb", "100"))
+        except (TypeError, ValueError):
+            mem_limit_gb = 100.0
+        mem = (f"{self._status_mem_gb:.2f}/{mem_limit_gb:.0f} GB"
+               if self._status_mem_gb is not None else "n/a")
+        port = (f"{self._status_port_cur}/{self._status_port_total}"
+                if self._status_port_cur is not None else "n/a")
+        freq = self._status_freq_display if self._status_freq_display is not None else "n/a"
+        solve = self._status_solve_display
+        amr = "n/a" if self._status_amr_max is None else f"{self._status_amr_cur}/{self._status_amr_max}"
+
+        self.status_line.setText(
+            f"MPI processes: {mpi}    |    Est. memory: {mem}    |    "
+            f"Port: {port}    |    Freq: {freq}{solve}    |    AMR iteration: {amr}"
+        )
 
     def open_model_fit(self):
         SNP2LE_URL = "https://github.com/iic-jku/snp2le"
@@ -1464,6 +1940,11 @@ class CreateModelTab(CreateModelTabBase):
         # Auto-append the results summary after a real simulation run (not after mesh creation)
         if self._process_purpose == "run_simulation" and self.MainWindow.PalaceMode:
             self._append_results_summary()
+            if self._ram_kill_triggered and self._ram_kill_message:
+                # repeat the warning after the summary/combine_snp output that
+                # followed it, so it's not lost above everything else logged
+                # since the kill actually happened
+                self.log_area.appendPlainText(f"\n{self._ram_kill_message}\n")
         elif self._process_purpose == "install_snp2le":
             importlib.invalidate_caches()
             if exit_code == 0 and importlib.util.find_spec("snp2le") is not None:
@@ -1476,6 +1957,20 @@ class CreateModelTab(CreateModelTabBase):
                     f"⚠️ snp2le installation failed (exit code {exit_code}). "
                     f"Try manually: pip install snp2le\n"
                 )
+        # self.process here is run_sim's whole script (run_palace THEN combine_snp,
+        # run sequentially), so "finished" firing guarantees combine_snp has already
+        # run - an already-open result viewer can safely rescan for real Touchstone
+        # files now, seamlessly replacing any live port-S.csv preview it was showing.
+        if self._process_purpose == "run_simulation" and self.MainWindow.result_viewer_window is not None:
+            self.MainWindow.result_viewer_window._rescan_files()
+
+    def on_process_error(self, error):
+        super().on_process_error(error)
+        # Covers QProcess.FailedToStart/Crashed, where "finished" may not fire the
+        # same way - an open viewer left showing a "still running" live preview
+        # should switch to the "stopped" wording rather than get stuck.
+        if self.MainWindow.result_viewer_window is not None:
+            self.MainWindow.result_viewer_window._rescan_files()
 
     def create_model(self):
         # Request all tabs to save values again,
@@ -1574,104 +2069,127 @@ class CreateModelTab(CreateModelTabBase):
             run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
         else:
             run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
-        self._confirm_clear_previous_results(run_path)
 
-        # clear log
-        self.log_area.clear()
-        self._process_purpose = "run_simulation"
-
+        # ---------- pre-flight checks: fail fast, before asking to delete
+        # previous results or touching QProcess at all - see setup_common.py's
+        # _check_*/_check_wsl_* helpers for the shared checking logic ----------
         if self.MainWindow.PalaceMode:
-            self.log_area.appendPlainText("Trying to start Palace using script ./run_sim now")
-            run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
-
+            if self._check_run_script_ready(run_path, "run_sim") is None:
+                return
             if os.name == "nt":
-                #  Windows
-
-                def windows_to_wsl_path(win_path: str) -> str:
-                    """
-                    Convert a Windows-style path like:
-                        C:\\Users\\Volker\\Projects\\SimApp
-                    into a WSL-style path like:
-                        /mnt/c/Users/Volker/Projects/SimApp
-                    """
-                    win_path = win_path.strip()
-                    if not win_path or ":" not in win_path:
-                        return win_path  # Already looks like a Linux path or invalid
-                    drive, rest = win_path.split(":", 1)
-                    drive = drive.lower()
-                    rest = rest.replace("\\", "/").lstrip("/")
-                    return f"/mnt/{drive}/{rest}"
-
-
-                wsl_run_path = windows_to_wsl_path(run_path)
-                self.log_area.appendPlainText("Running on Windows with WSL: starting ./run_sim ...")
-                self.log_area.appendPlainText("Note that this works for LOCAL drives only, we can't open WSL on network drive.\n")
-                # Run wsl.exe directly as self.process (no terminal emulator in between), so Palace's
-                # stdout/stderr stream into this log via the existing on_stdout/on_stderr handlers, and
-                # on_finished fires with the real exit code when ./run_sim actually completes -- instead
-                # of opening a detached terminal window, whose own quoting/tokenization rules (cmd's
-                # "start", and wt.exe's own use of ";" as a pane/command separator) make embedding a
-                # multi-step shell command fragile, and whose completion can't be tracked anyway.
-                # bash -lc: login shell so ~/.profile (where PATH additions for run_palace/combine_snp
-                # usually live, per gds2palace's scripts/README.md) gets sourced, same as a manually
-                # typed ./run_sim in a fresh WSL login shell would.
-                self.process.start("wsl.exe", [
-                    "--cd", wsl_run_path,
-                    "--", "bash", "-lc", "./run_sim"
-                ])
-            else:
-                # Linux
-                self.log_area.appendPlainText('Setting work directory ' + run_path)
-                # make file executable
-                run_file = os.path.join(run_path, 'run_sim')
-                os.chmod(run_file, 0o755)
-
-                self.process.setWorkingDirectory(run_path)
-                # start simulation
-                self.process.start(".//run_sim")
-
-        else:
-            # Elmer mode
-
-            # try to start from output directory
-            run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
-
-            if os.name == "nt":
-                #  Windows
-
-                self.log_area.appendPlainText('Setting work directory ' + run_path)
-
-                # create_elmer_run_script() (util_utilities.py) writes run_elmer.bat
-                # directly on Windows (proper .bat content - no "#!/bin/bash" shebang,
-                # and MS-MPI's "mpiexec -n N" instead of the Linux-only "mpirun -np N"),
-                # so no rename step is needed here any more.
-                if saved_values.get('ELMER_MPI_THREADS', 1) > 1 and shutil.which("mpiexec") is None:
-                    self.log_area.appendPlainText(
-                        "⚠️ This model requests MPI multithreading, but 'mpiexec' was not "
-                        "found on PATH. On Windows, Elmer uses Microsoft MPI - download and "
-                        "install it from "
-                        "https://learn.microsoft.com/en-us/message-passing-interface/microsoft-mpi "
-                        "and restart setupEM, or switch to 1 thread (no multithreading) on the "
-                        "Mesh and Boundaries tab.\n"
-                    )
+                if not self._check_wsl_ready():
                     return
-                self.process.setWorkingDirectory(run_path)
-                # start simulation - full path, not just "run_elmer.bat": Windows'
-                # CreateProcess resolves a bare relative program name against the
-                # CALLING process's own cwd/PATH, not the child's setWorkingDirectory(),
-                # so a bare filename here silently fails with FailedToStart even though
-                # setWorkingDirectory() is set correctly.
-                self.process.start(os.path.join(run_path, "run_elmer.bat"))
+                wsl_run_path = self._windows_to_wsl_path(run_path)
+                if not self._check_wsl_commands_ready(wsl_run_path, ["run_palace", "combine_snp"]):
+                    return
             else:
-                # Linux
-                self.log_area.appendPlainText('Setting work directory ' + run_path)
-                # make file executable
-                run_file = os.path.join(run_path, 'run_elmer')
-                os.chmod(run_file, 0o755)
+                palace_hint = ("Install Palace and make sure it is on PATH "
+                                "(see the gds2palace scripts/README.md).")
+                if self._check_command_on_path("run_palace", palace_hint) is None:
+                    return
+                if self._check_command_on_path("combine_snp", palace_hint) is None:
+                    return
+        else:
+            elmer_script = "run_elmer.bat" if os.name == "nt" else "run_elmer"
+            if self._check_run_script_ready(run_path, elmer_script) is None:
+                return
+            elmer_hint = "Install Elmer FEM and make sure ElmerSolver is on PATH."
+            if self._check_command_on_path("ElmerSolver", elmer_hint) is None:
+                return
+            if saved_values.get('ELMER_MPI_THREADS', 1) > 1:
+                if os.name == "nt":
+                    mpi_hint = (
+                        "On Windows, Elmer uses Microsoft MPI - download and install it "
+                        "from https://learn.microsoft.com/en-us/message-passing-interface/microsoft-mpi "
+                        "and restart setupEM, or switch to 1 thread (no multithreading) on "
+                        "the Mesh and Boundaries tab."
+                    )
+                    if self._check_command_on_path("mpiexec", mpi_hint,
+                                                    reason="This model requests MPI multithreading") is None:
+                        return
+                else:
+                    mpi_hint = (
+                        "Install an MPI implementation (e.g. OpenMPI or MPICH), "
+                        "or switch to 1 thread (no multithreading) on the "
+                        "Mesh and Boundaries tab."
+                    )
+                    if self._check_command_on_path("mpirun", mpi_hint,
+                                                    reason="This model requests MPI multithreading") is None:
+                        return
 
-                self.process.setWorkingDirectory(run_path)
-                # start simulation
-                self.process.start(".//run_elmer")
+        try:
+            self._confirm_clear_previous_results(run_path)
+
+            # clear log
+            self.log_area.clear()
+            self._reset_status_for_run()
+            self._process_purpose = "run_simulation"
+
+            if self.MainWindow.PalaceMode:
+                self.log_area.appendPlainText("Trying to start Palace using script ./run_sim now")
+
+                if os.name == "nt":
+                    #  Windows
+                    wsl_run_path = self._windows_to_wsl_path(run_path)
+                    self.log_area.appendPlainText("Running on Windows with WSL: starting ./run_sim ...")
+                    self.log_area.appendPlainText("Note that this works for LOCAL drives only, we can't open WSL on network drive.\n")
+                    # Run wsl.exe directly as self.process (no terminal emulator in between), so Palace's
+                    # stdout/stderr stream into this log via the existing on_stdout/on_stderr handlers, and
+                    # on_finished fires with the real exit code when ./run_sim actually completes -- instead
+                    # of opening a detached terminal window, whose own quoting/tokenization rules (cmd's
+                    # "start", and wt.exe's own use of ";" as a pane/command separator) make embedding a
+                    # multi-step shell command fragile, and whose completion can't be tracked anyway.
+                    # bash -lc: login shell so ~/.profile (where PATH additions for run_palace/combine_snp
+                    # usually live, per gds2palace's scripts/README.md) gets sourced, same as a manually
+                    # typed ./run_sim in a fresh WSL login shell would.
+                    self.process.start("wsl.exe", [
+                        "--cd", wsl_run_path,
+                        "--", "bash", "-lc", "./run_sim"
+                    ])
+                else:
+                    # Linux
+                    self.log_area.appendPlainText('Setting work directory ' + run_path)
+                    # make file executable
+                    run_file = os.path.join(run_path, 'run_sim')
+                    os.chmod(run_file, 0o755)
+
+                    self.process.setWorkingDirectory(run_path)
+                    # start simulation
+                    self.process.start(".//run_sim")
+
+            else:
+                # Elmer mode
+                self.log_area.appendPlainText('Setting work directory ' + run_path)
+
+                if os.name == "nt":
+                    #  Windows
+                    self.process.setWorkingDirectory(run_path)
+                    # start simulation - full path, not just "run_elmer.bat": Windows'
+                    # CreateProcess resolves a bare relative program name against the
+                    # CALLING process's own cwd/PATH, not the child's setWorkingDirectory(),
+                    # so a bare filename here silently fails with FailedToStart even though
+                    # setWorkingDirectory() is set correctly.
+                    self.process.start(os.path.join(run_path, "run_elmer.bat"))
+                else:
+                    # Linux
+                    # make file executable
+                    run_file = os.path.join(run_path, 'run_elmer')
+                    os.chmod(run_file, 0o755)
+
+                    self.process.setWorkingDirectory(run_path)
+                    # start simulation
+                    self.process.start(".//run_elmer")
+
+            # If the result viewer is already open, arm its live-preview polling
+            # immediately rather than waiting for some other trigger (e.g. the window's
+            # own showEvent(), which won't fire again for an already-visible window).
+            if self.MainWindow.result_viewer_window is not None:
+                self.MainWindow.result_viewer_window._rescan_files()
+        except Exception as e:
+            # defense in depth: the checks above cover every known missing-
+            # prerequisite case, this is a last-resort net against anything
+            # unanticipated, so it never surfaces as an uncaught traceback
+            self.log_area.appendPlainText(f"⚠️ Unexpected error while starting the simulation: {e}\n")
 
 
 class ModelEditorTab(QWidget):
@@ -1910,6 +2428,288 @@ class ModelEditorTab(QWidget):
         self.create_model_text(forExport=True)  # show "external" code including run from Python model
 
 
+# ---------- PREFERENCES DIALOG ----------
+
+class PreferencesDialog(QDialog):
+    """File > Preferences ...: per-user defaults for fields that used to be plain
+    hardcoded literals (e.g. FrequenciesTab's fstart/fstop). Persisted via
+    get_preference()/set_preference() (setup_common.py) - a dedicated QSettings
+    store, separate from *.simcfg project files and from "Save as Default Config".
+    Editing a value here only changes what a brand-new/blank field starts out
+    showing; it never touches the currently open project's saved_values.
+    """
+
+    def __init__(self, MainWindow):
+        super().__init__(MainWindow)
+        self.MainWindow = MainWindow
+        self.app_name = MainWindow.APP_NAME
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(420)
+
+        outer_layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        outer_layout.addWidget(self.tabs)
+
+        label_width = 260
+
+        # (widget, key, default, kind) for every preference-backed field in this
+        # dialog, so "Reset all to default" (see _reset_to_defaults()) can put
+        # every widget back to its built-in default without hand-listing them
+        # again separately - add_row() below appends "text" entries itself;
+        # each standalone QCheckBox appends its own "bool" entry.
+        self._reset_targets = []
+
+        def add_row(form_layout, label_text, key, default, tooltip=None):
+            row = QHBoxLayout()
+            label = QLabel(label_text)
+            label.setFixedWidth(label_width)
+            row.addWidget(label)
+            edit = QLineEdit(str(get_preference(self.app_name, key, default)))
+            edit.setStyleSheet(EDIT_STYLE_REQUIRED)
+            row.addWidget(edit)
+            if tooltip:
+                label.setToolTip(tooltip)
+                edit.setToolTip(tooltip)
+            form_layout.addLayout(row)
+            self._reset_targets.append((edit, key, default, "text"))
+            return edit
+
+        # ---------- Files tab ----------
+        files_widget = QWidget()
+        files_form = QVBoxLayout(files_widget)
+        files_form.setAlignment(Qt.AlignTop)
+
+        xml_dir_row = QHBoxLayout()
+        xml_dir_label = QLabel("XML file browser starts from")
+        xml_dir_label.setFixedWidth(label_width)
+        xml_dir_row.addWidget(xml_dir_label)
+        self.xml_browse_dir_edit = QLineEdit(str(get_preference(self.app_name, "xml_browse_directory", "")))
+        self.xml_browse_dir_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.xml_browse_dir_edit.setPlaceholderText("(bundled with setupEM)")
+        self.xml_browse_dir_edit.setToolTip(
+            "Folder the XML Stackup File browse dialog starts from. "
+            "Leave empty to use the XML files bundled with setupEM."
+        )
+        xml_dir_row.addWidget(self.xml_browse_dir_edit, 1)
+        self.xml_browse_dir_btn = QPushButton("Browse ...")
+        self.xml_browse_dir_btn.clicked.connect(self._browse_xml_default_dir)
+        xml_dir_row.addWidget(self.xml_browse_dir_btn)
+        files_form.addLayout(xml_dir_row)
+        self._reset_targets.append((self.xml_browse_dir_edit, "xml_browse_directory", "", "text"))
+
+        self.purpose_edit = add_row(files_form, "Default GDS layer purpose", "purpose", "0")
+        self.viamerge_edit = add_row(files_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
+        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an imported model's filename as the output file")
+        self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
+        files_form.addWidget(self.confirm_reuse_checkbox)
+        self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
+
+        files_form.addStretch()
+        self.tabs.addTab(files_widget, "Files")
+
+        # ---------- Ports tab ----------
+        ports_widget = QWidget()
+        ports_form = QVBoxLayout(ports_widget)
+        ports_form.setAlignment(Qt.AlignTop)
+        self.port_layer_min_edit = add_row(ports_form, "Auto-assign source layer range: min", "port_layer_min", "201")
+        self.port_layer_max_edit = add_row(ports_form, "Auto-assign source layer range: max", "port_layer_max", "299")
+        ports_form.addStretch()
+        self.tabs.addTab(ports_widget, "Ports")
+
+        # ---------- Frequencies tab ----------
+        freq_widget = QWidget()
+        freq_form = QVBoxLayout(freq_widget)
+        freq_form.setAlignment(Qt.AlignTop)
+        self.fstart_edit = add_row(freq_form, "Default fstart (GHz)", "fstart", "0")
+        self.fstop_edit = add_row(freq_form, "Default fstop (GHz)", "fstop", "50")
+        freq_form.addStretch()
+        self.tabs.addTab(freq_widget, "Frequencies")
+
+        # ---------- Mesh tab ----------
+        mesh_widget = QWidget()
+        mesh_form = QVBoxLayout(mesh_widget)
+        mesh_form.setAlignment(Qt.AlignTop)
+        self.refined_cellsize_edit = add_row(mesh_form, "Mesh refinement at metal edges (µm)", "refined_cellsize", "5")
+        self.cells_per_wavelength_edit = add_row(mesh_form, "Mesh cells per wavelength", "cells_per_wavelength", "10")
+        self.meshsize_max_edit = add_row(mesh_form, "Mesh cell maximum size (µm)", "meshsize_max", "100")
+        self.adaptive_mesh_iterations_edit = add_row(mesh_form, "Adaptive mesh iterations", "adaptive_mesh_iterations", "0")
+        self.margin_edit = add_row(mesh_form, "Dielectric stackup oversize margin (µm)", "margin", "200")
+        self.air_around_edit = add_row(mesh_form, "Air layer thickness around stackup (µm)", "air_around", "")
+        self.air_around_edit.setPlaceholderText("same as dielectric margin")
+        self.air_around_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        mesh_form.addStretch()
+        self.tabs.addTab(mesh_widget, "Mesh")
+
+        # ---------- Palace tab ----------
+        palace_widget = QWidget()
+        palace_form = QVBoxLayout(palace_widget)
+        palace_form.setAlignment(Qt.AlignTop)
+        self.amr_goal_edit = add_row(
+            palace_form, "AMR goal (relative error tolerance)", "amr_tol", "0.01",
+            tooltip=("Target relative error of Palace's own mesh error estimator "
+                     "(Norm/Max/Mean indicators) - not a change in S-parameters "
+                     "between AMR iterations"))
+        self.amr_maxdof_edit = add_row(palace_form, "AMR maximum DOF", "amr_max_dof", "2000000")
+        self.palace_max_ram_edit = add_row(
+            palace_form, "Stop Palace if memory exceeds (GB)", "palace_max_ram_gb", "100",
+            tooltip=("Terminates the solver once its reported memory usage exceeds this, "
+                     "then runs S-parameter postprocessing on whatever results were "
+                     "already computed, same as a normal completed run."))
+        palace_form.addStretch()
+        self.tabs.addTab(palace_widget, "Palace")
+
+        # ---------- Create Model tab ----------
+        create_widget = QWidget()
+        create_form = QVBoxLayout(create_widget)
+        create_form.setAlignment(Qt.AlignTop)
+        self.enable_model_fit_checkbox = QCheckBox('Show "Model Fit ..." button')
+        self.enable_model_fit_checkbox.setChecked(get_preference_bool(self.app_name, "enable_model_fit_button", True))
+        create_form.addWidget(self.enable_model_fit_checkbox)
+        self._reset_targets.append((self.enable_model_fit_checkbox, "enable_model_fit_button", True, "bool"))
+        self.enable_status_bar_checkbox = QCheckBox("Show live solver status line (Palace mode)")
+        self.enable_status_bar_checkbox.setChecked(get_preference_bool(self.app_name, "enable_status_bar", True))
+        create_form.addWidget(self.enable_status_bar_checkbox)
+        self._reset_targets.append((self.enable_status_bar_checkbox, "enable_status_bar", True, "bool"))
+        create_form.addStretch()
+        self.tabs.addTab(create_widget, "Create Model")
+
+        # ---------- Simplify GDS tab ----------
+        simplify_widget = QWidget()
+        simplify_form = QVBoxLayout(simplify_widget)
+        simplify_form.setAlignment(Qt.AlignTop)
+        self.simplify_max_hole_area_edit = add_row(
+            simplify_form, "Maximum cutout area to remove (µm²)", "simplify_max_hole_area", "1")
+        self.simplify_max_hole_area_edit.setPlaceholderText("blank = remove all cutouts")
+        self.simplify_max_hole_area_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_fill_maxsize_edit = add_row(
+            simplify_form, "Maximum floating fill size (µm)", "simplify_fill_maxsize", "20")
+        self.simplify_fill_maxsize_edit.setPlaceholderText("blank = no size limit")
+        self.simplify_fill_maxsize_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_excluded_layers_edit = add_row(
+            simplify_form, "Layers excluded from simplification", "simplify_excluded_layers", "")
+        self.simplify_excluded_layers_edit.setPlaceholderText("e.g. 10,11 - blank = none")
+        self.simplify_excluded_layers_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_merge_per_layer_checkbox = QCheckBox("Merge polygons per layer (final step)")
+        self.simplify_merge_per_layer_checkbox.setChecked(
+            get_preference_bool(self.app_name, "simplify_merge_per_layer", True))
+        simplify_form.addWidget(self.simplify_merge_per_layer_checkbox)
+        self._reset_targets.append((self.simplify_merge_per_layer_checkbox, "simplify_merge_per_layer", True, "bool"))
+        simplify_form.addStretch()
+        self.tabs.addTab(simplify_widget, "Simplify GDS")
+
+        # widen enough that every tab label fits without scroll arrows - a fixed
+        # pixel guess doesn't survive different fonts/DPI scaling, so measure the
+        # actual tab bar instead, now that every tab has been added
+        self.setMinimumWidth(max(420, self.tabs.tabBar().sizeHint().width() + 40))
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        # ResetRole: Qt places this on the opposite side from Ok/Cancel's
+        # Accept/Reject roles (the left, on every style this app runs under),
+        # matching the "very left side, near Ok/Cancel" placement asked for -
+        # no separate layout needed, the button box's own role logic handles it
+        self.reset_button = buttons.addButton("Reset all to default", QDialogButtonBox.ResetRole)
+        self.reset_button.clicked.connect(self._reset_to_defaults)
+        outer_layout.addWidget(buttons)
+
+    def _browse_xml_default_dir(self):
+        start = self.xml_browse_dir_edit.text() or os.path.join(os.path.dirname(__file__), "data")
+        directory = QFileDialog.getExistingDirectory(self, "Select Default XML Folder", start)
+        if directory:
+            self.xml_browse_dir_edit.setText(directory)
+
+    def _reset_to_defaults(self):
+        confirm = QMessageBox.question(
+            self, "Reset Preferences",
+            "Reset all Preferences to their built-in defaults?\n\n"
+            "This clears every value you've changed here - it cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        clear_preferences(self.app_name)
+        for widget, _key, default, kind in self._reset_targets:
+            if kind == "text":
+                widget.setText(str(default))
+            elif kind == "bool":
+                widget.setChecked(bool(default))
+        # live-apply immediately (matches what accept() does), so the running
+        # app reflects the reset right away rather than needing OK afterward
+        self.MainWindow.create_model_tab.apply_preference_visibility()
+
+    def accept(self):
+        # via-merge distance and the two mesh sizes must parse as numbers; everything
+        # else here (purpose, fstart/fstop, AMR iterations, air_around) is stored as
+        # free text, same tolerant convention already used by the tabs themselves
+        try:
+            float(self.viamerge_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value for via array merge distance")
+            return
+        try:
+            port_layer_min = int(self.port_layer_min_edit.text())
+            port_layer_max = int(self.port_layer_max_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value in the Ports tab")
+            return
+        if port_layer_min > port_layer_max:
+            QMessageBox.warning(self, "Error", "Ports: min layer must not be greater than max layer")
+            return
+        try:
+            float(self.refined_cellsize_edit.text())
+            float(self.cells_per_wavelength_edit.text())
+            float(self.meshsize_max_edit.text())
+            float(self.margin_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value in the Mesh tab")
+            return
+        if self.air_around_edit.text() != "":
+            try:
+                float(self.air_around_edit.text())
+            except Exception:
+                QMessageBox.warning(self, "Error", "Not a valid value for air layer thickness")
+                return
+        try:
+            float(self.amr_goal_edit.text())
+            int(self.amr_maxdof_edit.text())
+            max_ram_gb = float(self.palace_max_ram_edit.text())
+            if max_ram_gb <= 0:
+                raise ValueError
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value in the Palace tab")
+            return
+
+        set_preference(self.app_name, "purpose", self.purpose_edit.text())
+        set_preference(self.app_name, "confirm_reuse_import_filename", self.confirm_reuse_checkbox.isChecked())
+        set_preference(self.app_name, "xml_browse_directory", self.xml_browse_dir_edit.text())
+        set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
+        set_preference(self.app_name, "port_layer_min", self.port_layer_min_edit.text())
+        set_preference(self.app_name, "port_layer_max", self.port_layer_max_edit.text())
+        set_preference(self.app_name, "fstart", self.fstart_edit.text())
+        set_preference(self.app_name, "fstop", self.fstop_edit.text())
+        set_preference(self.app_name, "refined_cellsize", self.refined_cellsize_edit.text())
+        set_preference(self.app_name, "cells_per_wavelength", self.cells_per_wavelength_edit.text())
+        set_preference(self.app_name, "meshsize_max", self.meshsize_max_edit.text())
+        set_preference(self.app_name, "adaptive_mesh_iterations", self.adaptive_mesh_iterations_edit.text())
+        set_preference(self.app_name, "margin", self.margin_edit.text())
+        set_preference(self.app_name, "air_around", self.air_around_edit.text())
+        set_preference(self.app_name, "amr_tol", self.amr_goal_edit.text())
+        set_preference(self.app_name, "amr_max_dof", self.amr_maxdof_edit.text())
+        set_preference(self.app_name, "palace_max_ram_gb", self.palace_max_ram_edit.text())
+        set_preference(self.app_name, "enable_model_fit_button", self.enable_model_fit_checkbox.isChecked())
+        set_preference(self.app_name, "enable_status_bar", self.enable_status_bar_checkbox.isChecked())
+        set_preference(self.app_name, "simplify_max_hole_area", self.simplify_max_hole_area_edit.text())
+        set_preference(self.app_name, "simplify_fill_maxsize", self.simplify_fill_maxsize_edit.text())
+        set_preference(self.app_name, "simplify_excluded_layers", self.simplify_excluded_layers_edit.text())
+        set_preference(self.app_name, "simplify_merge_per_layer", self.simplify_merge_per_layer_checkbox.isChecked())
+
+        # live update, no restart needed
+        self.MainWindow.create_model_tab.apply_preference_visibility()
+
+        super().accept()
+
+
 # ---------- MAIN WINDOW ----------
 
 
@@ -2020,6 +2820,7 @@ class MainWindow(MainWindowBase):
         self.frequencies_tab.fdump_enabled_checkbox.setVisible(False)
         self.mesh_tab.AMR_group.setVisible(True)
         self.mesh_tab.Elmer_group.setVisible(False)
+        self.create_model_tab.apply_preference_visibility()
 
         # update mesh settings that are not always visible
         self.mesh_tab.on_meshorder_changed(self.mesh_tab.mesh_order_box.currentText())
@@ -2040,6 +2841,7 @@ class MainWindow(MainWindowBase):
         self.frequencies_tab.fdump_enabled_checkbox.setVisible(True)
         self.mesh_tab.AMR_group.setVisible(False)
         self.mesh_tab.Elmer_group.setVisible(True)
+        self.create_model_tab.apply_preference_visibility()
 
         # update mesh settings that are not always visible
         self.mesh_tab.on_meshorder_changed(self.mesh_tab.mesh_order_box.currentText())
@@ -2135,10 +2937,35 @@ class MainWindow(MainWindowBase):
     def update_target_layer_choices(self, metals_list):
         self.ports_tab.update_layers(metals_list)
 
+    def refresh_source_layer_hints(self):
+        self.ports_tab.refresh_missing_layer_annotations()
+        self.ports_tab.portslist_selection_changed()
+
+
+    # ---------- Layout Preview hook ----------
+    def get_layout_preview_markers(self):
+        # flush the Ports tab's current table edits into simulation_ports first,
+        # so the preview reflects unsaved edits without requiring a tab switch
+        self.ports_tab.save_values()
+        markers = simulation_ports_to_struct(simulation_ports)
+        for marker in markers:
+            marker["kind"] = "port"
+            marker["group"] = "Ports"
+        return markers
+
+
+    # ---------- Preferences dialog hook ----------
+    def open_preferences_dialog(self):
+        dialog = PreferencesDialog(self)
+        dialog.exec()
+
 
     # ---------- Stackup preview hooks (permittivity / sheet resistance) ----------
     def stackup_dielectric_color(self, material):
         return epsilon_to_color(material.eps, 95)
+
+    def stackup_metal_color(self, material):
+        return None  # no override - compute_stackup_layout()'s default type-based color
 
     def stackup_dielectric_label(self, dielectric, material):
         return default_stackup_dielectric_label(dielectric, material)
@@ -2175,14 +3002,38 @@ def parse_python_ports_definitions (file_path):
 
     # List to store parsed ports
     ports = []
+    skipped_count = 0
 
     # Read your input file line by line
     with open(file_path) as f:
         for line in f:
+            # strip a trailing comment first (same convention as parse_assignments()
+            # in setup_common.py) - otherwise a note like "# single-ended (target 80
+            # ohm)" ends up inside the extracted argument text, and rstrip(") \n")
+            # below stops at the first non-')'/space/newline character it hits from
+            # the right (here, the 'm' in "ohm"), never reaching the real closing
+            # parens right after the call's actual last argument
+            line = line.split('#', 1)[0]
             if "simulation_port(" in line:
                 start = line.index("simulation_port(") + len("simulation_port(")
                 inside = line[start:].rstrip(") \n")  # remove trailing ')'
-                ports.append(parse_port_args(inside))
+                try:
+                    ports.append(parse_port_args(inside))
+                except (SyntaxError, ValueError, TypeError):
+                    # this is a best-effort static text parser, not a real
+                    # interpreter - a port built from a variable or computed
+                    # expression (e.g. portnumber=portnumber inside a loop, as
+                    # in some GDS/inductor synthesis scripts) can't be resolved
+                    # by ast.literal_eval. Skip it so the rest of the import
+                    # still succeeds, rather than crashing the whole model load.
+                    skipped_count += 1
+
+    if skipped_count:
+        QMessageBox.warning(
+            None, "Import Model",
+            f"{skipped_count} port definition(s) use variables or computed "
+            "expressions instead of plain values and could not be imported "
+            "automatically.\n\nAdd them manually on the Ports tab.")
 
     return ports
 

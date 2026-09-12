@@ -2,15 +2,7 @@
 
 ## What's New
 
-setupEM includes two built-in tools for working with simulation results directly, without external scripts:
-
-- **Result Viewer** (Create Model tab > View Results...) plots Touchstone S-parameter results - dB/phase, Smith chart, zoomed Smith chart - without leaving setupEM. See section "[Result Viewer](#result-viewer)".
-- **Model Fit** (Create Model tab > Model Fit...) launches [snp2le](https://github.com/iic-jku/snp2le), an external open-source tool that extracts a lumped-element SPICE/Spectre netlist from S-parameter results - offering to install it via pip if it isn't already present. See section "[Model Fit](#model-fit)".
-
-- A graphical **Stackup XML Editor** (Tools > Edit Stackup XML...), including Variables, Reference-relative positioning, Derived Layers, and Thermal Tables
-- The stackup preview graphics are **interactive**: click a shape for its properties, and selection syncs both ways with the Stackup Editor's tables
-- Input Files tab can now **override stackup Variables** (e.g. `total_thickness`) directly, without hand-editing the XML or the generated model
-- **setupThermal**, a companion app for Elmer thermal simulation, alongside setupEM
+Reserved PEC/AIR stackup materials, Layout Preview, Results viewer, Model Fit, GDSII Layout Simplification, XML Stackup Editor, setupThermal for Elmer thermal simulation.
 
 See [CHANGES.md](doc/CHANGES.md) for details.
 
@@ -36,21 +28,18 @@ Two more external tools are used by parts of the workflow, and are not installed
 For development of this workflow, Palace was installed using the Singularity/Apptainer installation method. This was rather simple and straightforward, even with no knowledge about container usage. The resulting apptainer file palace.sif can be integrated very easily in a Linux system like the Ubuntu 24.04 system used here, and can then be moved to other Linux machines using simple copy of the container file. The script to start Palace from the apptainer is included in the scripts directory in this repository.
 
 Notes on installing the Palace solver using **apptainer** container manager:
-[Installing Palace using Apptainer](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/Installing_Palace_using_Apptainer.pdf) 
+[Installing Palace using Apptainer](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/building-palace-apptainer.md) 
 
 Using the spack package manager, Palace can also be created from source with a few simple commands. All tools required by the build process will be downloaded and installed automatically by spack, so you can sit and watch while your system builds the software.
 
 Notes in compiling Palace using the **spack package manager for Linux**:
-[Installing Palace using spack](./doc/Installing_Palace_using_Spack.pdf) 
-
-Thread on compiling Palace using the **spack package manager for MacOS**:
-[Spack install for MacOS outdated?](https://github.com/awslabs/palace/issues/581) 
+[Installing Palace using spack](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/building-palace-spack.md) 
 
 You can use any of the installation methods described on the AWS Palace web site. The gds2palace workflow does not change, it only creates the input files for Palace and does not care how you installed Palace, or on what platform you run the actual Palace simulation from these model files. To start Palace from setupEM, a wrapper script **run_palace** is used, and this is where you point to your actual installation (even remote copy & remote simulation is possible).
 
 
 # Installation of setupEM (including gds2palace workflow files)
-As a Python program that uses the Qt library, setupEM works on Linux, Windows, MacOS and other platforms. The Palace solver itself is designed for Linux systems, but can you install it using the Windows Subsystem for Linux (WSL). Palace also works well on MacOS, installed using spack as described [above](https://github.com/awslabs/palace/issues/581).
+As a Python program that uses the Qt library, setupEM works on Linux, Windows, MacOS and other platforms. The Palace solver itself is designed for Linux systems, but can you install it using the Windows Subsystem for Linux (WSL). Palace also works well on MacOS, installed using spack.
 
 To install setupEM, activate the Python venv where you want to install.
 
@@ -87,6 +76,7 @@ sudo apt install libxcb-cursor0 libxcb-xinerama0 libxcb-xkb1 libxcb-icccm4 libxc
 ## Dependencies
 The setupEM module also installs these dependencies:
 - gds2palace
+- gds_prepare_for_EM
 - PySide6
 - shiboken6
 - scipy
@@ -172,9 +162,9 @@ Parameter "Mesh refinement at the edges" does what the name says, this is parame
 
 Parameter "Mesh cell maximum size absolute" works in combination with the cells/wavelength value, the mesh will use the lower of these two dimensions.
 
-Parameter "Mesh basis function" is an expert setting that controls the order of FEM basis function. Use setting "most accurate", which means order=2 for basis functions. Only for a quick & dirty simulation, use "faster/less accurate", if you know what you are doing.
+Parameter "Mesh basis function" is an expert setting that controls the order of FEM basis function, with three levels: "faster, less accurate" (order 1), "recommended" (order 2, the default), and "slower, most accurate" (order 3, Palace only - not available in Elmer mode, since Elmer has no cubic-order solver). Use the default "recommended" setting unless you specifically want a faster, less accurate run, or need the extra accuracy of order 3.
 
-Parameter "Adaptive mesh iterations" does what the name says: Palace offers adaptive mesh refinement (AMR) but if we use mesh basis function order 2 ("most accurate") with mesh refinement of 2 micron or so, the initial mesh is usually fine enough and we don't need AMR. Starting from a coarse mesh plus AMR usually takes more simulation time than going for a finer initial mesh without AMR. If you experience something different, your feedback and example is much appreciated!
+Parameter "Adaptive mesh iterations" does what the name says: Palace offers adaptive mesh refinement (AMR) but if we use mesh basis function order 2 ("recommended") with mesh refinement of 2 micron or so, the initial mesh is usually fine enough and we don't need AMR. Starting from a coarse mesh plus AMR usually takes more simulation time than going for a finer initial mesh without AMR. If you experience something different, your feedback and example is much appreciated! When AMR iterations is non-zero, "AMR goal" (relative error tolerance) and "AMR maximum DOF" control when Palace stops refining, whichever limit is hit first - the defaults rarely need changing.
 
 For the boundary conditions, absorbing boundary and pefect electric conductor are supported at the present time. You can specify the oversize of the dielectric layers from the metal drawing, and the additional layer of air that srrounds everything. **Both these distances must NOT be zero, otherwise you will get mesh errors!**
 
@@ -251,11 +241,13 @@ Behind the scenes, the setupEM user interface created Python model code for gds2
 <img src="./doc/png/code1.png" alt="code" width="700">
 
 ## File menu
-In the setupEM File menu, you can save and load simulation configurations, and you can also save and load a user defined "Default Settings" configuration. This includes the choice of simulation target directory and all other settings. Settings are stored in a JSON file with file extension ".simcfg". The "Default Settings" will be stored to the user home diretory.
+In the setupEM File menu, you can save and load simulation configurations, and you can also save and load a user defined "Default Config" configuration. This includes the choice of simulation target directory and all other settings. Configurations are stored in a JSON file with file extension ".simcfg". The "Default Config" will be stored to the user home diretory.
 
 Using "File > Import from *.py model", you can load settings from existing simulation model code, e.g. the examples included in the gds2palace repository. This import is based on detecting known keywords, with or without the settings[] syntax, and also works for openEMS Python models. Note that openEMS substrates model the MIM differently, and parameter "refined_cellsize" will usually be smaller in openEMS simulation, so you need to adjust these settings.
 
 If you are on the "Code" tab, you can also export the Python model code using "File > Export to *.py model". This option is only required if you want to save the model code **without** running it. Buttons "Create mesh and model file" and "Run Palace" on the "Create Model" tab will also save the model code to the target directory, and run it from there.
+
+"File > Preferences..." lets you change the built-in defaults that a brand-new/blank field starts out showing (e.g. fstart/fstop, mesh refinement, dielectric oversize margin), saved per-user and independent of any project file.
 
 <img src="./doc/png/filemenu1.png" alt="file" width="700">
 

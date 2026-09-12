@@ -617,7 +617,8 @@ class ElementTableEditor(QWidget):
                  reload_on_attr_change=frozenset(), compute_fn=None, gray_fn=None,
                  pre_set_attr_fn=None, reference_choices_fn=None,
                  header_tooltips=None, operand_lookup_fn=None, variable_names_fn=None,
-                 invalid_fn=None, table_choices_fn=None):
+                 invalid_fn=None, table_choices_fn=None, reorder_fn=None,
+                 descending_attrs=frozenset()):
         """container_fn(root) -> list[Element]: fetches the current rows to display,
            re-called by reload() so the editor can refresh itself after any structural
            change (add/remove/move) without the caller having to re-fetch and hand
@@ -675,6 +676,17 @@ class ElementTableEditor(QWidget):
              field whose edit was what just made the whole file invalid (see
              StackupEditorWindow._is_invalid_field()), so the user's eye lands on the
              actual cause instead of just the generic status line/Save error list.
+           reorder_fn(root, ordered_elements): reorders the underlying XML elements
+             to match ordered_elements, enabling click-a-header-to-sort (by that
+             column's current value) on every "text"/"computed" column. This is a
+             one-time reorder, not a persistent "stay sorted" mode - editing/adding
+             rows afterward doesn't re-sort, so a new row being filled in doesn't
+             jump around before it's finished. Omit to leave headers unclickable.
+           descending_attrs: attribute names that should sort largest-first when
+             their header is clicked (e.g. a z-position column, so the physically
+             topmost layer lands at the top of the list) - every other numeric
+             column sorts smallest-first. A row whose value can't be parsed as a
+             number always sorts last, regardless of direction.
         """
         super().__init__()
         self.columns = columns
@@ -697,6 +709,8 @@ class ElementTableEditor(QWidget):
         self.gray_fn = gray_fn
         self.invalid_fn = invalid_fn
         self.pre_set_attr_fn = pre_set_attr_fn
+        self.reorder_fn = reorder_fn
+        self.descending_attrs = descending_attrs
 
         self.root = None
         self.row_elements = []
@@ -713,6 +727,17 @@ class ElementTableEditor(QWidget):
                 tooltip = header_tooltips.get(attr)
                 if tooltip:
                     self.table.horizontalHeaderItem(col).setToolTip(tooltip)
+        if reorder_fn is not None:
+            # click-to-sort only makes sense for a plain value column - "text"
+            # (e.g. Name) or "computed" (e.g. the resolved ResultZmin), not a
+            # combo-box/button kind - append to any header_tooltips text already set
+            for col, (attr, _header, kind) in enumerate(columns):
+                if kind in ("text", "computed"):
+                    item = self.table.horizontalHeaderItem(col)
+                    hint = ("Click to sort by this column (largest first)"
+                            if attr in descending_attrs else "Click to sort by this column")
+                    item.setToolTip(f"{item.toolTip()}\n{hint}" if item.toolTip() else hint)
+            self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         header = self.table.horizontalHeader()
@@ -964,6 +989,36 @@ class ElementTableEditor(QWidget):
             self.table.selectRow(new_row)
         self.on_changed(structural=True)
 
+    def _on_header_clicked(self, col):
+        # a one-time reorder (see reorder_fn's docstring above), not a persistent
+        # sort mode - reload() below rebuilds the table from the new element
+        # order, but nothing here keeps re-sorting it as values change afterward
+        if self.reorder_fn is None or not self.row_elements:
+            return
+        attr, _header, kind = self.columns[col]
+
+        def sort_key(element):
+            if kind == "computed":
+                text = self._computed.get(id(element), {}).get(attr, "")
+            else:
+                text = element.get(attr, "") or ""
+            try:
+                value = float(text)
+                if attr in self.descending_attrs:
+                    value = -value
+                return (0, value)
+            except (TypeError, ValueError):
+                # non-numeric (e.g. Name) or blank (e.g. a row whose Z couldn't be
+                # resolved) - sort after every numeric value, regardless of direction
+                return (1, text)
+
+        ordered = sorted(self.row_elements, key=sort_key)
+        if ordered == self.row_elements:
+            return
+        self.reorder_fn(self.root, ordered)
+        self.reload()
+        self.on_changed(structural=True)
+
 
 # ------------------------------------------------------------------
 # Separate, resizable preview window (the editing tables need the space more
@@ -993,7 +1048,7 @@ class StackupPreviewWindow(QWidget):
     deleteLater() on this window instead of relying on Qt object-tree cleanup.
     """
 
-    def __init__(self, vector_widget, parent=None):
+    def __init__(self, vector_widget, parent=None, legend_widget=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("Stackup Preview")
         self.resize(700, 900)
@@ -1002,6 +1057,8 @@ class StackupPreviewWindow(QWidget):
         # wrapper needed (or wanted: it would nest a second set of scrollbars).
         layout = QVBoxLayout()
         layout.addWidget(vector_widget)
+        if legend_widget is not None:
+            layout.addWidget(legend_widget)
         self.setLayout(layout)
 
     def closeEvent(self, event):
@@ -1206,7 +1263,7 @@ class StackupEditorWindow(QDialog):
             move_fn=stackup_writer.move_dielectric,
             default_attrs_fn=self._default_dielectric_attrs,
             on_changed=self._on_dielectrics_changed,
-            material_choices_fn=self._material_names,
+            material_choices_fn=self._dielectric_material_choices,
             reference_choices_fn=self._dielectric_names,
             gray_fn=_dielectric_gray_fn,
             compute_fn=self._compute_dielectric_zpositions_bound,
@@ -1228,9 +1285,11 @@ class StackupEditorWindow(QDialog):
             container_fn=self._layers_container,
             add_fn=lambda root, **attrs: stackup_writer.add_layer(root, **attrs),
             remove_fn=stackup_writer.remove_layer,
+            reorder_fn=stackup_writer.reorder_layers,
+            descending_attrs={"ResultZmin", "ResultZmax"},
             default_attrs_fn=self._default_layer_attrs,
             on_changed=self._on_changed,
-            material_choices_fn=self._material_names,
+            material_choices_fn=self._layer_material_choices,
             reference_choices_fn=self._reference_target_names,
             type_choices=list(stackup_writer.VALID_LAYER_TYPES),
             compute_fn=self._compute_layer_zpositions_and_thickness,
@@ -1386,6 +1445,7 @@ class StackupEditorWindow(QDialog):
             dielectric_label_fn=self.MainWindow.stackup_dielectric_label,
             metal_label_fn=self.MainWindow.stackup_metal_label,
             via_label_suffix_fn=self.MainWindow.stackup_via_label_suffix,
+            metal_color_fn=self.MainWindow.stackup_metal_color,
         )
         self.vector_widget.setMinimumSize(600, 800)
 
@@ -1411,7 +1471,9 @@ class StackupEditorWindow(QDialog):
         # created once and kept for the editor's lifetime, but deliberately with
         # no Qt parent (see StackupPreviewWindow docstring) - cleaned up explicitly
         # in closeEvent() below rather than via Qt's parent-child auto-delete
-        self.preview_window = StackupPreviewWindow(self.vector_widget)
+        legend_fn = getattr(self.MainWindow, "stackup_color_legend", None)
+        legend_widget = legend_fn() if legend_fn is not None else None
+        self.preview_window = StackupPreviewWindow(self.vector_widget, legend_widget=legend_widget)
         self.preview_window.move(self.x() + self.width() + 20, self.y())
 
         if initial_filename and os.path.isfile(initial_filename):
@@ -1702,6 +1764,26 @@ class StackupEditorWindow(QDialog):
         if self.tree is None:
             return []
         return [m.get("Name") for m in self._materials_container(self.tree.getroot()) if m.get("Name")]
+
+    def _dielectric_material_choices(self):
+        # AIR is always usable without a <Materials> entry (stackup_reader.parse_substrate()
+        # injects a default) - offer it in the dropdown even when the file doesn't define one
+        names = self._material_names()
+        if not any(n.upper() == "AIR" for n in names):
+            names = names + ["AIR"]
+        return names
+
+    def _layer_material_choices(self):
+        # PEC and AIR are both usable on a Layer without a <Materials> entry - offer them in
+        # the dropdown even when the file doesn't define one (see stackup_reader.PEC_MATERIAL_NAME
+        # and the built-in default AIR material in stackup_reader.parse_substrate())
+        names = self._material_names()
+        extras = []
+        if not any(n.upper() == stackup_reader.PEC_MATERIAL_NAME.upper() for n in names):
+            extras.append(stackup_reader.PEC_MATERIAL_NAME)
+        if not any(n.upper() == "AIR" for n in names):
+            extras.append("AIR")
+        return names + extras
 
     def _layer_names(self):
         if self.tree is None:
@@ -2708,6 +2790,7 @@ class StackupEditorWindow(QDialog):
             return
         root = self.tree.getroot()
         errors = stackup_writer.validate_stackup(root)
+        warnings = stackup_writer.find_reserved_material_definitions(root)
 
         was_valid = self._was_valid
         self._was_valid = not errors
@@ -2732,7 +2815,7 @@ class StackupEditorWindow(QDialog):
             QTimer.singleShot(0, self._reload_all_editors)
 
         self._refresh_preview(root, errors)
-        self._refresh_validation_status(errors)
+        self._refresh_validation_status(errors, warnings)
 
     # ---------- undo (bounded multi-level) ----------
 
@@ -2827,29 +2910,41 @@ class StackupEditorWindow(QDialog):
 
     def _on_dielectrics_row_selected(self):
         """Table -> preview: a Dielectric Stack row was selected - highlight the
-           matching slab in the preview."""
+           matching slab in the preview. A deselected table (row < 0) clears the
+           preview selection too, so listeners outside this editor (e.g. Layout
+           Preview's cross-window highlight) see the clear as well."""
         row = self.dielectrics_editor.table.currentRow()
         if 0 <= row < len(self.dielectrics_editor.row_elements):
             name = self.dielectrics_editor.row_elements[row].get("Name")
             if name:
                 self.vector_widget.select_element("dielectric", name)
+        else:
+            self.vector_widget.scene().clearSelection()
 
     def _on_layers_row_selected(self):
         """Table -> preview: a Layers row was selected - highlight the matching
-           metal/via/sheet box in the preview."""
+           metal/via/sheet box in the preview. A deselected table (row < 0) clears
+           the preview selection too, so listeners outside this editor (e.g.
+           Layout Preview's cross-window highlight) see the clear as well."""
         row = self.layers_editor.table.currentRow()
         if 0 <= row < len(self.layers_editor.row_elements):
             name = self.layers_editor.row_elements[row].get("Name")
             if name:
                 self.vector_widget.select_element("layer", name)
-
-    def _refresh_validation_status(self, errors):
-        if not errors:
-            self.status_label.setText("Valid.")
-            self.status_label.setStyleSheet("color: green;")
         else:
+            self.vector_widget.scene().clearSelection()
+
+    def _refresh_validation_status(self, errors, warnings=None):
+        warnings = warnings or []
+        if errors:
             self.status_label.setText(f"{len(errors)} problem(s) - see Save for details.")
             self.status_label.setStyleSheet("color: darkred;")
+        elif warnings:
+            self.status_label.setText(f"Valid - {len(warnings)} note(s): " + "; ".join(warnings))
+            self.status_label.setStyleSheet("color: #b8860b;")
+        else:
+            self.status_label.setText("Valid.")
+            self.status_label.setStyleSheet("color: green;")
 
     def _on_tab_changed(self, index):
         if self.tabs.widget(index) is self.xml_preview_tab:
@@ -2921,6 +3016,9 @@ class _StandaloneMainWindow:
 
     def stackup_dielectric_color(self, material):
         return epsilon_to_color(material.eps, 95)
+
+    def stackup_metal_color(self, material):
+        return None  # no override - compute_stackup_layout()'s default type-based color
 
     def stackup_dielectric_label(self, dielectric, material):
         return default_stackup_dielectric_label(dielectric, material)

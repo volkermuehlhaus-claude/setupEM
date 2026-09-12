@@ -1,5 +1,27 @@
 
-# What's New - September 6, 2026
+# What's New - September 8-12, 2026
+
+Added two reserved stackup materials that need no `<Materials>` entry: `PEC` (ideal conductor, on conductor/via/sheet Layers) and `AIR` (built-in default dielectric, overridable).  
+
+Added a **live solver-status line** below the log during a Palace run, showing MPI process count, estimated total memory, current port/frequency progress, and AMR iteration - updates as Palace's own console output streams in, without waiting for the run to finish. It clears when loading a different model/config file or creating a new mesh, instead of showing a previous run's stale data.
+
+Added a **memory limit** for Palace runs (Preferences > Palace, "Stop Palace if memory exceeds", default 100 GB): if the solver's own reported memory usage crosses this, setupEM terminates it automatically and still runs S-parameter postprocessing on whatever results were already computed, instead of losing the whole run to an out-of-memory crash.
+
+The **Result Viewer** can now show S-parameter results from a still-running (or crashed/stopped) multi-iteration AMR run, reading Palace's raw per-iteration output directly instead of waiting for the whole run to finish. 
+
+Added a **Layout Preview** which can be accessed from Input Files tab or Tools menu, including display of port location and direction. Layout layers selected in Stackup Preview will be highlighted in Layout preview.
+
+Added **Tools > Simplify GDS...** (setupEM and setupThermal), which removes floating (unconnected) metal fill and/or fills in small cutouts on the currently loaded GDS file, writing the result to a new GDS file. The metal layers it operates on come entirely from the currently loaded XML stackup. Defaults are configurable on a new Preferences > Simplify GDS tab. A **Compare in Layout Preview** button opens the original and simplified layouts side by side.  
+
+**Layer numbers for port shapes** are now auto-detected when creating port configuration. Layer range is set in the Preferences dialog.
+
+Added a **File > Preferences...** dialog (setupEM and setupThermal) for changing the built-in defaults of fields that were previously hardcoded. 
+
+The **Cellname** dropdown now shows an explicit "(default)" entry instead of a blank one.
+
+
+
+# What's New - September 1-6, 2026
 
 The stackup cross-section preview (**Show stackup**, and the Stackup Editor's live preview) is now interactive: click a dielectric, metal, or via to see its name, material, and z-position/thickness in a flyout. In the Stackup Editor, clicking a shape also selects the matching row in the Dielectric Stack/Layers tables, and selecting a row highlights the matching shape in the preview.
 

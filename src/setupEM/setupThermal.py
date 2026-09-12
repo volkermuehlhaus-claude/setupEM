@@ -17,7 +17,7 @@
 ########################################################################
 
 
-import sys, json, os, pathlib, ast, webbrowser, argparse
+import sys, json, os, pathlib, ast, webbrowser, argparse, math
 import numpy as np
 import importlib.metadata
 import requests
@@ -27,9 +27,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QLineEdit,QComboBox,QTableWidget,QHeaderView,
     QPushButton, QFileDialog, QTabWidget, QMessageBox, QGroupBox,
-    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog
+    QCheckBox, QAbstractItemView,QStyleFactory,QTableWidgetItem, QPlainTextEdit, QDialog,
+    QDialogButtonBox,
     )
-from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup
+from PySide6.QtGui import QAction, QColor, QTextCharFormat, QFont, QSyntaxHighlighter, QPainter, QPen, QActionGroup, QLinearGradient
 from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QStandardPaths
 
 
@@ -52,6 +53,8 @@ if __package__ in (None, ""):
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
+        next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference, clear_preferences,
     )
     from thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
 else:
@@ -59,6 +62,8 @@ else:
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase,
+        next_available_source_layer, update_missing_layer_column,
+        get_preference, get_preference_bool, set_preference, clear_preferences,
     )
     from .thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
 
@@ -148,7 +153,12 @@ class PortsTab(QWidget):
         label = QLabel("Geometry on layer number")
         self.sourcelayer_layout.addWidget(label)
         label.setFixedWidth(left_label_width)
-        self.sourcelayer_edit = QLineEdit("201")
+        # no hardcoded "201" default - selectRow(0) below fires before the
+        # itemSelectionChanged connection even exists, so this would otherwise
+        # sit unrefreshed (looking like a real suggestion) until the user
+        # happens to select a different row and back; update_layers() below
+        # recomputes it for real once a GDS file is actually loaded
+        self.sourcelayer_edit = QLineEdit("")
         self.sourcelayer_edit.setFixedWidth(80)
         self.sourcelayer_edit.setStyleSheet(EDIT_STYLE_REQUIRED)
         self.sourcelayer_layout.addWidget(self.sourcelayer_edit)
@@ -287,6 +297,8 @@ class PortsTab(QWidget):
             for col, value in enumerate(data):
                 self.thermalobjectslist.setItem(selected_row, col, QTableWidgetItem(str(value)))
 
+            self.refresh_missing_layer_annotations()
+
 
     # callback when applying changes to the selected port
     def get_port_values_from_table(self):
@@ -344,7 +356,67 @@ class PortsTab(QWidget):
                 if item.text() != "":
                     self.get_port_values_from_table()
             else:
-                self.sourcelayer_edit.setText(str(201+selected_row))
+                suggestion = self._suggest_source_layer()
+                if suggestion is not None:
+                    self.sourcelayer_edit.setText(str(suggestion))
+                else:
+                    # no GDS-backed candidate - don't fabricate a number that
+                    # may not exist in the layout, leave it visibly empty
+                    self.sourcelayer_edit.clear()
+                    self.sourcelayer_edit.setPlaceholderText("no unused GDS layer found")
+
+    def _used_source_layers(self):
+        """Layer numbers (column 0) already entered in the table, across all
+        rows - used to avoid suggesting a layer another thermal object uses.
+        """
+        used = set()
+        for row in range(self.thermalobjectslist.rowCount()):
+            item = self.thermalobjectslist.item(row, 0)
+            if item is not None and item.text():
+                try:
+                    used.add(int(item.text()))
+                except ValueError:
+                    pass
+        return used
+
+    def _port_layer_range(self):
+        """Auto-assign source layer range, configurable via File > Preferences
+        > Ports (falls back to the historical 201-299 range if unset/invalid).
+        """
+        app_name = self.MainWindow.APP_NAME
+        try:
+            layer_min = int(get_preference(app_name, "port_layer_min", "201"))
+        except (TypeError, ValueError):
+            layer_min = 201
+        try:
+            layer_max = int(get_preference(app_name, "port_layer_max", "299"))
+        except (TypeError, ValueError):
+            layer_max = 299
+        return layer_min, layer_max
+
+    def _suggest_source_layer(self):
+        """Next GDS layer number in the auto-assign range that actually has
+        geometry and isn't already a stackup layer or another thermal
+        object's source layer, or None if no such layer can be determined
+        (e.g. no GDS file loaded yet, or every present layer is already
+        spoken for).
+        """
+        layer_min, layer_max = self._port_layer_range()
+        gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
+        xml_layers = set(self.MainWindow.metals_list.getlayernumbers()) if self.MainWindow.metals_list else set()
+        excluded = xml_layers | self._used_source_layers()
+        return next_available_source_layer(gds_layers, excluded, start=layer_min)
+
+    def refresh_missing_layer_annotations(self):
+        """Flag any thermal object row whose source layer has no geometry in
+        the currently loaded GDS - see update_missing_layer_column()."""
+        layer_min, layer_max = self._port_layer_range()
+        gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
+        update_missing_layer_column(self.thermalobjectslist, source_col=0, comment_col=5, gds_layers_present=gds_layers)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_missing_layer_annotations()
 
 
     def save_values(self):
@@ -396,6 +468,11 @@ class PortsTab(QWidget):
         index = self.target_box.findText('Activ')  # returns -1 if not found
         if index != -1:
             self.target_box.setCurrentIndex(index)
+        self.refresh_missing_layer_annotations()
+        # re-evaluate the currently selected row's source-layer suggestion too -
+        # a GDS/XML (re)load is exactly when a stale/unset suggestion (e.g. an
+        # unapplied new row selected before any file was loaded) needs it most
+        self.portslist_selection_changed()
 
 
     def update_thermalobjects_from_python (self, heatsource_defs, consttemp_defs ):
@@ -552,7 +629,7 @@ class MeshTab(QWidget):
             value = float(self.refinement_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for mesh refinement")
-            self.refinement_edit.setText("5")
+            self.refinement_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "refined_cellsize", "5")))
             return False
         saved_values ["refined_cellsize"] = float(value)
 
@@ -560,7 +637,7 @@ class MeshTab(QWidget):
             value = float(self.cells_maxsize_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for max. meshsize")
-            self.cells_maxsize_edit.setText("100")
+            self.cells_maxsize_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "meshsize_max", "100")))
             return False
         saved_values ["meshsize_max"] = float(value)
 
@@ -569,7 +646,7 @@ class MeshTab(QWidget):
             value = float(self.margins_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", "Not a valid value for dielectric oversize margin")
-            self.margins_edit.setText("100")
+            self.margins_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "margin", "100")))
             return False
         saved_values ["margin"] = float(value)
 
@@ -581,9 +658,10 @@ class MeshTab(QWidget):
 
 
     def load_values(self):
-        self.refinement_edit.setText(str(saved_values.get("refined_cellsize","5")))
-        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max","100")))
-        self.margins_edit.setText(str(saved_values.get("margin","100")))
+        app_name = self.MainWindow.APP_NAME
+        self.refinement_edit.setText(str(saved_values.get("refined_cellsize", get_preference(app_name, "refined_cellsize", "5"))))
+        self.cells_maxsize_edit.setText(str(saved_values.get("meshsize_max", get_preference(app_name, "meshsize_max", "100"))))
+        self.margins_edit.setText(str(saved_values.get("margin", get_preference(app_name, "margin", "100"))))
 
         if saved_values.get("iterative", False):
             self.solver_box.setCurrentIndex(0)
@@ -703,29 +781,41 @@ class CreateModelTab(CreateModelTabBase):
     def run_model(self):
         # Run model that we created before
 
-        # clear log
-        self.log_area.clear()
-        self._process_purpose = "run_simulation"
-
         # try to start from output directory
         run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
 
-        if os.name == "nt":
-            #  Windows
+        # ---------- pre-flight checks: fail fast, before touching QProcess ----------
+        # ELMERSOLVER_STARTINFO (written by "Create Mesh", alongside case.sif) is
+        # the exact file a bare "ElmerSolver" invocation reads from its working
+        # directory - a more precise proxy than just checking run_path exists,
+        # which could be a stale/empty leftover directory.
+        startinfo_path = os.path.join(run_path, "ELMERSOLVER_STARTINFO")
+        if not os.path.isfile(startinfo_path):
+            self.log_area.appendPlainText(
+                f"⚠️ No simulation settings found in {run_path}.\n"
+                "Click 'Create mesh and simulation settings file' first.\n"
+            )
+            return
+        if self._check_command_on_path(
+            "ElmerSolver", "Install Elmer FEM and make sure ElmerSolver is on PATH."
+        ) is None:
+            return
 
+        try:
+            # clear log
+            self.log_area.clear()
+            self._process_purpose = "run_simulation"
+
+            # Windows and Linux/Mac both just resolve ElmerSolver via PATH
             self.log_area.appendPlainText('Setting work directory ' + run_path)
-
-
             self.process.setWorkingDirectory(run_path)
             # start simulation
             self.process.start("ElmerSolver")
-        else:
-            # Linux
-            self.log_area.appendPlainText('Setting work directory ' + run_path)
-
-            self.process.setWorkingDirectory(run_path)
-            # start simulation
-            self.process.start("ElmerSolver")
+        except Exception as e:
+            # defense in depth: the checks above cover every known missing-
+            # prerequisite case, this is a last-resort net against anything
+            # unanticipated, so it never surfaces as an uncaught traceback
+            self.log_area.appendPlainText(f"⚠️ Unexpected error while starting the simulation: {e}\n")
 
 
 
@@ -897,6 +987,345 @@ class ModelEditorTab(QWidget):
         self.create_model_text(forExport=True)  # show "external" code including run from Python model
 
 
+# ---------- PREFERENCES DIALOG ----------
+
+class PreferencesDialog(QDialog):
+    """File > Preferences ...: per-user defaults for fields that used to be plain
+    hardcoded literals. Persisted via get_preference()/set_preference()
+    (setup_common.py) - a dedicated QSettings store, separate from *.tsimcfg
+    project files and from "Save as Default Config". Editing a value here only
+    changes what a brand-new/blank field starts out showing; it never touches
+    the currently open project's saved_values. Smaller than setupEM's version
+    of this dialog - no Frequencies tab (thermal has no frequency sweep) and no
+    Create Model tab (thermal has neither the Model Fit button nor the Palace
+    solver status line).
+    """
+
+    def __init__(self, MainWindow):
+        super().__init__(MainWindow)
+        self.MainWindow = MainWindow
+        self.app_name = MainWindow.APP_NAME
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(420)
+
+        outer_layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        outer_layout.addWidget(self.tabs)
+
+        label_width = 260
+
+        # (widget, key, default, kind) for every preference-backed field in this
+        # dialog, so "Reset all to default" (see _reset_to_defaults()) can put
+        # every widget back to its built-in default without hand-listing them
+        # again separately - add_row() below appends "text" entries itself;
+        # each standalone QCheckBox appends its own "bool" entry.
+        self._reset_targets = []
+
+        def add_row(form_layout, label_text, key, default):
+            row = QHBoxLayout()
+            label = QLabel(label_text)
+            label.setFixedWidth(label_width)
+            row.addWidget(label)
+            edit = QLineEdit(str(get_preference(self.app_name, key, default)))
+            edit.setStyleSheet(EDIT_STYLE_REQUIRED)
+            row.addWidget(edit)
+            form_layout.addLayout(row)
+            self._reset_targets.append((edit, key, default, "text"))
+            return edit
+
+        # ---------- Files tab ----------
+        files_widget = QWidget()
+        files_form = QVBoxLayout(files_widget)
+        files_form.setAlignment(Qt.AlignTop)
+
+        xml_dir_row = QHBoxLayout()
+        xml_dir_label = QLabel("XML file browser starts from")
+        xml_dir_label.setFixedWidth(label_width)
+        xml_dir_row.addWidget(xml_dir_label)
+        self.xml_browse_dir_edit = QLineEdit(str(get_preference(self.app_name, "xml_browse_directory", "")))
+        self.xml_browse_dir_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.xml_browse_dir_edit.setPlaceholderText("(bundled with setupEM)")
+        self.xml_browse_dir_edit.setToolTip(
+            "Folder the XML Stackup File browse dialog starts from. "
+            "Leave empty to use the XML files bundled with setupEM."
+        )
+        xml_dir_row.addWidget(self.xml_browse_dir_edit, 1)
+        self.xml_browse_dir_btn = QPushButton("Browse ...")
+        self.xml_browse_dir_btn.clicked.connect(self._browse_xml_default_dir)
+        xml_dir_row.addWidget(self.xml_browse_dir_btn)
+        files_form.addLayout(xml_dir_row)
+        self._reset_targets.append((self.xml_browse_dir_edit, "xml_browse_directory", "", "text"))
+
+        self.purpose_edit = add_row(files_form, "Default GDS layer purpose", "purpose", "0")
+        self.viamerge_edit = add_row(files_form, "Default via array merge distance (µm)", "merge_polygon_size", "0.5")
+        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an imported model's filename as the output file")
+        self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
+        files_form.addWidget(self.confirm_reuse_checkbox)
+        self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
+
+        files_form.addStretch()
+        self.tabs.addTab(files_widget, "Files")
+
+        # ---------- Ports tab ----------
+        ports_widget = QWidget()
+        ports_form = QVBoxLayout(ports_widget)
+        ports_form.setAlignment(Qt.AlignTop)
+        self.port_layer_min_edit = add_row(ports_form, "Auto-assign source layer range: min", "port_layer_min", "201")
+        self.port_layer_max_edit = add_row(ports_form, "Auto-assign source layer range: max", "port_layer_max", "299")
+        ports_form.addStretch()
+        self.tabs.addTab(ports_widget, "Ports")
+
+        # ---------- Mesh tab ----------
+        mesh_widget = QWidget()
+        mesh_form = QVBoxLayout(mesh_widget)
+        mesh_form.setAlignment(Qt.AlignTop)
+        self.refined_cellsize_edit = add_row(mesh_form, "Mesh refinement at metal edges (µm)", "refined_cellsize", "5")
+        self.meshsize_max_edit = add_row(mesh_form, "Mesh cell maximum size (µm)", "meshsize_max", "100")
+        self.margin_edit = add_row(mesh_form, "Dielectric stackup oversize margin (µm)", "margin", "100")
+        mesh_form.addStretch()
+        self.tabs.addTab(mesh_widget, "Mesh")
+
+        # ---------- Simplify GDS tab ----------
+        simplify_widget = QWidget()
+        simplify_form = QVBoxLayout(simplify_widget)
+        simplify_form.setAlignment(Qt.AlignTop)
+        self.simplify_max_hole_area_edit = add_row(
+            simplify_form, "Maximum cutout area to remove (µm²)", "simplify_max_hole_area", "1")
+        self.simplify_max_hole_area_edit.setPlaceholderText("blank = remove all cutouts")
+        self.simplify_max_hole_area_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_fill_maxsize_edit = add_row(
+            simplify_form, "Maximum floating fill size (µm)", "simplify_fill_maxsize", "20")
+        self.simplify_fill_maxsize_edit.setPlaceholderText("blank = no size limit")
+        self.simplify_fill_maxsize_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_excluded_layers_edit = add_row(
+            simplify_form, "Layers excluded from simplification", "simplify_excluded_layers", "")
+        self.simplify_excluded_layers_edit.setPlaceholderText("e.g. 10,11 - blank = none")
+        self.simplify_excluded_layers_edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+        self.simplify_merge_per_layer_checkbox = QCheckBox("Merge polygons per layer (final step)")
+        self.simplify_merge_per_layer_checkbox.setChecked(
+            get_preference_bool(self.app_name, "simplify_merge_per_layer", True))
+        simplify_form.addWidget(self.simplify_merge_per_layer_checkbox)
+        self._reset_targets.append((self.simplify_merge_per_layer_checkbox, "simplify_merge_per_layer", True, "bool"))
+        simplify_form.addStretch()
+        self.tabs.addTab(simplify_widget, "Simplify GDS")
+
+        # widen enough that every tab label fits without scroll arrows - a fixed
+        # pixel guess doesn't survive different fonts/DPI scaling, so measure the
+        # actual tab bar instead, now that every tab has been added
+        self.setMinimumWidth(max(420, self.tabs.tabBar().sizeHint().width() + 40))
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        # ResetRole: Qt places this on the opposite side from Ok/Cancel's
+        # Accept/Reject roles (the left, on every style this app runs under),
+        # matching the "very left side, near Ok/Cancel" placement asked for -
+        # no separate layout needed, the button box's own role logic handles it
+        self.reset_button = buttons.addButton("Reset all to default", QDialogButtonBox.ResetRole)
+        self.reset_button.clicked.connect(self._reset_to_defaults)
+        outer_layout.addWidget(buttons)
+
+    def _browse_xml_default_dir(self):
+        start = self.xml_browse_dir_edit.text() or os.path.join(os.path.dirname(__file__), "data")
+        directory = QFileDialog.getExistingDirectory(self, "Select Default XML Folder", start)
+        if directory:
+            self.xml_browse_dir_edit.setText(directory)
+
+    def _reset_to_defaults(self):
+        confirm = QMessageBox.question(
+            self, "Reset Preferences",
+            "Reset all Preferences to their built-in defaults?\n\n"
+            "This clears every value you've changed here - it cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        clear_preferences(self.app_name)
+        for widget, _key, default, kind in self._reset_targets:
+            if kind == "text":
+                widget.setText(str(default))
+            elif kind == "bool":
+                widget.setChecked(bool(default))
+
+    def accept(self):
+        # via-merge distance and the two mesh sizes must parse as numbers; purpose is
+        # stored as free text, same tolerant convention the Files tab itself uses
+        try:
+            float(self.viamerge_edit.text())
+            float(self.refined_cellsize_edit.text())
+            float(self.meshsize_max_edit.text())
+            float(self.margin_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid numeric value")
+            return
+        try:
+            port_layer_min = int(self.port_layer_min_edit.text())
+            port_layer_max = int(self.port_layer_max_edit.text())
+        except Exception:
+            QMessageBox.warning(self, "Error", "Not a valid value in the Ports tab")
+            return
+        if port_layer_min > port_layer_max:
+            QMessageBox.warning(self, "Error", "Ports: min layer must not be greater than max layer")
+            return
+
+        set_preference(self.app_name, "purpose", self.purpose_edit.text())
+        set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
+        set_preference(self.app_name, "confirm_reuse_import_filename", self.confirm_reuse_checkbox.isChecked())
+        set_preference(self.app_name, "xml_browse_directory", self.xml_browse_dir_edit.text())
+        set_preference(self.app_name, "port_layer_min", self.port_layer_min_edit.text())
+        set_preference(self.app_name, "port_layer_max", self.port_layer_max_edit.text())
+        set_preference(self.app_name, "refined_cellsize", self.refined_cellsize_edit.text())
+        set_preference(self.app_name, "meshsize_max", self.meshsize_max_edit.text())
+        set_preference(self.app_name, "margin", self.margin_edit.text())
+        set_preference(self.app_name, "simplify_max_hole_area", self.simplify_max_hole_area_edit.text())
+        set_preference(self.app_name, "simplify_fill_maxsize", self.simplify_fill_maxsize_edit.text())
+        set_preference(self.app_name, "simplify_excluded_layers", self.simplify_excluded_layers_edit.text())
+        set_preference(self.app_name, "simplify_merge_per_layer", self.simplify_merge_per_layer_checkbox.isChecked())
+
+        super().accept()
+
+
+# ---------- Thermal conductivity color scale (stackup preview) ----------
+#
+# Log10 scale clipped to [THERMAL_COND_MIN, THERMAL_COND_MAX] W/(m*K) - covers
+# typical metals/vias/silicon (~50-400); materials below THERMAL_COND_MIN
+# (air ~0.026, many dielectrics ~0.3-0.5) clip to the same pale color as
+# THERMAL_COND_MIN itself, since nothing below ~1 W/(m*K) needed to be told
+# apart in practice. Warm-family hue sweep (yellow -> orange -> red) plus a
+# saturation ramp, rather than a cold-to-hot two-color gradient - value is
+# kept at maximum and saturation moderate throughout so the black text
+# labels drawn on top of these shapes (metal/dielectric name, kappa value)
+# stay legible everywhere on the scale, not just at the pale end.
+#
+# A plain linear map of log10(k) to hue/saturation left 50-400 W/(m*K) (most
+# real metals/vias/silicon) looking nearly identical: that whole decade-and-a-
+# bit only covers about the top third of the full log range, so a linear ramp
+# spends most of its visual range on values that don't need distinguishing.
+# _WEIGHT bends the normalized position with a power curve (t**_WEIGHT)
+# before mapping to hue/saturation, shifting more of the visible change into
+# the upper end of the range at the cost of compressing the low end further.
+
+THERMAL_COND_MIN = 1.0
+THERMAL_COND_MAX = 400.0
+_THERMAL_HUE_LOW = 45 / 360.0    # yellow-orange - mild/insulating
+_THERMAL_HUE_HIGH = 0 / 360.0    # red - highly conductive
+_WEIGHT = 2.0  # >1 biases the color change toward the high end of the range
+
+DIELECTRIC_ALPHA = 95   # dielectric slabs stay fairly translucent
+METAL_ALPHA = 210       # metals/vias render more solid/opaque than dielectrics
+
+def thermal_conductivity_to_color(thermalcond, alpha=DIELECTRIC_ALPHA):
+    """QColor for a material's thermalcond (W/(m*K)) on the log10 scale above.
+    thermalcond <= 0 (util_stackup_reader.py's default when a material's XML
+    has no ThermalConductivity= attribute - never None, but not a real
+    measurement either) gets a distinct flat white instead of being silently
+    clamped into the scale as if it were an extreme insulator.
+    """
+    if thermalcond is None or thermalcond <= 0:
+        return QColor(255, 255, 255, alpha)
+    k = min(max(thermalcond, THERMAL_COND_MIN), THERMAL_COND_MAX)
+    t = ((math.log10(k) - math.log10(THERMAL_COND_MIN))
+         / (math.log10(THERMAL_COND_MAX) - math.log10(THERMAL_COND_MIN)))
+    t_weighted = t ** _WEIGHT
+    hue = _THERMAL_HUE_LOW + (_THERMAL_HUE_HIGH - _THERMAL_HUE_LOW) * t_weighted
+    saturation = 0.12 + 0.55 * t_weighted
+    color = QColor.fromHsvF(hue, saturation, 1.0)
+    color.setAlpha(alpha)
+    return color
+
+
+# room temperature reference point for coloring a table-based material (its
+# thermalcond is temperature-dependent, not one fixed number) - distinct from
+# THERMAL_COND_MAX above despite the same numeral: this is a temperature in
+# Kelvin, that one a conductivity ceiling in W/(m*K).
+THERMAL_TABLE_REFERENCE_TEMPERATURE_K = 300.0
+
+def _thermal_conductivity_for_color(material):
+    """The effective thermalcond (W/(m*K)) to color `material` by: its own
+    scalar value, or - for a temperature-dependent table
+    (thermaltablename set) - the table's value at/near room temperature,
+    linearly interpolated and clamped to the table's own range (never
+    extrapolated beyond the measured points)."""
+    if material is None:
+        return None
+    if material.thermaltablename and material.thermaltable is not None and material.thermaltable.points:
+        points = sorted(material.thermaltable.points)
+        if len(points) == 1:
+            return points[0][1]
+        temps = [p[0] for p in points]
+        values = [p[1] for p in points]
+        interp = interp1d(temps, values, bounds_error=False,
+                           fill_value=(values[0], values[-1]))
+        return float(interp(THERMAL_TABLE_REFERENCE_TEMPERATURE_K))
+    return material.thermalcond
+
+
+class ThermalConductivityLegend(QWidget):
+    """Compact colorbar + tick labels for the stackup preview's conductivity
+    color scale, shown next to it (setupThermal only - see
+    MainWindow.stackup_color_legend())."""
+
+    TICK_VALUES = [1, 10, 100, 400]
+
+    # explicit row heights, stacked top to bottom with no overlap - the title
+    # previously shared the same vertical band as the tick labels (both
+    # centered on the widget), so a tick label near the horizontal middle
+    # (e.g. "10" or "100") visually collided with the title text
+    _TOP_MARGIN = 4
+    _BAR_HEIGHT = 16
+    _TICK_MARK_HEIGHT = 4
+    _TICK_LABEL_HEIGHT = 14
+    _ROW_GAP = 2
+    _TITLE_HEIGHT = 14
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(
+            self._TOP_MARGIN + self._BAR_HEIGHT + self._TICK_MARK_HEIGHT
+            + self._TICK_LABEL_HEIGHT + self._ROW_GAP + self._TITLE_HEIGHT + self._TOP_MARGIN)
+        self.setMinimumWidth(220)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        bar_top = self._TOP_MARGIN
+        bar_bottom = bar_top + self._BAR_HEIGHT
+        tick_mark_bottom = bar_bottom + self._TICK_MARK_HEIGHT
+        tick_label_top = tick_mark_bottom
+        title_top = tick_label_top + self._TICK_LABEL_HEIGHT + self._ROW_GAP
+
+        # horizontal inset wide enough that the end ticks' centered labels
+        # ("1", "400") stay fully inside the widget instead of overhanging
+        # past its left/right edges
+        bar_rect = self.rect().adjusted(18, 0, -18, 0)
+        bar_rect.setTop(bar_top)
+        bar_rect.setBottom(bar_bottom)
+        gradient = QLinearGradient(bar_rect.left(), 0, bar_rect.right(), 0)
+        steps = 20
+        for i in range(steps + 1):
+            t = i / steps
+            k = THERMAL_COND_MIN * (THERMAL_COND_MAX / THERMAL_COND_MIN) ** t
+            color = thermal_conductivity_to_color(k)
+            color.setAlpha(255)  # opaque in the legend - no shape underneath to blend with
+            gradient.setColorAt(t, color)
+        painter.fillRect(bar_rect, gradient)
+        painter.setPen(QPen(Qt.black))
+        painter.drawRect(bar_rect)
+
+        log_min, log_max = math.log10(THERMAL_COND_MIN), math.log10(THERMAL_COND_MAX)
+        for value in self.TICK_VALUES:
+            t = (math.log10(value) - log_min) / (log_max - log_min)
+            x = bar_rect.left() + t * bar_rect.width()
+            painter.drawLine(int(x), bar_bottom, int(x), tick_mark_bottom)
+            label = f"{value:g}"
+            painter.drawText(int(x) - 15, tick_label_top, 30, self._TICK_LABEL_HEIGHT,
+                              Qt.AlignHCenter | Qt.AlignTop, label)
+
+        painter.drawText(QRect(0, title_top, self.width(), self._TITLE_HEIGHT),
+                          Qt.AlignHCenter | Qt.AlignTop, "Thermal conductivity κ, W/(m·K)")
+
+
 # ---------- MAIN WINDOW ----------
 
 
@@ -999,10 +1428,42 @@ class MainWindow(MainWindowBase):
     def update_target_layer_choices(self, metals_list):
         self.thermal_tab.update_layers(metals_list)
 
+    def refresh_source_layer_hints(self):
+        self.thermal_tab.refresh_missing_layer_annotations()
+        self.thermal_tab.portslist_selection_changed()
+
+
+    # ---------- Layout Preview hook ----------
+    def get_layout_preview_markers(self):
+        # flush the thermal tab's current table edits first, so the preview
+        # reflects unsaved edits without requiring a tab switch
+        self.thermal_tab.save_values()
+        markers = thermal_objects_to_struct(thermal_objects)
+        for marker in markers:
+            if marker["type"] == "source":
+                marker["kind"] = "source"
+                marker["group"] = "Sources"
+            else:
+                marker["kind"] = "boundary"
+                marker["group"] = "Boundaries"
+        return markers
+
+
+    # ---------- Preferences dialog hook ----------
+    def open_preferences_dialog(self):
+        dialog = PreferencesDialog(self)
+        dialog.exec()
+
 
     # ---------- Stackup preview hooks (thermal conductivity) ----------
     def stackup_dielectric_color(self, material):
-        return QColor(Qt.white)
+        return thermal_conductivity_to_color(_thermal_conductivity_for_color(material))
+
+    def stackup_metal_color(self, material):
+        return thermal_conductivity_to_color(_thermal_conductivity_for_color(material), alpha=METAL_ALPHA)
+
+    def stackup_color_legend(self):
+        return ThermalConductivityLegend()
 
     def stackup_dielectric_label(self, dielectric, material):
         if material.thermaltablename == "":

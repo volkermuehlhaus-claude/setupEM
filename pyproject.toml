@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
     "gds2palace>=0.4.3",
+    "gds_prepare_for_EM>=1.2.0",
     "PySide6",
     "shiboken6",
     "scipy",
@@ -24,6 +25,11 @@ dependencies = [
     "meshio"
 ]
 requires-python = ">=3.9"
+
+[project.urls]
+Homepage = "https://github.com/VolkerMuehlhaus/setupEM"
+Repository = "https://github.com/VolkerMuehlhaus/setupEM"
+Changelog = "https://github.com/VolkerMuehlhaus/setupEM/blob/main/doc/CHANGES.md"
 
 [project.scripts]
 setupEM = "setupEM.setupEM:main"

@@ -78,13 +78,72 @@ GDS2PALACE_SUPPORTS_FILE_DESCRIPTION = GDS2PALACE_HAS_FILE_DESCRIPTION
 GDS2PALACE_OUTDATED = not (GDS2PALACE_SUPPORTS_STACKUP_EDITOR and GDS2PALACE_SUPPORTS_FILE_DESCRIPTION)
 
 
-# QSettings scope for the File menu's "Load Recent Settings"/"Import Recent Model" lists -
+# QSettings scope for the File menu's "Load Recent Config"/"Import Recent Model" lists -
 # per-app (organization + self.APP_NAME, i.e. "setupEM" or "setupThermal"), mirroring
 # stackupEditor.py's own "Open Recent" mechanism (same org name, separate app/key there).
 RECENT_FILES_ORG = "muehlhaus.com"
 RECENT_SETTINGS_KEY = "recentSettingsFiles"
 RECENT_MODEL_KEY = "recentModelFiles"
 MAX_RECENT_FILES = 10
+
+# Preferences (File > Preferences...): per-user, per-app defaults for fields
+# that used to be plain hardcoded literals (e.g. FrequenciesTab's fstart/fstop
+# QLineEdit("0")/("50")). Deliberately a separate store from the *.simcfg /
+# *.tsimcfg project files and from the existing "Save as Default Config"
+# mechanism (DEFAULT_SETTINGS_FILE) - this is about what a brand-new/blank
+# field starts out showing, not a full saved project snapshot. Reuses the
+# same QSettings org/app scope as the recent-files lists above, just under
+# its own sub-group so the keys never collide.
+PREFERENCES_GROUP = "preferences"
+
+
+def get_preference(app_name, key, default):
+    """Read a user preference, falling back to `default` (the app's own
+    built-in default, e.g. "50" for fstop) if never explicitly set. `default`
+    is returned as-is (same type) when unset; QSettings otherwise round-trips
+    whatever type was last stored via set_preference().
+    """
+    settings = QSettings(RECENT_FILES_ORG, app_name)
+    settings.beginGroup(PREFERENCES_GROUP)
+    try:
+        return settings.value(key, default)
+    finally:
+        settings.endGroup()
+
+
+def get_preference_bool(app_name, key, default):
+    """Bool-safe variant of get_preference() - some QSettings backends (e.g.
+    the Windows registry) round-trip a stored bool back as the string "true"/
+    "false" instead of a real bool, the same well-known quirk noted for the
+    recent-files lists above.
+    """
+    value = get_preference(app_name, key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes")
+    return bool(value)
+
+
+def set_preference(app_name, key, value):
+    settings = QSettings(RECENT_FILES_ORG, app_name)
+    settings.beginGroup(PREFERENCES_GROUP)
+    try:
+        settings.setValue(key, value)
+    finally:
+        settings.endGroup()
+
+
+def clear_preferences(app_name):
+    """Delete every stored preference for app_name (the "Reset all to
+    default" button in PreferencesDialog) - after this, every get_preference()/
+    get_preference_bool() call for this app falls back to its own built-in
+    default again, same as a user who has never opened Preferences at all.
+    """
+    settings = QSettings(RECENT_FILES_ORG, app_name)
+    settings.beginGroup(PREFERENCES_GROUP)
+    try:
+        settings.remove("")
+    finally:
+        settings.endGroup()
 
 
 def _read_substrate_variables(filename):
@@ -165,6 +224,11 @@ COMBO_STYLE_OPTIONAL = """
     }
 """
 
+# Width shared by every narrow/secondary action button (targetdir_btn's "Browse ...",
+# CreateModelTab's Terminate/Model Fit) so their column lines up consistently across
+# the Output Files and Actions group boxes, instead of each guessing its own width.
+SECONDARY_BUTTON_WIDTH = 150
+
 
 # ------------------------------------------------------------------
 # Small shared helpers
@@ -182,6 +246,62 @@ def get_saved_value(saved_values, key, default):
             return saved_values[key]
         else:
             return default
+
+
+# The Cellname dropdown shows this in place of a blank entry for "use the GDS
+# file's default/top cell" - internally that's still just "" everywhere else
+# (saved_values["cellname"], gds_reader.read_gds()'s cellname= argument, the
+# generated Python model's settings['cellname']), only the combo box display
+# uses this label. Translate at the two boundaries with cellname_for_display()/
+# cellname_from_display() rather than special-casing "" throughout.
+CELLNAME_DEFAULT_LABEL = "(default)"
+
+
+def cellname_for_display(cellname):
+    return cellname if cellname else CELLNAME_DEFAULT_LABEL
+
+
+def cellname_from_display(text):
+    return "" if text == CELLNAME_DEFAULT_LABEL else text
+
+
+def shorten_path_for_display(path, head_len=14):
+    # A full network path can run to 100+ characters, unreadable crammed into a
+    # dialog box next to a second equally long path. Keep just enough of the head
+    # to hint at the drive/share, plus the filename - drop the unreadable middle.
+    path = path.replace('\\', '/')
+    filename = path.rsplit('/', 1)[-1]
+    if len(path) <= head_len + len(filename) + 5:
+        return path  # already short enough, don't bother truncating
+    return f"{path[:head_len]}.../{filename}"
+
+
+def resolve_missing_file_paths(saved_values, reference_dir, keys=("GdsFile", "SubstrateFile")):
+    """After loading a model (.py) or settings (.simcfg/.tsimcfg) file, GdsFile/
+    SubstrateFile paths stored for one OS/network-drive mapping often don't exist
+    verbatim on another (e.g. a Windows drive letter vs. a Linux mount point for
+    the same network share) - saved_values still holds the old, unreachable path.
+
+    For each key whose stored path doesn't resolve, look for a same-named file in
+    reference_dir (the folder the just-loaded file itself came from) and, if found,
+    switch saved_values to point at that instead. Returns a list of human-readable
+    messages describing each substitution made, for the caller to show the user -
+    silently swapping in a different file (even same-named) without saying so could
+    be confusing if it's actually a stale/different copy.
+    """
+    messages = []
+    for key in keys:
+        old_path = saved_values.get(key)
+        if not old_path or os.path.isfile(old_path):
+            continue
+        candidate = os.path.join(reference_dir, os.path.basename(old_path))
+        if os.path.isfile(candidate):
+            saved_values[key] = candidate.replace('\\', '/')
+            messages.append(
+                f"{key}: {shorten_path_for_display(old_path)} not found, "
+                f"using {shorten_path_for_display(candidate)} instead"
+            )
+    return messages
 
 
 def parse_assignments(file_path):
@@ -206,6 +326,42 @@ def parse_assignments(file_path):
                 parameters[param] = value
 
     return parameters
+
+
+def next_available_source_layer(gds_layers_present, excluded_layers, start=201):
+    """Smallest layer number >= start that actually has geometry in the GDS
+    (per gds_layers_present) and isn't already spoken for (per
+    excluded_layers - callers pass in both already-used port/thermal-object
+    layers and real stackup metal/via layer numbers, so this never suggests
+    a layer that means something else). Returns None if no such layer
+    exists, so callers can fall back to their own default.
+    """
+    candidates = sorted(l for l in gds_layers_present if l >= start and l not in excluded_layers)
+    return candidates[0] if candidates else None
+
+
+def update_missing_layer_column(table, source_col, comment_col, gds_layers_present):
+    """Set comment_col to "(missing in layout)" for every row whose
+    source_col holds a layer number not in gds_layers_present, and clear it
+    otherwise. Purely a computed display hint, not real row data - existing
+    save/export logic in both apps' Ports/Thermal tabs only ever reads
+    source_col and the columns before it, so writing into this trailing
+    (already otherwise-unused) column doesn't affect anything else.
+    """
+    for row in range(table.rowCount()):
+        item = table.item(row, source_col)
+        comment = ""
+        if item is not None and item.text():
+            try:
+                layernum = int(item.text())
+            except ValueError:
+                pass
+            else:
+                if layernum not in gds_layers_present:
+                    comment = "(missing in layout)"
+        existing = table.item(row, comment_col)
+        if existing is None or existing.text() != comment:
+            table.setItem(row, comment_col, QTableWidgetItem(comment))
 
 
 # ----------------------------------------
@@ -301,13 +457,15 @@ class FileInputTab(QWidget):
         label.setFixedWidth(left_label_width)
         self.cellname_layout.addWidget(label)
         self.cellname_box = QComboBox()
-        self.cellname_box.setFixedWidth(250)
         self.cellname_box.setStyleSheet(COMBO_STYLE_OPTIONAL)
-        self.cellname_box.addItems([""])
-        self.cellname_layout.addWidget(self.cellname_box)
-        self.cellname_label2 = QLabel(" (leave empty for default)")
-        self.cellname_layout.addWidget(self.cellname_label2)
-        self.cellname_layout.addStretch()
+        self.cellname_box.addItems([CELLNAME_DEFAULT_LABEL])
+        # stretch to fill the row like gds_file_edit above, so its right edge lines
+        # up with gds_file_edit's - and show_layout_btn below matches browse_gds_btn
+        self.cellname_layout.addWidget(self.cellname_box, 1)
+        self.show_layout_btn = QPushButton("Show layout")
+        self.show_layout_btn.setFixedWidth(150)  # matches browse_gds_btn above
+        self.show_layout_btn.clicked.connect(self.MainWindow.open_layout_preview)
+        self.cellname_layout.addWidget(self.show_layout_btn)
         self.gds_layout.addLayout(self.cellname_layout)
 
         self.purpose_layout = QHBoxLayout()
@@ -462,13 +620,20 @@ class FileInputTab(QWidget):
     def update_cellnames_from_gds(self, filename):
         if filename:
             # get top level cellnames now
-            lib = gdspy.GdsLibrary()
-            lib.read_gds(filename)
-            cellnames = list(lib.cells.keys())
+            try:
+                lib = gdspy.GdsLibrary()
+                lib.read_gds(filename)
+                cellnames = list(lib.cells.keys())
+            except Exception:
+                # called on a just-resolved path during load_values() now, not only after
+                # the user explicitly picked a file via the Browse dialog - be defensive
+                return False
             self.cellname_box.clear()
-            self.cellname_box.addItem("")  # blank for default
+            self.cellname_box.addItem(CELLNAME_DEFAULT_LABEL)
             for cellname in cellnames:
                 self.cellname_box.addItem(cellname)
+            return True
+        return False
 
     def set_gds_file(self, filename):
         # clear model name and target dir if they were auto-generated from previous model
@@ -477,18 +642,24 @@ class FileInputTab(QWidget):
         self.MainWindow.saved_values["GdsFile"] = filename.replace('\\', '/')
         # file is read when leaving the files tab
         self.update_cellnames_from_gds(filename)
+        self.MainWindow.refresh_source_layer_hints()
 
     def browse_XML_file(self):
         # start browsing from previous file location, if valid
         previous_file = self.XML_file_edit.text()
         previous_directory = os.path.dirname(previous_file)
         if not os.path.isdir(previous_directory):
-            # try to get XML files bundled in setupEM package
-            package_data = os.path.join(os.path.dirname(__file__), "data")
-            if os.path.exists(package_data):
-                previous_directory = package_data
+            # user-configured default (Preferences > Files), falling back to
+            # the XML files bundled with setupEM if unset/invalid
+            custom_dir = get_preference(self.MainWindow.APP_NAME, "xml_browse_directory", "")
+            if custom_dir and os.path.isdir(custom_dir):
+                previous_directory = custom_dir
             else:
-                previous_directory = ""
+                package_data = os.path.join(os.path.dirname(__file__), "data")
+                if os.path.exists(package_data):
+                    previous_directory = package_data
+                else:
+                    previous_directory = ""
 
         filename, _ = QFileDialog.getOpenFileName(self, "Select XML Stackup File", previous_directory, "*.xml;;*.*")
         if filename:
@@ -626,17 +797,31 @@ class FileInputTab(QWidget):
 
     def load_values(self):
         saved_values = self.MainWindow.saved_values
-        self.gds_file_edit.setText(get_saved_value(saved_values, "GdsFile", "Please choose a file ===>"))
+        gdsfile = get_saved_value(saved_values, "GdsFile", "Please choose a file ===>")
+        self.gds_file_edit.setText(gdsfile)
         XML = get_saved_value(saved_values, "SubstrateFile", "Please choose a file ===>")
         self.XML_file_edit.setText(XML)
         self.update_XML_description(XML)
         self.update_variable_overrides_grid(XML)
-        self.cellname_box.clear()
-        self.cellname_box.addItem(get_saved_value(saved_values, "cellname", ""))
-        self.viamerge_edit.setText(str(get_saved_value(saved_values, "merge_polygon_size", "0.5")))
+
+        # Repopulate the full cellname picker from the GDS file (matching what
+        # browse_gds_file()/set_gds_file() already do), not just the one saved value -
+        # otherwise a resolved/substituted GdsFile path (see resolve_missing_file_paths)
+        # leaves the dropdown showing only the previously-saved cellname (blank, if none
+        # was set) with no way to pick a different one without re-browsing for the file.
+        saved_cellname = get_saved_value(saved_values, "cellname", "")
+        if os.path.isfile(gdsfile) and self.update_cellnames_from_gds(gdsfile):
+            index = self.cellname_box.findText(cellname_for_display(saved_cellname))
+            self.cellname_box.setCurrentIndex(index if index >= 0 else 0)
+        else:
+            self.cellname_box.clear()
+            self.cellname_box.addItem(cellname_for_display(saved_cellname))
+        viamerge_default = get_preference(self.MainWindow.APP_NAME, "merge_polygon_size", "0.5")
+        self.viamerge_edit.setText(str(get_saved_value(saved_values, "merge_polygon_size", viamerge_default)))
         self.preprocess_gds_checkbox.setChecked(bool(get_saved_value(saved_values, "preprocess_gds", True)))
 
-        int_list = saved_values.get("purpose", "0")
+        purpose_default = get_preference(self.MainWindow.APP_NAME, "purpose", "0")
+        int_list = saved_values.get("purpose", purpose_default)
         purpose_string = str(int_list).replace('[', '').replace(']', '')
         self.purpose_edit.setText(purpose_string)
         # self.purpose_edit.setText(','.join(map(str, int_list)))
@@ -648,14 +833,14 @@ class FileInputTab(QWidget):
         saved_values["GdsFile"] = self.gds_file_edit.text().replace('\\', '/')
         saved_values["SubstrateFile"] = self.XML_file_edit.text().replace('\\', '/')
         saved_values["preprocess_gds"] = self.preprocess_gds_checkbox.isChecked()
-        saved_values["cellname"] = self.cellname_box.currentText()
+        saved_values["cellname"] = cellname_from_display(self.cellname_box.currentText())
         saved_values["variable_overrides"] = self.get_variable_overrides()
 
         try:
             merge_polygon_size = float(self.viamerge_edit.text())
         except Exception:
             QMessageBox.warning(self, "Error", f"Not a valid value for via array merging")
-            self.viamerge_edit.setText("0.5")
+            self.viamerge_edit.setText(str(get_preference(self.MainWindow.APP_NAME, "merge_polygon_size", "0.5")))
             return False
         saved_values["merge_polygon_size"] = float(merge_polygon_size)
 
@@ -664,7 +849,8 @@ class FileInputTab(QWidget):
             # save as list of comma separated values
             saved_values["purpose"] = ast.literal_eval('[' + text + ']')
         else:
-            saved_values["purpose"] = [0]  # safe default
+            purpose_default = get_preference(self.MainWindow.APP_NAME, "purpose", "0")
+            saved_values["purpose"] = ast.literal_eval('[' + str(purpose_default) + ']')
 
         # also trigger the load function of CreateModelTab, because that uses gds file info
         self.MainWindow.create_model_tab.load_values()
@@ -772,6 +958,23 @@ class CodeEditor(QPlainTextEdit):
 # does NOT use these: its thermal-conductivity-based preview is genuinely different information,
 # not just a simplification of this one, so it keeps its own implementation.
 
+INVALID_MATERIAL_COLOR = QColor(255, 0, 0, 80)
+
+# Distinct from the regular conductor fill (QColor(230,230,230,90)), the resistor/sheet fill
+# (QColor(230,130,130,90)), and INVALID_MATERIAL_COLOR above - a PEC layer is valid, just
+# unlike any of those, so it gets its own recognizable "ideal conductor" look.
+PEC_MATERIAL_COLOR = QColor(180, 220, 255, 140)
+
+
+def _is_pec_material(materialname):
+    """True if materialname is the reserved PEC keyword (case-insensitive) - a Layer that
+       compute_stackup_layout() below must draw as an ideal conductor even though
+       materials_list.get_by_name() deliberately returns None for it (see
+       stackup_reader.PEC_MATERIAL_NAME).
+    """
+    return materialname is not None and materialname.strip().upper() == stackup_reader.PEC_MATERIAL_NAME.upper()
+
+
 def epsilon_to_color(erel, transparency):
     # Compute raw float components
     red   = 250 - 30 * (erel - 1)
@@ -846,7 +1049,7 @@ def _build_layer_tooltip(metal):
 
 def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width, height,
                             dielectric_color_fn, dielectric_label_fn,
-                            metal_label_fn, via_label_suffix_fn):
+                            metal_label_fn, via_label_suffix_fn, metal_color_fn):
     """Pure layout computation for the stackup cross-section preview - no QPainter/
     widget/scene involved. Returns (draw_calls, interactive_entries):
 
@@ -939,8 +1142,15 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
 
         materialname = dielectric.material
         material = materials_list.get_by_name(materialname)
-        # dielectric color/label are app-specific (permittivity vs. thermal conductivity)
-        dielectric_shape['color'] = dielectric_color_fn(material)
+        if material is not None:
+            # dielectric color/label are app-specific (permittivity vs. thermal conductivity)
+            dielectric_shape['color'] = dielectric_color_fn(material)
+        else:
+            # unresolved Material reference (typo, or a transient state while the user is
+            # still typing a new value in the editor) - PEC is never valid here (rejected by
+            # stackup_writer.validate_stackup()), so this is always a genuine error, unlike
+            # the metal/sheet branch below which also has a legitimate PEC case to handle
+            dielectric_shape['color'] = INVALID_MATERIAL_COLOR
         dielectric_shape['material'] = material
 
         total_parts = total_parts + parts
@@ -963,7 +1173,10 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
         color = dielectric_shape['color']
         material = dielectric_shape['material']
 
-        material_string = dielectric_label_fn(dielectric, material)
+        if material is not None:
+            material_string = dielectric_label_fn(dielectric, material)
+        else:
+            material_string = 'INVALID MATERIAL REFERENCE: ' + dielectric.material
 
         setPen(penBlack)
         setBrush(color)
@@ -1047,17 +1260,32 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
                         height_box = part_height / 2
                         label_string = metal_label_fn(metal, material, False)
 
-                    # the box for this metal
-                    if material.type.upper() == "CONDUCTOR":
+                    # the box for this metal - metal_color_fn(material) can
+                    # override the default type-based color below (e.g.
+                    # setupThermal's thermal-conductivity scale); None means
+                    # "no override", i.e. every caller except setupThermal
+                    override_color = metal_color_fn(material)
+                    if override_color is not None:
+                        setBrush(override_color)
+                        drawRect(xmetal, flipy(ymetal), wmetal, -int(height_box))
+                    elif material.type.upper() == "CONDUCTOR":
                         setBrush(QColor(230, 230, 230, 90))
                         drawRect(xmetal, flipy(ymetal), wmetal, -int(height_box))
                     else:
                         setBrush(QColor(230, 130, 130, 90))
                         drawRect(xmetal, flipy(ymetal), wmetal, -int(height_box))
+                elif _is_pec_material(metal.material):
+                    # reserved PEC keyword: valid (no <Materials> entry needed/expected -
+                    # materials_list.get_by_name() deliberately returns None for it), draw as
+                    # an ideal conductor instead of falling into the invalid-reference case below
+                    height_box = 3 if metal.is_sheet else part_height / 2
+                    setBrush(PEC_MATERIAL_COLOR)
+                    drawRect(xmetal, flipy(ymetal), wmetal, -int(height_box))
+                    label_string = 'PEC (ideal conductor)'
                 else:
                     # material assignment is invalid
                     height_box = part_height / 2
-                    setBrush(QColor(255, 0, 0, 80))
+                    setBrush(INVALID_MATERIAL_COLOR)
                     drawRect(xmetal, flipy(ymetal), wmetal, -int(height_box))
                     label_string = 'INVALID MATERIAL REFERENCE: ' + metal.material
 
@@ -1156,12 +1384,17 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
         pos = 1
         w = (xmax - xmin) / 10
 
-        setBrush(QColor(136, 192, 200, 80))
         for metal in metals_list.metals:
             if metal.is_via or metal.is_dielectric:
 
                 material = materials_list.get_by_name(metal.material)
                 label_suffix = via_label_suffix_fn(metal, material)
+
+                # metal_color_fn(material) can override this box's default
+                # color too (e.g. setupThermal's thermal-conductivity scale) -
+                # None means "no override", same default color as before
+                override_color = metal_color_fn(material)
+                setBrush(override_color if override_color is not None else QColor(136, 192, 200, 80))
 
                 y1 = z_to_y(metal.zmin)
                 y2 = z_to_y(metal.zmax)
@@ -1254,8 +1487,21 @@ class InteractiveRegionItem(QGraphicsRectItem):
             painter.drawRect(self.rect())
 
     def mousePressEvent(self, event):
+        # just record pre-click state here; deciding to deselect has to wait
+        # until mouseReleaseEvent (see below) - QGraphicsScene re-selects a
+        # lone already-selected item on release (to support dragging a multi-
+        # selection), which would silently undo a deselect made here on press
+        self._was_selected_before_press = self.isSelected()
         super().mousePressEvent(event)  # keeps native click-to-select behavior
-        if self.info_text:
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if getattr(self, "_was_selected_before_press", False) and self.isSelected():
+            # clicking (press+release) an already-selected shape deselects it,
+            # instead of Qt's default of leaving a lone selected item selected
+            # - matches Layout Preview's legend row click-to-toggle behavior
+            self.setSelected(False)
+        if self.isSelected() and self.info_text:
             QToolTip.showText(event.screenPos(), self.info_text)
 
 
@@ -1272,6 +1518,9 @@ class VectorWidget(QGraphicsView):
         dielectric_label_fn(dielectric, material) -> str
         metal_label_fn(metal, material, is_sheet) -> str
         via_label_suffix_fn(metal, material) -> str
+        metal_color_fn(material) -> QColor | None (None = use the default
+            hardcoded type-based color - setupEM/stackupEditor's standalone
+            stand-in both return None; only setupThermal overrides this)
     """
 
     # emitted when a shape is clicked/selected in the preview: (kind, key), where
@@ -1280,7 +1529,7 @@ class VectorWidget(QGraphicsView):
 
     def __init__(self, materials_list, dielectrics_list, metals_list,
                  dielectric_color_fn, dielectric_label_fn,
-                 metal_label_fn, via_label_suffix_fn):
+                 metal_label_fn, via_label_suffix_fn, metal_color_fn):
         super().__init__()
         self.materials_list = materials_list
         self.dielectrics_list = dielectrics_list
@@ -1289,6 +1538,7 @@ class VectorWidget(QGraphicsView):
         self.dielectric_label_fn = dielectric_label_fn
         self.metal_label_fn = metal_label_fn
         self.via_label_suffix_fn = via_label_suffix_fn
+        self.metal_color_fn = metal_color_fn
 
         self.setRenderHint(QPainter.Antialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1338,7 +1588,7 @@ class VectorWidget(QGraphicsView):
             self.materials_list, self.dielectrics_list, self.metals_list,
             width, height,
             self.dielectric_color_fn, self.dielectric_label_fn,
-            self.metal_label_fn, self.via_label_suffix_fn)
+            self.metal_label_fn, self.via_label_suffix_fn, self.metal_color_fn)
 
         scene.addItem(StackupBackgroundItem(draw_calls, width, height))
 
@@ -1365,6 +1615,11 @@ class VectorWidget(QGraphicsView):
             # clicking empty background clears selection - dismiss any flyout left
             # showing from the previously-selected shape rather than stranding it
             QToolTip.hideText()
+            # emit the "nothing selected" sentinel too, so listeners outside this
+            # editor (e.g. Layout Preview's cross-window highlight) can tell a
+            # clear apart from "no signal yet" - existing consumers of a real
+            # (kind, key) pair already no-op safely on empty strings
+            self.elementSelected.emit("", "")
             return
         item = selected[0]
         self.elementSelected.emit(item.kind, item.key)
@@ -1395,6 +1650,15 @@ class PopUpWindow(QDialog):
     stackup_metal_label / stackup_via_label_suffix hooks so the same window
     class works for both the EM (permittivity/Rs) and thermal (thermal
     conductivity) apps.
+
+    Non-modal (see open_popup()'s lazy-singleton guard) so the user can keep
+    it open side by side with the Layout Preview window - e.g. to pan/zoom
+    there while clicking through layers here to see them highlighted.
+    MainWindowBase.read_XML() pushes fresh materials_list/dielectrics_list/
+    metals_list into this window's vector_widget (via VectorWidget.refresh(),
+    the same call the Stackup Editor uses to stay live during its own edits)
+    whenever the stackup is reloaded elsewhere, so it doesn't go stale while
+    left open.
     """
 
     def __init__(self, MainWindow):
@@ -1413,8 +1677,18 @@ class PopUpWindow(QDialog):
                                           dielectric_color_fn=self.MainWindow.stackup_dielectric_color,
                                           dielectric_label_fn=self.MainWindow.stackup_dielectric_label,
                                           metal_label_fn=self.MainWindow.stackup_metal_label,
-                                          via_label_suffix_fn=self.MainWindow.stackup_via_label_suffix)
+                                          via_label_suffix_fn=self.MainWindow.stackup_via_label_suffix,
+                                          metal_color_fn=self.MainWindow.stackup_metal_color)
         layout.addWidget(self.vector_widget)
+
+        # optional color-scale legend (e.g. setupThermal's thermal-conductivity
+        # colorbar) - getattr'd rather than required on every MainWindow-like
+        # object, since this is purely additive and most callers have nothing
+        # to show here (color already comes straight from the XML's Color=)
+        legend_fn = getattr(self.MainWindow, "stackup_color_legend", None)
+        legend_widget = legend_fn() if legend_fn is not None else None
+        if legend_widget is not None:
+            layout.addWidget(legend_widget)
 
         # Close button
         close_button = QPushButton("Close")
@@ -1422,7 +1696,6 @@ class PopUpWindow(QDialog):
         layout.addWidget(close_button)
 
         self.setLayout(layout)
-        self.setModal(True)
 
 
 # ---------- CREATE MODEL TAB (shared base) ----------
@@ -1461,7 +1734,7 @@ class CreateModelTabBase(QWidget):
         self.targetdir_edit.setStyleSheet(EDIT_STYLE_REQUIRED)
         self.targetdir_layout.addWidget(self.targetdir_edit)
         self.targetdir_btn = QPushButton("Browse ...")
-        self.targetdir_btn.setFixedWidth(150)  # narrower
+        self.targetdir_btn.setFixedWidth(SECONDARY_BUTTON_WIDTH)
         self.targetdir_btn.clicked.connect(self.browse_directory)
         self.targetdir_layout.addWidget(self.targetdir_btn)
         self.file_layout.addLayout(self.targetdir_layout)
@@ -1475,22 +1748,38 @@ class CreateModelTabBase(QWidget):
         # install event filter, so we capture when edit looses focus
         self.modelname_edit.editingFinished.connect(self.on_modelname_edit_done)
         self.modelname_layout.addWidget(self.modelname_edit)
+        # Reserve the same width targetdir_btn ("Browse ...") occupies in the row
+        # above, so modelname_edit's right edge lines up with targetdir_edit's -
+        # and, in turn, with the Actions buttons' right edge - instead of stretching
+        # further right just because this row has no trailing button of its own.
+        # Uses an invisible placeholder widget (addWidget), not addSpacing(): a bare
+        # addSpacing() doesn't get the automatic inter-item gap a real widget would,
+        # so it ends up one layout-spacing() short of targetdir_btn's actual reserved
+        # width, letting modelname_edit stretch a few pixels past targetdir_edit.
+        self.modelname_spacer = QLabel("")
+        self.modelname_spacer.setFixedWidth(SECONDARY_BUTTON_WIDTH)
+        self.modelname_layout.addWidget(self.modelname_spacer)
         self.file_layout.addLayout(self.modelname_layout)
 
         self.file_group.setLayout(self.file_layout)
 
         # Actions group - kept visually separate (its own framed group) from the
         # input fields above. Preview/Create Mesh/Start Simulation/Terminate (plus,
-        # in setupEM's subclass, View Results/Model Fit) all share this grid so
-        # their right edges line up at exactly the same two-thirds/one-third split
-        # - a QGridLayout keeps columns aligned across rows; independent
-        # QHBoxLayouts can't guarantee that once some rows have two widgets (e.g.
-        # Start Simulation/Terminate) and others have one (Preview/Create Mesh).
+        # in setupEM's subclass, View Results/Model Fit) all share this grid - a
+        # QGridLayout keeps columns aligned across rows; independent QHBoxLayouts
+        # can't guarantee that once some rows have two widgets (e.g. Start
+        # Simulation/Terminate) and others have one (Preview/Create Mesh). Column 0
+        # (primary actions) stretches to fill the remaining width so its right edge
+        # lines up with targetdir_edit's right edge in the Output Files group above;
+        # column 1 (secondary actions: Terminate/Model Fit) is a fixed
+        # SECONDARY_BUTTON_WIDTH, matching targetdir_btn's "Browse ..." button, so
+        # both group boxes present the same "wide field/button + narrow button"
+        # proportions instead of an unrelated stretch ratio.
         self.actions_group = QGroupBox("Actions")
         self.actions_layout = QVBoxLayout()
         self.buttons_grid = QGridLayout()
-        self.buttons_grid.setColumnStretch(0, 2)  # primary column: two thirds
-        self.buttons_grid.setColumnStretch(1, 1)  # secondary column: one third
+        self.buttons_grid.setColumnStretch(0, 1)  # primary column: fills remaining width
+        self.buttons_grid.setColumnStretch(1, 0)  # secondary column: fixed-width buttons only
 
         self.preview_model_btn = QPushButton("⚙️ Preview model geometry in gmsh")
         self.preview_model_btn.clicked.connect(self.preview_model)
@@ -1504,16 +1793,17 @@ class CreateModelTabBase(QWidget):
         self.create_run_btn.clicked.connect(self.run_model)
         self.buttons_grid.addWidget(self.create_run_btn, 2, 0)
         self.kill_btn = QPushButton("🛑 Terminate ")
+        self.kill_btn.setFixedWidth(SECONDARY_BUTTON_WIDTH)
         self.kill_btn.clicked.connect(self.terminate_run)
         self.buttons_grid.addWidget(self.kill_btn, 2, 1)
 
         self.actions_layout.addLayout(self.buttons_grid)
 
-        # Log file: kept inside the Actions frame (not its own group box) since it is
-        # the direct output of the actions above (Preview/Create Mesh/Start Simulation),
-        # not an independent input section.
+        # Log area follows directly, no "Log file:" label - kept inside the Actions
+        # frame (not its own group box) since it is the direct output of the actions
+        # above (Preview/Create Mesh/Start Simulation), not an independent input
+        # section, and the log content itself is self-explanatory.
         self.actions_layout.addSpacing(10)
-        self.actions_layout.addWidget(QLabel("Log file:"))
         self.log_area = QPlainTextEdit()
         self.log_area.setReadOnly(True)
         log_font = QFont()
@@ -1551,6 +1841,24 @@ class CreateModelTabBase(QWidget):
         for line in data.splitlines():
             if line.strip():  # Skip empty lines
                 self.log_area.appendPlainText(line)
+                self._on_stdout_line(line)
+
+    def _on_stdout_line(self, line):
+        """Hook called with each stdout line as it arrives, after it's appended to
+        log_area. No-op here; overridden by setupEM.py's CreateModelTab to parse
+        live solver progress (MPI/memory/port/AMR) out of Palace's log output.
+        """
+        pass
+
+    def _reset_live_status(self):
+        """Hook called whenever the loaded model changes (new *.py/*.simcfg loaded,
+        or a fresh mesh/config is about to be created) - anywhere the previous
+        run's status is no longer relevant to what's now loaded. No-op here;
+        overridden by setupEM.py's CreateModelTab to clear the live solver-status
+        line (MPI/memory/port/AMR) back to "n/a" rather than leave it showing a
+        stale run's data for a model that's no longer the one on screen.
+        """
+        pass
 
     def on_stderr(self):
         data = self.process.readAllStandardError().data().decode()
@@ -1704,6 +2012,7 @@ class CreateModelTabBase(QWidget):
         XMLfile = saved_values.get("SubstrateFile")
         if os.path.isfile(gdsfile):
             if os.path.isfile(XMLfile):
+                self._reset_live_status()  # a fresh mesh/config invalidates the last run's status
                 saved_values['preview_only'] = False
                 saved_values['no_preview'] = True
                 self.create_model()
@@ -1719,6 +2028,158 @@ class CreateModelTabBase(QWidget):
             self.process.terminate()
             if not self.process.waitForFinished(2000):
                 self.process.kill()
+
+    # ---------- Start Simulation pre-flight checks ----------
+    #
+    # Shared by both apps' run_model() overrides (setupEM.py / setupThermal.py):
+    # confirm the solver/toolchain is actually reachable *before* calling
+    # QProcess.start(), with a clear, actionable log message and an early abort
+    # if not - instead of an uncaught exception (missing run_sim/run_elmer) or
+    # a generic "the program could not be started" line that doesn't say which
+    # program or why. Log-panel-only (no QMessageBox), matching the one
+    # pre-existing check of this kind (the Elmer/Windows MPI check this
+    # replaces) - log_area sits in the same group box as the Start Simulation
+    # button itself, so there's no visibility gap a modal would fix.
+
+    @staticmethod
+    def _windows_to_wsl_path(win_path):
+        """Convert a Windows-style path like C:\\Users\\... into a WSL-style
+        path like /mnt/c/Users/... . Needed both for the WSL pre-flight checks
+        below and for the actual wsl.exe launch (setupEM.py's run_model()).
+        """
+        win_path = win_path.strip()
+        if not win_path or ":" not in win_path:
+            return win_path  # already looks like a Linux path, or invalid
+        drive, rest = win_path.split(":", 1)
+        drive = drive.lower()
+        rest = rest.replace("\\", "/").lstrip("/")
+        return f"/mnt/{drive}/{rest}"
+
+    def _check_run_script_ready(self, run_path, script_name):
+        """Return the full path to script_name inside run_path if it's a real
+        file, else log a "run Create Mesh first" message and return None.
+        Fixes an uncaught FileNotFoundError os.chmod() would otherwise raise
+        on Linux/Mac when "Create Mesh" was never run for this target dir/
+        model name, and gives the same-quality message on Windows too
+        (previously only caught generically, post-hoc, by on_process_error's
+        "could not be started" line).
+        """
+        script_path = os.path.join(run_path, script_name)
+        if not os.path.isfile(script_path):
+            self.log_area.appendPlainText(
+                f"⚠️ '{script_name}' not found in {run_path}.\n"
+                "Click 'Create mesh and simulation settings file' first.\n"
+            )
+            return None
+        return script_path
+
+    def _check_command_on_path(self, command, hint, reason=None):
+        """shutil.which() wrapper: return the resolved path if command is on
+        PATH, else log a message and return None. `hint` is free-form
+        guidance text (install link, PATH instructions, etc.). `reason`, if
+        given, is prepended as "<reason>, but '<command>' was not found on
+        PATH." instead of the bare "'<command>' was not found on PATH." -
+        lets a check that only fires under an extra condition (e.g. MPI
+        threads > 1) explain why it ran.
+        """
+        resolved = shutil.which(command)
+        if resolved is None:
+            lead = f"{reason}, but '{command}'" if reason else f"'{command}'"
+            self.log_area.appendPlainText(
+                f"⚠️ {lead} was not found on PATH.\n{hint}\n"
+            )
+            return None
+        return resolved
+
+    def _check_wsl_ready(self):
+        """Windows-only: confirm wsl.exe is on PATH and at least one WSL
+        distro is installed and enumerable. Returns True if both hold, else
+        logs a message with the WSL install docs/command and returns False.
+        Never raises: a hung/misbehaving wsl.exe is caught and logged, not
+        left to crash the app or freeze it indefinitely.
+        """
+        if shutil.which("wsl.exe") is None and shutil.which("wsl") is None:
+            self.log_area.appendPlainText(
+                "⚠️ WSL (Windows Subsystem for Linux) was not found. Palace on "
+                "Windows runs inside WSL - install it from an elevated PowerShell "
+                "with 'wsl --install', restart Windows, then set up Palace inside "
+                "WSL (see https://learn.microsoft.com/en-us/windows/wsl/install).\n"
+            )
+            return False
+
+        env = os.environ.copy()
+        # wsl.exe writes its own diagnostic/list output (like this -l -q
+        # listing) as UTF-16LE by default when stdout isn't a real console -
+        # WSL_UTF8=1 switches it to plain UTF-8. This only affects wsl.exe's
+        # own text, not the piped stdout of a command run *inside* WSL (see
+        # _check_wsl_commands_ready below, which needs no such handling).
+        env["WSL_UTF8"] = "1"
+        try:
+            result = subprocess.run(
+                ["wsl.exe", "-l", "-q"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                env=env, timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            self.log_area.appendPlainText(
+                "⚠️ 'wsl.exe -l -q' timed out; WSL may be in a bad state. Try "
+                "'wsl --shutdown' in PowerShell, then retry.\n"
+            )
+            return False
+        except OSError as e:
+            self.log_area.appendPlainText(f"⚠️ Could not run wsl.exe: {e}\n")
+            return False
+
+        has_distro = bool(result.stdout.strip())
+        if result.returncode != 0 or not has_distro:
+            self.log_area.appendPlainText(
+                "⚠️ WSL is installed, but no Linux distribution is set up in it. "
+                "Run 'wsl --install' (or 'wsl --install -d Ubuntu') in an elevated "
+                "PowerShell, then set up Palace inside that distro (see "
+                "https://learn.microsoft.com/en-us/windows/wsl/install).\n"
+            )
+            return False
+        return True
+
+    def _check_wsl_commands_ready(self, wsl_path, commands):
+        """Windows+Palace only: confirm each name in `commands` resolves
+        inside a WSL login shell rooted at wsl_path, via the same 'bash -lc'
+        invocation run_model() itself uses to launch run_sim - so PATH/
+        ~/.profile is checked under the exact conditions the real run will
+        use. Returns True only if every command resolves; else logs one
+        combined message and returns False.
+        """
+        missing = []
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    ["wsl.exe", "--cd", wsl_path, "--", "bash", "-lc", f"command -v {command}"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                self.log_area.appendPlainText(f"⚠️ Checking for '{command}' inside WSL timed out.\n")
+                missing.append(command)
+                continue
+            except OSError as e:
+                self.log_area.appendPlainText(f"⚠️ Could not check for '{command}' inside WSL: {e}\n")
+                missing.append(command)
+                continue
+            if result.returncode != 0 or not result.stdout.strip():
+                missing.append(command)
+
+        if missing:
+            self.log_area.appendPlainText(
+                "⚠️ The following required command(s) were not found on PATH inside "
+                "WSL: " + ", ".join(f"'{c}'" for c in missing) + ".\n"
+                "Install Palace inside WSL (via apptainer/~/palace.sif, see "
+                "https://awslabs.github.io/palace/stable/install/, or 'spack load "
+                "palace'), and add the gds2palace scripts folder (run_palace, "
+                "combine_snp) to PATH via ~/.profile inside WSL - see "
+                "gds2palace's scripts/README.md.\n"
+            )
+            return False
+        return True
 
     # create_model() and run_model() are app-specific and implemented in
     # each app's CreateModelTab subclass (see setupEM.py / setupThermal.py)
@@ -1745,30 +2206,39 @@ class MainWindowBase(QMainWindow):
         # not just the individual file-path fields (see FileDropLineEdit)
         self.setAcceptDrops(True)
 
-    # ---------- Drag & drop native config file onto the window ----------
-    def _config_file_from_drop(self, event):
+    # ---------- Drag & drop native config (*.simcfg/*.tsimcfg) or *.py model file
+    # onto the window. Restricted to the "Input Files" tab so it doesn't fire while
+    # the user is on another tab; within that tab, the GdsFile/XML fields have their
+    # own FileDropLineEdit handling for .gds/.xml and ignore other extensions, so
+    # drops on those fields still bubble up here for .simcfg/.tsimcfg/.py.
+    def _droppable_file_from_drop(self, event):
         if not event.mimeData().hasUrls():
             return None
+        tabs_widget = getattr(self, "tabs_widget", None)
+        file_tab = getattr(self, "file_tab", None)
+        if tabs_widget is None or file_tab is None or tabs_widget.currentWidget() is not file_tab:
+            return None
+        valid_suffixes = {"." + self.CONFIG_SUFFIX.upper(), ".PY"}
         for url in event.mimeData().urls():
             path = url.toLocalFile()
-            if path and pathlib.Path(path).suffix.upper() == "." + self.CONFIG_SUFFIX.upper():
+            if path and pathlib.Path(path).suffix.upper() in valid_suffixes:
                 return path
         return None
 
     def dragEnterEvent(self, event):
-        if self._config_file_from_drop(event):
+        if self._droppable_file_from_drop(event):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
-        if self._config_file_from_drop(event):
+        if self._droppable_file_from_drop(event):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event):
-        file_path = self._config_file_from_drop(event)
+        file_path = self._droppable_file_from_drop(event)
         if file_path:
             event.acceptProposedAction()
             self.load_configuration_from_file(file_path)
@@ -1780,13 +2250,14 @@ class MainWindowBase(QMainWindow):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
 
-        # browse_action = QAction("Browse Settings File...", self)
-        self.load_settings_action = QAction("Load Settings ...", self)
-        self.save_action = QAction("Save Settings ...", self)
-        self.load_default_action = QAction("Load Default Settings", self)
-        self.savedefault_action = QAction("Save as Default Settings", self)
+        # browse_action = QAction("Browse Config File...", self)
+        self.load_settings_action = QAction("Load Config ...", self)
+        self.save_action = QAction("Save Config ...", self)
+        self.load_default_action = QAction("Load Default Config", self)
+        self.savedefault_action = QAction("Save as Default Config", self)
         self.import_model_action = QAction("Import from *.py model ...", self)
         self.export_model_action = QAction("Export to *.py model ...", self)
+        self.preferences_action = QAction("Preferences ...", self)
         exit_action = QAction("Exit", self)
 
         # disable export by default, only enable when on Code tab
@@ -1799,10 +2270,11 @@ class MainWindowBase(QMainWindow):
 
         self.import_model_action.triggered.connect(lambda: self.import_from_python())
         self.export_model_action.triggered.connect(lambda: self.export_to_python())
+        self.preferences_action.triggered.connect(lambda: self.open_preferences_dialog())
         exit_action.triggered.connect(self.close)
 
         file_menu.addAction(self.load_settings_action)
-        self.recent_settings_menu = file_menu.addMenu("Load Recent Settings")
+        self.recent_settings_menu = file_menu.addMenu("Load Recent Config")
         file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         file_menu.addAction(self.import_model_action)
@@ -1811,6 +2283,8 @@ class MainWindowBase(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.load_default_action)
         file_menu.addAction(self.savedefault_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.preferences_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
         self._populate_recent_menus()
@@ -1830,6 +2304,14 @@ class MainWindowBase(QMainWindow):
                 "Requires a newer gds2palace than is currently installed.\n"
                 "Update with: pip install gds2palace --upgrade")
         tools_menu.addAction(self.edit_stackup_action)
+
+        self.layout_preview_action = QAction("Layout Preview...", self)
+        self.layout_preview_action.triggered.connect(lambda: self.open_layout_preview())
+        tools_menu.addAction(self.layout_preview_action)
+
+        self.simplify_gds_action = QAction("Simplify GDS...", self)
+        self.simplify_gds_action.triggered.connect(lambda: self.open_simplify_gds())
+        tools_menu.addAction(self.simplify_gds_action)
 
         # one-time, non-blocking heads-up if gds2palace is too old for some features -
         # deferred so it appears after the window itself, not stalling startup
@@ -1997,12 +2479,12 @@ class MainWindowBase(QMainWindow):
                 with open(filename, "r") as f:
                     return json.load(f)
             except Exception:
-                QMessageBox.warning(self, "Error", f"Failed to load settings from {filename}")
+                QMessageBox.warning(self, "Error", f"Failed to load config from {filename}")
                 return {}
         return {}
 
     def load_configuration_dialog(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Settings File", filter=f"*.{self.CONFIG_SUFFIX};;Python model code *.py")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Config File", filter=f"*.{self.CONFIG_SUFFIX};;Python model code *.py")
         # we can load JSON or Python models, decide which suffix we have
         if file_path:
             self.load_configuration_from_file(file_path)
@@ -2020,12 +2502,20 @@ class MainWindowBase(QMainWindow):
                     # update internal data structure
                     saved_values.clear()
                     saved_values.update(data.get("saved_values"))
+                    # GdsFile/SubstrateFile paths saved on a different OS/network-drive
+                    # mapping often don't resolve here - fall back to a same-named file
+                    # next to this settings file before populating the tabs with them
+                    path_messages = resolve_missing_file_paths(saved_values, os.path.dirname(file_path))
                     # update ports/thermal objects, separate from the other internal data
                     self.apply_native_config_data(data)
                     self.load_all_tabs()
                     self._add_recent_file(RECENT_SETTINGS_KEY, file_path)
-                    QMessageBox.information(self, "Loaded", f"Settings loaded from {file_path}")
+                    loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
+                    if path_messages:
+                        loaded_message += "\n\n" + "\n".join(path_messages)
+                    QMessageBox.information(self, "Loaded", loaded_message)
                     self.create_model_tab.log_area.clear()
+                    self.create_model_tab._reset_live_status()
                 else:
                     QMessageBox.information(self, "Failed", "Unknown data format")
             elif extension.upper() == ".PY":
@@ -2098,15 +2588,26 @@ class MainWindowBase(QMainWindow):
                                     else:
                                         saved_values[varname] = raw
 
+                # GdsFile/SubstrateFile paths saved on a different OS/network-drive mapping
+                # often don't resolve here even as a full absolute path (the bare-relative-
+                # path fallback above only fires when there's no directory component at
+                # all) - fall back to a same-named file next to this model script instead
+                path_messages = resolve_missing_file_paths(saved_values, modelcode_path)
+
                 # ask whether future "Create Model" output should overwrite this same
-                # file, or start a fresh model (today's GDS-derived default)
-                reuse = QMessageBox.question(
-                    self, "Import Model",
-                    f"Use '{os.path.basename(file_path)}' as the output file for this model too?\n\n"
-                    "Yes: Create Model / Start Simulation will overwrite this file.\n"
-                    "No: pick a model name and target directory on the Create Model(s) tab.",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                ) == QMessageBox.Yes
+                # file, or start a fresh model (today's GDS-derived default) - only if
+                # the user has turned this question on in Preferences > Files; by
+                # default, silently agree (reuse the imported file) without asking
+                if get_preference_bool(self.APP_NAME, "confirm_reuse_import_filename", False):
+                    reuse = QMessageBox.question(
+                        self, "Import Model",
+                        f"Use '{os.path.basename(file_path)}' as the output file for this model too?\n\n"
+                        "Yes: Create Model / Start Simulation will overwrite this file.\n"
+                        "No: pick a model name and target directory on the Create Model(s) tab.",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                    ) == QMessageBox.Yes
+                else:
+                    reuse = True
                 if reuse:
                     saved_values['sim_path'] = os.path.dirname(file_path).replace('\\', '/')
                     saved_values['model_basename'] = pathlib.Path(file_path).stem
@@ -2117,13 +2618,17 @@ class MainWindowBase(QMainWindow):
 
                 self.load_all_tabs()
                 self._add_recent_file(RECENT_MODEL_KEY, file_path)
-                QMessageBox.information(self, "Loaded", f"Settings loaded from {file_path}")
+                loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
+                if path_messages:
+                    loaded_message += "\n\n" + "\n".join(path_messages)
+                QMessageBox.information(self, "Loaded", loaded_message)
                 self.create_model_tab.log_area.clear()
+                self.create_model_tab._reset_live_status()
 
             else:
                 QMessageBox.information(self, "Error", f"Could not load file {file_path}")
 
-    # ---------- recent files (Load Settings / Import Model) ----------
+    # ---------- recent files (Load Config / Import Model) ----------
 
     def _recent_files(self, key):
         files = QSettings(RECENT_FILES_ORG, self.APP_NAME).value(key, [])
@@ -2192,7 +2697,7 @@ class MainWindowBase(QMainWindow):
         raise NotImplementedError
 
     def import_from_python(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Settings File", filter=f"*.py model code")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", filter=f"*.py model code")
         # we can load JSON or Python models, decide which suffix we have
         if file_path:
             self.load_configuration_from_file(file_path)
@@ -2212,9 +2717,9 @@ class MainWindowBase(QMainWindow):
             with open(filename, "w") as f:
                 json.dump(struct, f, indent=4)
             self._add_recent_file(RECENT_SETTINGS_KEY, filename)
-            QMessageBox.information(self, "Saved", f"Settings saved to {filename}")
+            QMessageBox.information(self, "Saved", f"Config saved to {filename}")
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to save settings to {filename}: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to save config to {filename}: {e}")
 
     def native_config_extra_struct(self):
         # Hook: extra top-level keys to merge into the saved *.simcfg /
@@ -2227,7 +2732,7 @@ class MainWindowBase(QMainWindow):
         # set gds filename as default for saving config
         gds_name = self.saved_values.get("GdsFile")
         default_config = gds_name.replace('.gds', '.' + self.CONFIG_SUFFIX)
-        file_path, _ = QFileDialog.getSaveFileName(self, "Select Settings File", default_config, filter=f"{self.APP_NAME} (*.{self.CONFIG_SUFFIX})")
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Config File", default_config, filter=f"{self.APP_NAME} (*.{self.CONFIG_SUFFIX})")
         # Ensure filename ends with CONFIG_SUFFIX
         if file_path:
             if not file_path.lower().endswith('.' + self.CONFIG_SUFFIX):
@@ -2282,18 +2787,166 @@ class MainWindowBase(QMainWindow):
             self.update_target_layer_choices(self.metals_list)
             self.file_tab.update_XML_description(filename)
             self.file_tab.update_variable_overrides_grid(filename)
+            # keep an open Stackup Preview popup in sync - it otherwise reads
+            # this data only once at construction and would silently go stale
+            # if the stackup is reloaded (e.g. a different model/settings file
+            # loaded, or the XML field edited) while it's still open
+            if getattr(self, "popup", None) is not None:
+                self.popup.vector_widget.refresh(materials_list, dielectrics_list, metals_list)
+
+    def get_gds_layers_in_range(self, layer_min, layer_max):
+        """Return the set of GDS layer numbers in [layer_min, layer_max] that
+        have at least one polygon on a datatype in the current purpose filter
+        - read the same way gds2palace's own reader would (same cellname/
+        purpose/preprocess), so "present" here means the same thing it would
+        during a real model build. Returns an empty set if the GDS file or
+        stackup isn't loaded/valid, rather than raising - this is only used
+        for Ports/Thermal tab UI hints (next-available-layer suggestion,
+        "(missing in layout)" annotations), never anything simulation-critical.
+
+        Reads the Input Files tab's *live* widgets rather than saved_values,
+        which only gets populated once that tab has been left at least once -
+        a Ports/Thermal tab reached before that would otherwise see an empty
+        GdsFile and silently find nothing.
+        """
+        gdsfile = self.file_tab.gds_file_edit.text()
+        if not os.path.isfile(gdsfile) or self.metals_list is None:
+            return set()
+        cellname = cellname_from_display(self.file_tab.cellname_box.currentText())
+        purpose_text = self.file_tab.purpose_edit.text().strip()
+        try:
+            purposelist = ast.literal_eval('[' + purpose_text + ']') if purpose_text else [0]
+        except Exception:
+            purposelist = [0]
+        preprocess = self.file_tab.preprocess_gds_checkbox.isChecked()
+        layernumbers = list(range(layer_min, layer_max + 1))
+        captured_stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(captured_stdout):
+                allpolygons = gds_reader.read_gds(
+                    gdsfile, layernumbers,
+                    cellname=cellname,
+                    purposelist=purposelist,
+                    metals_list=self.metals_list,
+                    preprocess=preprocess,
+                    merge_polygon_size=0, mirror=False, offset_x=0, offset_y=0,
+                    layernumber_offset=0)
+        except (Exception, SystemExit):
+            return set()
+        return {int(poly.layernum) for poly in allpolygons.polygons}
 
     def update_target_layer_choices(self, metals_list):
         # Hook: push the metal list to the app-specific tab that offers
         # target-layer choices (ports tab / thermal objects tab).
         raise NotImplementedError
 
+    def refresh_source_layer_hints(self):
+        """Hook: re-check GDS-layer-derived hints (missing-in-layout
+        annotations, next-available-source-layer suggestion) on the
+        app-specific ports/thermal tab. update_target_layer_choices() already
+        covers this after a stackup (re)load, but setting the GDS file alone
+        doesn't trigger that - FileInputTab.set_gds_file() calls this
+        separately so those hints aren't left stale until the user happens to
+        leave/re-enter the Input Files tab (or never, e.g. after the -gdsfile
+        CLI startup flag). No-op by default.
+        """
+        pass
+
+    def open_preferences_dialog(self):
+        # Hook: build and show the app-specific Preferences dialog (its tabs/
+        # fields differ enough between setupEM and setupThermal - e.g. only
+        # setupEM has a Frequencies tab - that each app implements its own
+        # PreferencesDialog class rather than sharing one here).
+        raise NotImplementedError
+
     def open_popup(self):
+        if getattr(self, "popup", None) is not None:
+            self.popup.raise_()
+            self.popup.activateWindow()
+            return
+
         if os.path.isfile(self.saved_values["SubstrateFile"]):
             self.popup = PopUpWindow(self)
+            self.popup.vector_widget.elementSelected.connect(self._forward_stackup_selection_to_layout_preview)
+            self.popup.destroyed.connect(lambda: setattr(self, "popup", None))
+            # also clear the Layout Preview highlight when this window goes
+            # away, since there's no longer a visible "what's selected"
+            # context once it's closed
+            self.popup.destroyed.connect(lambda: self._forward_stackup_selection_to_layout_preview("", ""))
             self.popup.show()
         else:
             QMessageBox.warning(self, "Error", "Substrate file not found")
+
+    def _forward_stackup_selection_to_layout_preview(self, kind, key):
+        """Slot for VectorWidget.elementSelected, connected from both the Stackup
+        Preview popup and the Stackup Editor (they share the same VectorWidget
+        class/signal shape) - mirrors the selected metal/via layer as a white
+        outline in the Layout Preview window, if one is currently open. A
+        Dielectric has no GDS polygon of its own, UNLESS it declares an
+        optional Boundary layer (its lateral extent, drawn in GDSII rather
+        than defaulting to the full simulation domain) - resolved to that
+        layer's Layout Preview name via _dielectric_boundary_layer_name().
+        Anything else (a plain Dielectric, or an empty selection) resolves to
+        "no highlight" same as an empty selection.
+        """
+        self._stackup_selection = (kind, key)
+        if getattr(self, "layout_preview_window", None) is None:
+            return
+        name = None
+        if kind == "layer" and key:
+            name = key
+        elif kind == "dielectric" and key:
+            name = self._dielectric_boundary_layer_name(key)
+        self.layout_preview_window.set_highlighted_layer(name)
+
+    def _dielectric_boundary_layer_name(self, dielectric_name):
+        """Resolve a Dielectric's optional Boundary GDS layer number to the
+        display name Layout Preview's legend uses for it: a real metal/via
+        <Layer>'s own name, if the same GDS layer also happens to be drawn as
+        one, else the "Layer N" fallback Layout Preview falls back to for a
+        layer with no <Layer> entry of its own. None if the dielectric has no
+        Boundary, or isn't found. Shared by both highlight-forwarding
+        directions between Stackup Preview/Editor and Layout Preview.
+        """
+        if self.dielectrics_list is None:
+            return None
+        dielectric = next((d for d in self.dielectrics_list.dielectrics if d.name == dielectric_name), None)
+        if dielectric is None or dielectric.gdsboundary is None:
+            return None
+        layernum = int(dielectric.gdsboundary)
+        metal = self.metals_list.getbylayernumber(layernum) if self.metals_list is not None else None
+        return metal.name if metal is not None else f"Layer {layernum}"
+
+    def _forward_layout_selection_to_stackup(self, layernum):
+        """Slot for LayoutPreviewWindow.layerSelected - mirrors a layer
+        selected directly in Layout Preview's own legend into the Stackup
+        Preview/Editor, the reverse of _forward_stackup_selection_to_layout_preview()
+        above. Resolves the GDS layer to a real metal/via <Layer> if it has
+        one, else to a Dielectric that uses it as its lateral Boundary, if
+        any - more than one Dielectric can share the same Boundary layer
+        (e.g. several dielectrics all bounded by the same "die outline"
+        layer), so pick the one with the smallest zmin (the lowest one in the
+        stack) rather than an arbitrary/file-order match - only applied if the
+        Stackup Preview and/or Editor is already open (mirroring the other
+        direction, which never auto-opens Layout Preview either); does not
+        open either one on its own.
+        """
+        kind, key = "", ""
+        if layernum is not None:
+            metal = self.metals_list.getbylayernumber(layernum) if self.metals_list is not None else None
+            if metal is not None:
+                kind, key = "layer", metal.name
+            elif self.dielectrics_list is not None:
+                candidates = [d for d in self.dielectrics_list.dielectrics
+                              if d.gdsboundary is not None and int(d.gdsboundary) == layernum]
+                if candidates:
+                    dielectric = min(candidates, key=lambda d: d.zmin)
+                    kind, key = "dielectric", dielectric.name
+
+        if getattr(self, "popup", None) is not None:
+            self.popup.vector_widget.select_element(kind, key)
+        if getattr(self, "stackup_editor_window", None) is not None:
+            self.stackup_editor_window.vector_widget.select_element(kind, key)
 
     def open_stackup_editor(self):
         # defense in depth: the menu action is already disabled/greyed out when
@@ -2322,5 +2975,84 @@ class MainWindowBase(QMainWindow):
 
         initial_filename = self.saved_values.get("SubstrateFile") if isinstance(self.saved_values, dict) else None
         self.stackup_editor_window = StackupEditorWindow(self, initial_filename=initial_filename)
+        self.stackup_editor_window.vector_widget.elementSelected.connect(self._forward_stackup_selection_to_layout_preview)
         self.stackup_editor_window.destroyed.connect(lambda: setattr(self, "stackup_editor_window", None))
+        self.stackup_editor_window.destroyed.connect(lambda: self._forward_stackup_selection_to_layout_preview("", ""))
         self.stackup_editor_window.show()
+
+    def get_layout_preview_markers(self):
+        """Hook: return the current list of "marker" objects to highlight in the
+        Layout Preview window on top of the GDS layers - EM ports for setupEM,
+        thermal sources/constant-temperature boundaries for setupThermal. Each
+        item is a dict with at least "source_layernum" (the GDS layer its
+        marker geometry lives on), "kind" (a short tag - "port", "source",
+        "boundary" - that layout_preview.py uses to pick a label/marker style),
+        and "group" (the legend section label to place it under, e.g. "Ports",
+        "Sources", "Boundaries" - kept separate per the app's own concept, not
+        merged into one section). Remaining keys are kind-specific: ports carry
+        the same fields as simulation_ports_to_struct() in setupEM.py
+        (portnumber, direction, voltage, ...); thermal objects carry the same
+        fields as thermal_objects_to_struct() in setupThermal.py (type, plus
+        power or temp).
+
+        Default here is "no markers"; setupEM.py's and setupThermal.py's
+        MainWindow both override this with their real data - same injection
+        pattern as VectorWidget's dielectric_color_fn/metal_label_fn hooks
+        above.
+        """
+        return []
+
+    def open_layout_preview(self):
+        # local import: layout_preview.py imports from this module (MainWindowBase),
+        # so importing it at module load time here would be circular.
+        if __package__ in (None, ""):
+            from layout_preview import LayoutPreviewWindow
+        else:
+            from .layout_preview import LayoutPreviewWindow
+
+        if getattr(self, "layout_preview_window", None) is not None:
+            # re-read everything on every deliberate "go check the layout"
+            # action, rather than silently showing whatever it last had -
+            # unlike the Stackup Preview popup, this re-reads the whole GDS
+            # file from disk, so it only happens here (an explicit menu
+            # click), not automatically on every stackup/tab change
+            self.layout_preview_window.refresh()
+            self.layout_preview_window.raise_()
+            self.layout_preview_window.activateWindow()
+            return
+
+        self.layout_preview_window = LayoutPreviewWindow(self)
+        self.layout_preview_window.destroyed.connect(lambda: setattr(self, "layout_preview_window", None))
+        self.layout_preview_window.layerSelected.connect(self._forward_layout_selection_to_stackup)
+        # sync immediately to whatever's already selected in an open Stackup
+        # Preview/Editor, rather than waiting for the next selection change
+        kind, key = getattr(self, "_stackup_selection", ("", ""))
+        self._forward_stackup_selection_to_layout_preview(kind, key)
+        self.layout_preview_window.show()
+
+    def open_simplify_gds(self):
+        # local import: simplify_gds.py imports gds_prepare_for_EM lazily
+        # inside run_simplify() too, but import the dialog module itself here
+        # (not at module load time) for the same circular-import reason as
+        # open_stackup_editor()/open_layout_preview() above
+        if __package__ in (None, ""):
+            from simplify_gds import SimplifyGdsDialog
+        else:
+            from .simplify_gds import SimplifyGdsDialog
+
+        if getattr(self, "simplify_gds_window", None) is not None:
+            self.simplify_gds_window.raise_()
+            self.simplify_gds_window.activateWindow()
+            return
+
+        gds_path = self.saved_values.get("GdsFile") if isinstance(self.saved_values, dict) else None
+        if not gds_path or not os.path.isfile(gds_path):
+            QMessageBox.warning(self, "Error", "Load a GDSII file on the Input Files tab first")
+            return
+        if self.metals_list is None:
+            QMessageBox.warning(self, "Error", "Load an XML stackup file on the Input Files tab first")
+            return
+
+        self.simplify_gds_window = SimplifyGdsDialog(self)
+        self.simplify_gds_window.destroyed.connect(lambda: setattr(self, "simplify_gds_window", None))
+        self.simplify_gds_window.show()
