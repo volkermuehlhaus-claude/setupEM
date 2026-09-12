@@ -203,7 +203,7 @@ Controls the mesh used for simulation, trading off accuracy against simulation t
 
 <img src="./png/mesh1.png" alt="mesh" width="700">
 
-**Mesh cell maximum size absolute** works together with cells/wavelength - the smaller of the two wins. **Mesh basis function** should stay at "most accurate" (order 2) unless you specifically want a faster, less accurate run. **Adaptive mesh iterations** (AMR) is usually unnecessary if you're already using order 2 with a ~2 µm initial mesh - a fine initial mesh without AMR is typically faster than a coarse mesh plus AMR. When AMR iterations is non-zero, **AMR goal** (relative error tolerance) and **AMR maximum DOF** control when Palace stops refining - whichever of the two is hit first. Both have sensible defaults and rarely need changing.
+**Mesh cell maximum size absolute** works together with cells/wavelength - the smaller of the two wins. **Mesh basis function** offers three levels: "faster, less accurate" (order 1), "recommended" (order 2, the default), and "slower, most accurate" (order 3, Palace only - Elmer has no cubic-order solver, so this option is disabled in Elmer mode). **Adaptive mesh iterations** (AMR) is usually unnecessary if you're already using the recommended order 2 with a ~2 µm initial mesh - a fine initial mesh without AMR is typically faster than a coarse mesh plus AMR. When AMR iterations is non-zero, **AMR goal** (relative error tolerance) and **AMR maximum DOF** control when Palace stops refining - whichever of the two is hit first. Both have sensible defaults and rarely need changing.
 
 The oversize of dielectrics from the drawn geometry, and the additional air layer around everything, are also set here - **both must be non-zero**, or meshing will fail.
 
