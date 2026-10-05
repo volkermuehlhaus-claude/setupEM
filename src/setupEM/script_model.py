@@ -236,10 +236,6 @@ class ScriptModel:
         start, end = self.span(node)
         return self.text[start:end]
 
-    def _at_module_level(self, node):
-        stmt = self._statement(node)
-        return self._parents.get(stmt) is self.tree
-
     def _statement(self, node):
         while node is not None and not isinstance(node, ast.stmt):
             node = self._parents.get(node)
@@ -307,14 +303,15 @@ class ScriptModel:
         return max(sorted(counts), key=lambda name: counts[name])
 
     def _single_assignment(self, stmts, other_count, label):
+        # one assignment statement, wherever it is: inside a loop (a sweep script's
+        # loop body) every pass uses that same text, so editing it is as safe as at
+        # module level; a value that depends on the loop is caught by the caller
+        # (it uses other names)
         if len(stmts) != 1 or other_count:
-            n = len(stmts) + other_count
-            return None, f"{label} is assigned {n} times"
+            return None, "set in several places"
         stmt = stmts[0]
         if not isinstance(stmt, ast.Assign):
-            return None, f"{label} is changed with an operator"
-        if not self._at_module_level(stmt):
-            return None, f"{label} is set inside a block (loop, if, function)"
+            return None, "changed with an operator"
         return stmt, ""
 
     def _follow(self, key, node, kind, wrapper=None, depth=0):
@@ -327,38 +324,42 @@ class ScriptModel:
             return self._follow(key, node.elts[0], kind, wrapper=node, depth=depth + 1)
         if isinstance(node, ast.Name) and node.id not in ("True", "False", "None"):
             stmts = self._var_assigns.get(node.id, [])
-            if not stmts and not self._var_other.get(node.id):
-                return Site(key, node, _UNRESOLVED, False, f"'{node.id}' is not assigned in the script", kind, wrapper)
+            if not stmts:
+                # a loop variable, an imported name, ...
+                return Site(key, node, _UNRESOLVED, False, f"uses {node.id}", kind, wrapper)
             stmt, reason = self._single_assignment(stmts, self._var_other.get(node.id, 0), f"'{node.id}'")
             if stmt is None:
-                return Site(key, node, _UNRESOLVED, False, reason, kind, wrapper)
+                return Site(key, node, _UNRESOLVED, False, f"{node.id} is {reason}", kind, wrapper)
             return self._follow(key, stmt.value, "variable", wrapper, depth + 1)
         if isinstance(node, ast.Subscript):
             dkey = self._subscript_key(node)
             if dkey is not None:
                 stmts = self._dict_assigns.get(dkey, [])
                 if not stmts:
-                    return Site(key, node, _UNRESOLVED, False,
-                                f"{dkey[0]}['{dkey[1]}'] is not assigned in the script", kind, wrapper)
+                    return Site(key, node, _UNRESOLVED, False, f"uses {dkey[0]}['{dkey[1]}']", kind, wrapper)
                 stmt, reason = self._single_assignment(stmts, 0, f"{dkey[0]}['{dkey[1]}']")
                 if stmt is None:
                     return Site(key, node, _UNRESOLVED, False, reason, kind, wrapper)
                 return self._follow(key, stmt.value, "dict", wrapper, depth + 1)
+        # a value that refers to other names (e.g. fstop = 2*ftarget, or a sweep's
+        # loop variable) would lose that link if overwritten - keep it read-only
+        names = self._names_in(node)
         try:
             value = eval_simple_python_expression(node, self.constants)
         except (ValueError, TypeError, ZeroDivisionError, SyntaxError, KeyError):
-            return Site(key, node, _UNRESOLVED, False,
-                        f"computed in the script: {self.source(node)}", kind, wrapper)
-        if not self._expression_is_editable(node):
-            return Site(key, node, value, False,
-                        f"uses other script values: {self.source(node)}", kind, wrapper)
+            reason = f"uses {', '.join(names)}" if names else "computed by the script"
+            return Site(key, node, _UNRESOLVED, False, reason, kind, wrapper)
+        if names:
+            return Site(key, node, value, False, f"uses {', '.join(names)}", kind, wrapper)
         return Site(key, node, value, True, "", kind, wrapper)
 
     @staticmethod
-    def _expression_is_editable(node):
-        # a value that refers to other names (e.g. fstop = 2*ftarget) would lose
-        # that link if overwritten with a number - keep it read-only
-        return not any(isinstance(n, ast.Name) for n in ast.walk(node))
+    def _names_in(node):
+        names = []
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and n.id not in names:
+                names.append(n.id)
+        return names
 
     def _workflow_calls(self, function):
         calls = []
@@ -391,7 +392,7 @@ class ScriptModel:
                 if len(spans) == 1:
                     return sites[0]
                 return Site(key, args[0], _UNRESOLVED, False,
-                            f"{function}() is called {len(args)} times with different values", "argument")
+                            f"set in {len(args)} {function}() calls", "argument")
         for name in GUI_KEY_ALIASES.get(key, (key,)):
             if self.settings_dict and (self.settings_dict, name) in self._dict_assigns:
                 stmts = self._dict_assigns[(self.settings_dict, name)]
@@ -428,9 +429,9 @@ class ScriptModel:
                 try:
                     args[kw.arg] = eval_simple_python_expression(kw.value, self.constants)
                 except (ValueError, TypeError, ZeroDivisionError, SyntaxError, KeyError):
-                    static, reason = False, f"{kw.arg} is computed: {self.source(kw.value)}"
-            if static and not self._at_module_level(call):
-                static, reason = False, "defined inside a block (loop, if, function)"
+                    names = self._names_in(kw.value)
+                    static, reason = False, (f"uses {', '.join(names)}" if names else "computed by the script")
+            # like settings: a call with plain values is editable also inside a loop
             if static and not self._owns_lines(stmt):
                 static, reason = False, "shares its line with other code"
             result.append(CallSite(kind, stmt, call, args, static, reason))
@@ -524,15 +525,11 @@ class ScriptModel:
         if not self.settings_dict:
             raise Refused("the script has no settings dictionary to add it to")
         stmts = [s for (d, _k), group in self._dict_assigns.items() if d == self.settings_dict
-                 for s in group if self._at_module_level(s) and self._owns_lines(s)]
+                 for s in group if self._owns_lines(s)]
         if not stmts:
             raise Refused("the script has no settings dictionary to add it to")
         anchor = max(stmts, key=lambda s: s.end_lineno)
-        pos = self._line_starts[anchor.end_lineno]
-        line = f"{self.settings_dict}['{key}'] = {script_text}{self.newline}"
-        if not self.text[:pos].endswith(("\n", "\r")):
-            line = self.newline + line
-        self._add_edit(pos, pos, line)
+        self.insert_after(anchor, f"{self.settings_dict}['{key}'] = {script_text}")
 
     def set_call_arguments(self, callsite, values, keyword_order):
         """Write new keyword values into one port / thermal call.
@@ -556,14 +553,25 @@ class ScriptModel:
     def remove_statement(self, callsite):
         if not callsite.static:
             raise Refused(callsite.reason)
+        parent = self._parents.get(callsite.stmt)
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(parent, field, None)
+            if isinstance(block, list) and callsite.stmt in block and len(block) == 1:
+                raise Refused("it is the only statement in its block")
         start = self._line_starts[callsite.stmt.lineno - 1]
         end = self._line_starts[callsite.stmt.end_lineno]
         self._add_edit(start, end, "")
 
+    def _indent_of(self, stmt):
+        line_start = self._line_starts[stmt.lineno - 1]
+        start, _ = self.span(stmt)
+        return self.text[line_start:start]
+
     def insert_after(self, callsite_or_stmt, line_text):
+        # the new line gets the indentation of the line it follows (e.g. a loop body)
         stmt = callsite_or_stmt.stmt if isinstance(callsite_or_stmt, CallSite) else callsite_or_stmt
         pos = self._line_starts[stmt.end_lineno]
-        line = line_text + self.newline
+        line = self._indent_of(stmt) + line_text + self.newline
         if not self.text[:pos].endswith(("\n", "\r")):
             line = self.newline + line
         self._add_edit(pos, pos, line)

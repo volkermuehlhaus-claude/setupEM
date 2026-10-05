@@ -1570,13 +1570,11 @@ class MainWindow(MainWindowBase):
         if model is not None:
             heatsource_defs = [dict(c.args) for c in model.thermal if c.static and c.kind == "heatsource"]
             consttemp_defs = [dict(c.args) for c in model.thermal if c.static and c.kind == "constanttemp"]
-            skipped_count = len(model.thermal) - len(heatsource_defs) - len(consttemp_defs)
-            if skipped_count:
-                QMessageBox.warning(
-                    self, "Import Model",
-                    f"{skipped_count} heat source / constant temperature definition(s) are computed "
-                    "in the script (in a loop, or from variables or function calls) and could not "
-                    "be imported.\n\nAdd them manually on the Thermal tab.")
+            # reported in the import message (see load_configuration_from_file())
+            for c in model.thermal:
+                if not c.static:
+                    name = "a heat source" if c.kind == "heatsource" else "a constant temperature"
+                    self._import_notes.append((name, c.reason))
         else:
             heatsource_defs, consttemp_defs  = parse_python_thermal_definitions(file_path)
         self.thermal_tab.update_thermalobjects_from_python (heatsource_defs, consttemp_defs)

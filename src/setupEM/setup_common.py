@@ -309,6 +309,23 @@ def cellname_from_display(text):
     return "" if text == CELLNAME_DEFAULT_LABEL else text
 
 
+def summarize_not_editable(items, in_place):
+    """One short line for the import dialog from (name, reason) pairs; the full
+    list goes to the Create Model log."""
+    names = [name for name, _reason in items]
+    if len(items) == 1:
+        listed = f"{names[0]} ({items[0][1]})"
+    else:
+        listed = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+    if in_place:
+        text = f"Set by the script, not editable here: {listed}."
+    else:
+        text = f"Computed by the script, not imported (defaults shown): {listed}."
+    if len(items) > 1:
+        text += " Details are in the Create Model log."
+    return text
+
+
 def shorten_path_for_display(path, head_len=14):
     # A full network path can run to 100+ characters, unreadable crammed into a
     # dialog box next to a second equally long path. Keep just enough of the head
@@ -3429,6 +3446,14 @@ class CreateModelTabBase(QWidget):
         self.process.finished.connect(self.on_finished)
         self.process.errorOccurred.connect(self.on_process_error)
 
+    def set_output_locked(self, locked):
+        """Edit-in-place mode: the output is the script itself, so the target
+        directory and model name can't be changed."""
+        tip = "Editing a script in place: Create Model writes back to that script" if locked else ""
+        for widget in (self.targetdir_edit, self.targetdir_btn, self.modelname_edit):
+            widget.setEnabled(not locked)
+            widget.setToolTip(tip)
+
     def on_modelname_edit_done(self):
         # Model name edit field has changed
         self.MainWindow.saved_values['model_basename'] = self.modelname_edit.text()
@@ -3476,8 +3501,12 @@ class CreateModelTabBase(QWidget):
             self._pending_preserve = snapshot
             return code
         if MainWindow.script_model is not None:
-            self.log_area.appendPlainText(
-                "Output folder differs from the imported script's folder: writing a new script.\n")
+            # edit-in-place mode never falls back to a generated script
+            QMessageBox.warning(
+                self, "Create Model",
+                f"In edit-in-place mode Create Model writes back to\n\n{MainWindow.script_model.path}\n\n"
+                "and nowhere else. Use File > New or Import to make a new model.")
+            return None
         MainWindow.modeleditor_tab.create_model_text()
         return MainWindow.modeleditor_tab.model_edit.toPlainText().strip()
 
@@ -3925,6 +3954,10 @@ class MainWindowBase(QMainWindow):
         self.load_default_action = QAction("Load Default Config", self)
         self.savedefault_action = QAction("Save as Default Config", self)
         self.import_model_action = QAction("Import from *.py model ...", self)
+        self.open_script_action = QAction("Open model script (edit in place) ...", self)
+        self.open_script_action.setToolTip("Edit an existing gds2palace model script: Create Model writes "
+                                           "only the values you change back into it, the rest of the "
+                                           "script (loops, comments, custom code) stays as it is")
         self.export_model_action = QAction("Export to *.py model ...", self)
         self.preferences_action = QAction("Preferences ...", self)
         exit_action = QAction("Exit", self)
@@ -3939,6 +3972,7 @@ class MainWindowBase(QMainWindow):
         self.savedefault_action.triggered.connect(lambda: self.save_user_inputs_to_file(self.DEFAULT_SETTINGS_FILE))
 
         self.import_model_action.triggered.connect(lambda: self.import_from_python())
+        self.open_script_action.triggered.connect(lambda: self.open_script_in_place())
         self.export_model_action.triggered.connect(lambda: self.export_to_python())
         self.preferences_action.triggered.connect(lambda: self.open_preferences_dialog())
         exit_action.triggered.connect(self.close)
@@ -3951,6 +3985,7 @@ class MainWindowBase(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.import_model_action)
         self.recent_model_menu = file_menu.addMenu("Import Recent Model")
+        file_menu.addAction(self.open_script_action)
         file_menu.addAction(self.export_model_action)
         file_menu.addSeparator()
         file_menu.addAction(self.load_default_action)
@@ -4106,8 +4141,10 @@ class MainWindowBase(QMainWindow):
         # Start Simulation/Export.
         modeleditor_index = self.tabs_widget.indexOf(self.modeleditor_tab)
         if index == modeleditor_index:
-            self.save_all_tabs()
-            self.modeleditor_tab.create_model_text()
+            # edit-in-place mode shows the script itself, with the pending changes
+            if not self.show_preserve_preview(self.modeleditor_tab.model_edit):
+                self.save_all_tabs()
+                self.modeleditor_tab.create_model_text()
 
         # Save model code only when model tab active
         self.export_model_action.setEnabled(index == modeleditor_index)
@@ -4179,7 +4216,9 @@ class MainWindowBase(QMainWindow):
         if file_path:
             self.load_configuration_from_file(file_path)
 
-    def load_configuration_from_file(self, file_path):
+    def load_configuration_from_file(self, file_path, in_place=False):
+        # in_place: *.py only, from open_script_in_place() - edit this script in
+        # place (preserve mode) instead of importing its values for a new script
         saved_values = self.saved_values
         if file_path:
             self._stop_preserve_mode()
@@ -4265,7 +4304,7 @@ class MainWindowBase(QMainWindow):
                 # values that can't be resolved here, e.g. a loop variable in a sweep
                 # script (variable_overrides = {'Temp_Celsius': Temp_Celsius} inside
                 # "for Temp_Celsius in ..."): skipped and listed, instead of a crash
-                unresolved_messages = []
+                unresolved = []
                 for import_key, import_value in imported_parameters.items():
                         if import_key in import_mapping.keys():
                             if import_key not in import_value:  # skip the section where key might appear in different context
@@ -4317,7 +4356,7 @@ class MainWindowBase(QMainWindow):
                                             # the raw text exactly as before this resolution was added
                                             saved_values[varname] = raw
                               except (SyntaxError, ValueError, TypeError, ZeroDivisionError, KeyError):
-                                unresolved_messages.append(f"{import_key} = {import_value}")
+                                unresolved.append((varname or import_key, f"computed by the script: {import_value}"))
 
                 # GdsFile/SubstrateFile paths saved on a different OS/network-drive mapping
                 # often don't resolve here even as a full absolute path (the bare-relative-
@@ -4339,7 +4378,10 @@ class MainWindowBase(QMainWindow):
                 # user's real openEMS solver script the next time "Create Model" runs
                 # (create_model() also refuses the write directly, as a second layer,
                 # in case the user manually re-selects the same path later).
-                if is_openems_import:
+                if in_place:
+                    # edit-in-place mode: the output is always this script
+                    reuse = True
+                elif is_openems_import:
                     reuse = False
                 elif get_preference_bool(self.APP_NAME, "confirm_reuse_import_filename", False):
                     reuse = QMessageBox.question(
@@ -4369,16 +4411,28 @@ class MainWindowBase(QMainWindow):
                     self.confirmed_overwrite_paths.add(os.path.normcase(reused_output_path))
 
                 # read port/thermal assignments in workflow syntax for gds2palace Python code, and
-                # apply any app-specific post-import state (e.g. setupEM's simulator mode)
+                # apply any app-specific post-import state (e.g. setupEM's simulator mode);
+                # definitions it can't import are added to self._import_notes
+                self._import_notes = []
                 self.apply_python_import_data(file_path)
 
                 self.load_all_tabs()
-                self._add_recent_file(RECENT_MODEL_KEY, file_path)
-                loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
-                if not is_openems_import:
-                    preserve_message = self._start_preserve_mode(file_path)
-                    if preserve_message:
-                        loaded_message += "\n\n" + preserve_message
+
+                # everything not imported / not editable: (name, reason), shown as one
+                # short line in the dialog and in full in the Create Model log
+                not_editable = []
+                if in_place:
+                    not_editable = self._start_preserve_mode(file_path)
+                    loaded_message = (f"Editing {os.path.basename(file_path)} in place: Create Model "
+                                      "writes only what you change here back into this script.")
+                else:
+                    self._add_recent_file(RECENT_MODEL_KEY, file_path)
+                    loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
+                known = {name for name, _reason in not_editable}
+                for name, reason in unresolved + self._import_notes:
+                    if name not in known:
+                        not_editable.append((name, reason))
+                        known.add(name)
                 if is_openems_import:
                     loaded_message += (
                         "\n\nThis looks like an openEMS model script. Ports and settings "
@@ -4388,13 +4442,16 @@ class MainWindowBase(QMainWindow):
                     )
                 if path_messages:
                     loaded_message += "\n\n" + "\n".join(path_messages)
-                if unresolved_messages:
-                    loaded_message += ("\n\nThese values are computed when the script runs (e.g. in a "
-                                       "loop) and were not imported, the defaults are shown instead:\n  " +
-                                       "\n  ".join(unresolved_messages))
+                if not_editable:
+                    loaded_message += "\n\n" + summarize_not_editable(not_editable, in_place)
                 QMessageBox.information(self, "Loaded", loaded_message)
                 self.create_model_tab.log_area.clear()
                 self.create_model_tab._reset_live_status()
+                if not_editable:
+                    heading = "Set by the script, not editable here:" if in_place else \
+                              "Computed by the script, not imported (defaults shown):"
+                    self.create_model_tab.log_area.appendPlainText(
+                        heading + "\n" + "\n".join(f"  {name}: {reason}" for name, reason in not_editable) + "\n")
 
             else:
                 QMessageBox.information(self, "Error", f"Could not load file {file_path}")
@@ -4427,45 +4484,88 @@ class MainWindowBase(QMainWindow):
                 "objects": copy.deepcopy(self.preserve_objects()),
                 "create_call": self.preserve_create_call()}
 
-    def _stop_preserve_mode(self):
-        self.script_model = None
-        self.preserve_baseline = None
-
-    def _start_preserve_mode(self, file_path):
-        """After a *.py import: keep the script, so Create Model only changes what
-        changed in the GUI. Returns a message for the import dialog ("" if the
-        script can't be kept, then Create Model writes a new script as before)."""
+    def _in_place_problem(self, file_path):
+        """Why a script can't be opened for editing in place, or "" if it can."""
         try:
             model = ScriptModel.from_file(file_path)
-        except (SyntaxError, ValueError, OSError, UnicodeDecodeError):
-            return ""
+        except SyntaxError as e:
+            return f"it is not valid Python (line {e.lineno})"
+        except (ValueError, OSError, UnicodeDecodeError) as e:
+            return f"it can't be read ({e})"
+        if model.tool == "openems":
+            return "it is an openEMS model, setupEM edits gds2palace (Palace / Elmer) models"
+        if model.tool is None:
+            return ("it doesn't call create_palace(), create_elmer() or create_elmer_thermal() "
+                    "exactly once")
         if model.tool not in self.PRESERVE_TOOLS:
-            return ""
+            other = "setupThermal" if model.tool == "elmer_thermal" else "setupEM"
+            label = {"palace": "a Palace", "elmer": "an Elmer", "elmer_thermal": "an Elmer thermal"}[model.tool]
+            return f"it is {label} model, open it in {other}"
+        return ""
+
+    def open_script_in_place(self, file_path=None):
+        """File > Open model script (edit in place): edit an existing gds2palace
+        script; Create Model writes only the changed values back into it."""
+        if not file_path:
+            file_path, _ = QFileDialog.getOpenFileName(self, "Open Model Script", filter="*.py model code")
+            if not file_path:
+                return
+        problem = self._in_place_problem(file_path)
+        if problem:
+            QMessageBox.warning(
+                self, "Open Model Script",
+                f"{os.path.basename(file_path)} can't be edited in place: {problem}.\n\n"
+                "File > Import from *.py model uses its values for a new, generated script instead.")
+            return
+        self.load_configuration_from_file(file_path, in_place=True)
+
+    def _stop_preserve_mode(self):
+        was_active = getattr(self, "script_model", None) is not None
+        self.script_model = None
+        self.preserve_baseline = None
+        if was_active:
+            self.create_model_tab.set_output_locked(False)
+            self._refresh_title()
+
+    def _start_preserve_mode(self, file_path):
+        """Enter edit-in-place mode for a script loaded by load_configuration_from_file().
+        Returns the settings the GUI can't change, as (name, reason) pairs."""
+        model = ScriptModel.from_file(file_path)
         # the GUI state right after the import, after one save of all tabs, is the
         # baseline: a value counts as changed only if it differs from this, so the
         # tabs' own number / list conversions never show up as changes
         self.save_all_tabs()
         self.script_model = model
         self.preserve_baseline = self._preserve_snapshot()
+        # Create Model always writes back to this script
+        self.create_model_tab.set_output_locked(True)
+        self._refresh_title()
 
-        read_only = []
+        not_editable = []
         never_written = set(self.PRESERVE_IGNORE_KEYS) | set(self.preserve_extra(self.saved_values, self.saved_values)[0])
         for key in sorted(self.saved_values):
             if key in never_written:
                 continue
             site = model.site(key)
             if site is not None and not site.writable:
-                read_only.append(f"  {key}: {site.reason}")
-        message = ("Create Model edits this script in place: only values you change "
-                   "here are written, everything else in the script stays as it is.")
-        if read_only:
-            message += ("\n\nThese settings are set in a way the GUI can't change "
-                        "(edit them in the script):\n" + "\n".join(read_only))
-        return message
+                not_editable.append((key, site.reason))
+        return not_editable
+
+    def setWindowTitle(self, title):
+        # the title shows edit-in-place mode; the apps set their own title (e.g.
+        # "setupEM Palace") at other times, so keep that and add the mode to it
+        self._base_title = title
+        model = getattr(self, "script_model", None)
+        if model is not None and model.path:
+            title = f"{title} - editing {os.path.basename(model.path)} in place"
+        super().setWindowTitle(title)
+
+    def _refresh_title(self):
+        self.setWindowTitle(getattr(self, "_base_title", self.windowTitle()))
 
     def show_preserve_preview(self, editor):
-        """Model editor tab in preserve mode: show the imported script with the
-        current changes. Returns False when not in preserve mode."""
+        """Model editor tab in edit-in-place mode: show the script with the
+        current changes. Returns False when not in that mode."""
         if self.script_model is None:
             return False
         self.save_all_tabs()
@@ -4474,13 +4574,12 @@ class MainWindowBase(QMainWindow):
         return True
 
     def preserve_mode_applies(self, pymodel_filename):
-        """True if Create Model should patch the imported script for this output
-        file: same folder as the imported script, so its relative paths still work."""
+        """True if Create Model writes pymodel_filename by patching the script
+        that is edited in place."""
         if self.script_model is None or not self.script_model.path:
             return False
-        source_dir = os.path.dirname(os.path.abspath(self.script_model.path))
-        target_dir = os.path.dirname(os.path.abspath(pymodel_filename))
-        return os.path.normcase(source_dir) == os.path.normcase(target_dir)
+        return os.path.normcase(os.path.abspath(self.script_model.path)) == \
+            os.path.normcase(os.path.abspath(pymodel_filename))
 
     def preserve_mode_patch(self, pymodel_filename):
         """The imported script with the current GUI changes applied.
@@ -4628,11 +4727,24 @@ class MainWindowBase(QMainWindow):
     def export_to_python(self):
         # make sure all tabs save their values
         self.save_all_tabs()
-        self.modeleditor_tab.create_model_text(forExport=True)
+        in_place_code = None
+        if self.script_model is not None:
+            # edit-in-place mode exports the script with the changes (its relative
+            # paths stay as written, so save it next to the original)
+            in_place_code = self.preserve_mode_patch(self.script_model.path)[0]
+            start_dir = os.path.dirname(self.script_model.path)
+        else:
+            self.modeleditor_tab.create_model_text(forExport=True)
+            start_dir = ""
 
-        file_path, _ = QFileDialog.getSaveFileName(self, "Select Python Model", filter="Python model (*.py)")
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Python Model", start_dir, filter="Python model (*.py)")
         if file_path:
             try:
+                if in_place_code is not None:
+                    with open(file_path, 'w', encoding='utf-8', newline='') as f:
+                        f.write(in_place_code)
+                    QMessageBox.information(self, "Saved", f"Model code saved to {file_path}")
+                    return
                 code = self.modeleditor_tab.model_edit.toPlainText()
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(code)

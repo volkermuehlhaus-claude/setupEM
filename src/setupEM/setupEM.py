@@ -3574,13 +3574,11 @@ class MainWindow(MainWindowBase):
             model = None
         if model is not None:
             ports = [dict(c.args) for c in model.ports if c.static]
-            skipped_count = len(model.ports) - len(ports)
-            if skipped_count:
-                QMessageBox.warning(
-                    self, "Import Model",
-                    f"{skipped_count} port definition(s) are computed in the script (in a loop, "
-                    "or from variables or function calls) and could not be imported.\n\n"
-                    "Add them manually on the Ports tab.")
+            # reported in the import message (see load_configuration_from_file())
+            for c in model.ports:
+                if not c.static:
+                    number = c.args.get("portnumber")
+                    self._import_notes.append((f"port {number}" if number is not None else "a port", c.reason))
         else:
             ports = parse_python_ports_definitions(file_path)
         self.ports_tab.update_port_from_import(ports)

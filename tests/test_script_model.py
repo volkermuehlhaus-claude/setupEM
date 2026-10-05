@@ -237,10 +237,56 @@ def test_values_using_other_names_are_read_only():
     assert model.result() == text
 
 
-def test_settings_in_loops_are_read_only():
+def test_settings_using_the_loop_variable_are_read_only():
     text = "settings = {}\nfor f in [1e9, 2e9]:\n    settings['fstop'] = f\n"
+    site = ScriptModel(text).site("fstop")
+    assert not site.writable and site.reason == "uses f"
+
+
+# a sweep script: the whole model is built inside a loop over a parameter
+SWEEP = ("for T in [25, 85]:\n"
+         "    settings = {}\n"
+         "    settings['fstop'] = 100e9  # top\n"
+         "    variable_overrides = {'Temp_Celsius': T}\n"
+         "    ports = simulation_setup.all_simulation_ports()\n"
+         "    ports.add_port(simulation_setup.simulation_port(portnumber=1, voltage=1, port_Z0=50, "
+         "source_layernum=201, target_layername='TopMetal2', direction='x'))\n"
+         "    simulation_setup.create_palace([], settings)\n")
+
+
+def test_sweep_plain_values_in_loop_are_editable():
+    model = ScriptModel(SWEEP)
+    assert model.site("fstop").writable
+    assert model.ports[0].static
+    site = model.site("variable_overrides")
+    assert not site.writable and site.reason == "uses T"
+    patch_script(model, {"fstop": 100.0}, {"fstop": 50.0})
+    assert model.result() == SWEEP.replace("100e9  # top", "50e9  # top")
+
+
+def test_sweep_insertions_keep_the_loop_indentation():
+    model = ScriptModel(SWEEP)
+    old = [{"portnumber": 1, "voltage": 1.0, "port_Z0": 50.0, "source_layernum": 201,
+            "target_layername": "TopMetal2", "direction": "x"}]
+    new = old + [dict(old[0], portnumber=2, source_layernum=202)]
+    written, refused = patch_script(model, {}, {"meshsize_max": 70}, baseline_ports=old, current_ports=new)
+    assert refused == []
+    after = model.result()
+    assert "    settings['fstop'] = 100e9  # top\n    settings['meshsize_max'] = 70\n" in after
+    assert ("\n    ports.add_port(simulation_setup.simulation_port(portnumber=2, voltage=1, port_Z0=50, "
+            "source_layernum=202, target_layername='TopMetal2', direction='x'))\n") in after
+    assert len(ScriptModel(after).ports) == 2
+
+
+def test_removing_the_only_statement_of_a_block_is_refused():
+    text = ("for T in [1]:\n"
+            "    ports.add_port(simulation_setup.simulation_port(portnumber=1, voltage=1, port_Z0=50, "
+            "source_layernum=201, target_layername='TopMetal2', direction='x'))\n")
     model = ScriptModel(text)
-    assert not model.site("fstop").writable
+    old = [{"portnumber": 1, "voltage": 1.0, "port_Z0": 50.0, "source_layernum": 201,
+            "target_layername": "TopMetal2", "direction": "x"}]
+    written, refused = patch_script(model, {}, {}, baseline_ports=old, current_ports=[])
+    assert written == [] and refused and model.result() == text
 
 
 def test_variable_assigned_twice_is_read_only():
