@@ -4993,7 +4993,14 @@ class MainWindowBase(QMainWindow):
             banner.setWordWrap(True)
             banner.setStyleSheet("QLabel { background-color: #FFF4CC; color: #5A4A00; "
                                  "border: 1px solid #E6C84F; border-radius: 3px; padding: 5px 8px; }")
-            layout.insertWidget(0, banner)
+            # directly under the tab's last box, before a trailing stretch, so it
+            # stays close to the fields instead of at the bottom edge
+            position = layout.count()
+            for index in range(layout.count() - 1, -1, -1):
+                if layout.itemAt(index).widget() is not None:
+                    position = index + 1
+                    break
+            layout.insertWidget(position, banner)
             self._script_banners.append(banner)
 
     def _stop_preserve_mode(self):
