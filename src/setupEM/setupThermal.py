@@ -1175,7 +1175,7 @@ class PreferencesDialog(QDialog):
         files_form.addLayout(py_open_row)
         self._reset_targets.append((self.py_open_combo, "py_open_mode", "ask", "combo"))
         # "New model from its settings" writes back into the opened script, as setupEM always did
-        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an opened model's filename as the output file")
+        self.confirm_reuse_checkbox = QCheckBox("When opening a *.py as a new model: ask before writing over the imported script")
         self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
         files_form.addWidget(self.confirm_reuse_checkbox)
         self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
