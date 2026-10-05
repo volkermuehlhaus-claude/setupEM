@@ -240,7 +240,8 @@ def test_values_using_other_names_are_read_only():
 def test_settings_using_the_loop_variable_are_read_only():
     text = "settings = {}\nfor f in [1e9, 2e9]:\n    settings['fstop'] = f\n"
     site = ScriptModel(text).site("fstop")
-    assert not site.writable and site.reason == "uses f"
+    # read-only; shown with the first loop value, the reason lists them all
+    assert not site.writable and site.value == 1e9 and site.reason == "swept: f = 1000000000.0, 2000000000.0"
 
 
 # a sweep script: the whole model is built inside a loop over a parameter
@@ -259,7 +260,7 @@ def test_sweep_plain_values_in_loop_are_editable():
     assert model.site("fstop").writable
     assert model.ports[0].static
     site = model.site("variable_overrides")
-    assert not site.writable and site.reason == "uses T"
+    assert not site.writable and site.value == {"Temp_Celsius": 25} and site.reason == "swept: T = 25, 85"
     patch_script(model, {"fstop": 100.0}, {"fstop": 50.0})
     assert model.result() == SWEEP.replace("100e9  # top", "50e9  # top")
 
@@ -276,6 +277,18 @@ def test_sweep_insertions_keep_the_loop_indentation():
     assert ("\n    ports.add_port(simulation_setup.simulation_port(portnumber=2, voltage=1, port_Z0=50, "
             "source_layernum=202, target_layername='TopMetal2', direction='x'))\n") in after
     assert len(ScriptModel(after).ports) == 2
+
+
+def test_loop_values_from_range_and_module_list():
+    text = ("temps = [25, 85, 125]\nsettings = {}\n"
+            "for n in range(2, 5):\n    settings['order'] = n\n"
+            "for T in temps:\n    settings['margin'] = 2*T\n"
+            "for x in compute():\n    settings['fstop'] = x\n")
+    model = ScriptModel(text)
+    assert model.site("order").value == 2 and model.site("order").reason == "swept: n = 2, 3, 4"
+    assert model.site("margin").value == 50 and model.site("margin").reason == "swept: T = 25, 85, 125"
+    # values the script computes at run time stay unknown
+    assert not model.site("fstop").resolved and model.site("fstop").reason == "uses x"
 
 
 def test_removing_the_only_statement_of_a_block_is_refused():

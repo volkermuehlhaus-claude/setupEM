@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import (
     QAction, QColor, QTextCharFormat, QFont, QFontMetrics, QSyntaxHighlighter,
     QPainter, QPen, QBrush, QPolygonF, QTextDocument, QShortcut, QKeySequence,
+    QPixmap, QIcon,
     )
 from PySide6.QtCore import Qt, QRegularExpression, QProcess, QRect, QRectF, QPointF, QTimer, QSettings, Signal
 
@@ -4716,7 +4717,7 @@ class MainWindowBase(QMainWindow):
                 log_lines.extend(path_messages)
                 if not_editable:
                     log_lines.append("Set by the script, not editable here:" if in_place else
-                                     "Computed by the script, not imported (defaults shown):")
+                                     "Computed by the script:")
                     log_lines.extend(f"  {key}: {reason}" for key, reason in not_editable)
                 self.create_model_tab.log_area.appendPlainText("\n".join(log_lines) + "\n")
                 if path_messages or not_editable:
@@ -4737,8 +4738,11 @@ class MainWindowBase(QMainWindow):
             if site is None:
                 continue
             if not site.resolved:
-                unresolved.append((key, site.reason or "computed by the script"))
+                unresolved.append((key, site.reason or "computed by the script, default shown"))
                 continue
+            if site.reason.startswith("swept"):
+                # a sweep in the script: the GUI shows (and a new model uses) the first value
+                unresolved.append((key, site.reason + ", the first value is shown"))
             value = site.value
             try:
                 if key in ("fpoint", "fdump"):
@@ -4905,26 +4909,92 @@ class MainWindowBase(QMainWindow):
         self.save_action.setVisible(not in_place)
 
     # saved_values key -> (tab attribute, [widget attributes]) of the fields that
-    # show it; set by the subclass. Used to grey out settings a script computes.
+    # show it; set by the subclass. Used to mark settings a script computes.
     SETTING_WIDGETS = {}
 
+    # names for the "set by the script" info line at the top of a tab
+    SETTING_LABELS = {
+        "GdsFile": "GDSII file", "SubstrateFile": "Stackup file", "cellname": "Cell",
+        "purpose": "Purpose", "merge_polygon_size": "Via merge distance",
+        "preprocess_gds": "Preprocess GDSII", "fill_factor_correction": "Fill factor correction",
+        "variable_overrides": "Stackup variables", "fstart": "fstart", "fstop": "fstop",
+        "fstep": "fstep", "fpoint": "Discrete frequencies", "fdump": "Field dump",
+        "refined_cellsize": "Mesh refinement", "refined_cellsize_override": "Mesh refinement overrides",
+        "cells_per_wavelength": "Cells per wavelength", "meshsize_max": "Max. cell size",
+        "order": "Mesh basis function", "filled_metals": "Conductor meshing",
+        "adaptive_mesh_iterations": "Adaptive mesh iterations", "amr_tol": "AMR goal",
+        "amr_max_dof": "AMR max. DOF", "adaptive_mesh_conformal": "Conformal AMR",
+        "complex_coarse_solve": "Complex coarse solve", "iterative": "Solver",
+        "boundary": "Boundary conditions", "margin": "Dielectric oversize",
+        "air_around": "Air layer", "ELMER_MPI_THREADS": "Multithreading",
+    }
+
+    # look of a field the script sets: the app's own field styles (e.g. the light
+    # yellow of required fields) hide Qt's usual disabled look
+    SCRIPT_SET_STYLE = "background-color: #E6E6E6; color: #7A7A7A; font-style: italic;"
+
+    @staticmethod
+    def _script_set_icon():
+        # a small loop arrow, drawn so it needs no image file
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor("#7A7A7A"), 1.6)
+        painter.setPen(pen)
+        painter.drawArc(QRectF(3, 3, 10, 10), 60 * 16, 300 * 16)
+        painter.setBrush(QColor("#7A7A7A"))
+        painter.drawPolygon(QPolygonF([QPointF(9, 1.5), QPointF(13, 4), QPointF(9, 6.5)]))
+        painter.end()
+        return QIcon(pixmap)
+
     def _grey_out_script_settings(self, not_editable):
-        """Disable the fields of settings the script edited in place sets itself
-        (e.g. from a loop variable), with the reason as tooltip; {} restores them."""
-        for widget, enabled, tooltip in getattr(self, "_greyed_widgets", []):
+        """Mark the fields of settings the script edited in place sets itself (e.g.
+        from a loop variable): disabled, in a grey italic "set by the script" look
+        with a loop icon, the reason as tooltip, and one info line at the top of
+        each tab listing them. {} restores everything."""
+        for widget, enabled, tooltip, style, action in getattr(self, "_greyed_widgets", []):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
+            widget.setStyleSheet(style)
+            if action is not None:
+                widget.removeAction(action)
+        for banner in getattr(self, "_script_banners", []):
+            banner.setParent(None)
+            banner.deleteLater()
         self._greyed_widgets = []
+        self._script_banners = []
+
+        per_tab = {}
         for key, reason in not_editable.items():
             tab_name, widget_names = self.SETTING_WIDGETS.get(key, (None, []))
             tab = getattr(self, tab_name, None) if tab_name else None
+            if tab is None:
+                continue
+            per_tab.setdefault(tab, []).append(f"{self.SETTING_LABELS.get(key, key)} ({reason})")
             for widget_name in widget_names:
                 widget = getattr(tab, widget_name, None)
                 if widget is None:
                     continue
-                self._greyed_widgets.append((widget, widget.isEnabled(), widget.toolTip()))
+                action = None
+                if isinstance(widget, QLineEdit):
+                    action = widget.addAction(self._script_set_icon(), QLineEdit.TrailingPosition)
+                self._greyed_widgets.append((widget, widget.isEnabled(), widget.toolTip(),
+                                             widget.styleSheet(), action))
                 widget.setEnabled(False)
                 widget.setToolTip(f"Set by the script ({reason}) - change it there")
+                widget.setStyleSheet(f"{type(widget).__name__} {{ {self.SCRIPT_SET_STYLE} }}")
+
+        for tab, items in per_tab.items():
+            layout = tab.layout()
+            if layout is None:
+                continue
+            banner = QLabel("Set by the script, not editable here: " + "; ".join(items))
+            banner.setWordWrap(True)
+            banner.setStyleSheet("QLabel { background-color: #FFF4CC; color: #5A4A00; "
+                                 "border: 1px solid #E6C84F; border-radius: 3px; padding: 5px 8px; }")
+            layout.insertWidget(0, banner)
+            self._script_banners.append(banner)
 
     def _stop_preserve_mode(self):
         was_active = getattr(self, "script_model", None) is not None

@@ -325,7 +325,11 @@ class ScriptModel:
         if isinstance(node, ast.Name) and node.id not in ("True", "False", "None"):
             stmts = self._var_assigns.get(node.id, [])
             if not stmts:
-                # a loop variable, an imported name, ...
+                # a loop variable (a sweep): read-only, shown with its first value
+                values = self.loop_values(node.id)
+                if values:
+                    return Site(key, node, values[0], False, self._swept_reason({node.id: values}), kind, wrapper)
+                # an imported name, ...
                 return Site(key, node, _UNRESOLVED, False, f"uses {node.id}", kind, wrapper)
             other = self._var_other.get(node.id, 0)
             stmt, reason = self._single_assignment(stmts, other, f"'{node.id}'")
@@ -348,11 +352,44 @@ class ScriptModel:
         try:
             value = eval_simple_python_expression(node, self.constants)
         except (ValueError, TypeError, ZeroDivisionError, SyntaxError, KeyError):
+            # depends on sweep loop variables, e.g. {'Temp_Celsius': Temp_Celsius}
+            # or 2*cellsize: read-only, shown with the first loop pass's value
+            loops = {n: self.loop_values(n) for n in names if n not in self.constants}
+            if loops and all(loops.values()):
+                try:
+                    first = dict(self.constants, **{n: v[0] for n, v in loops.items()})
+                    value = eval_simple_python_expression(node, first)
+                    return Site(key, node, value, False, self._swept_reason(loops), kind, wrapper)
+                except (ValueError, TypeError, ZeroDivisionError, SyntaxError, KeyError):
+                    pass
             reason = f"uses {', '.join(names)}" if names else "computed by the script"
             return Site(key, node, _UNRESOLVED, False, reason, kind, wrapper)
         if names:
             return Site(key, node, value, False, f"uses {', '.join(names)}", kind, wrapper)
         return Site(key, node, value, True, "", kind, wrapper)
+
+    def loop_values(self, name):
+        """The values a for loop gives to name, when the loop is the only binding
+        of it and iterates over plain values: a list / tuple, a list defined at
+        module level, or range(...). None otherwise."""
+        loops = [n for n in ast.walk(self.tree)
+                 if isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name) and n.target.id == name]
+        if len(loops) != 1 or self._var_assigns.get(name) or self._var_other.get(name, 0) != 1:
+            return None
+        iterable = loops[0].iter
+        try:
+            if isinstance(iterable, ast.Call) and getattr(iterable.func, "id", None) == "range" and not iterable.keywords:
+                values = list(range(*[eval_simple_python_expression(a, self.constants) for a in iterable.args]))
+            else:
+                values = eval_simple_python_expression(iterable, self.constants)
+        except (ValueError, TypeError, ZeroDivisionError, SyntaxError, KeyError):
+            return None
+        return list(values) if isinstance(values, (list, tuple)) and values else None
+
+    @staticmethod
+    def _swept_reason(loops):
+        return "swept: " + "; ".join(f"{name} = {', '.join(str(v) for v in values)}"
+                                      for name, values in loops.items())
 
     @staticmethod
     def _names_in(node):
