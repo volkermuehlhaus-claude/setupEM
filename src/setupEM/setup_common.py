@@ -4262,11 +4262,16 @@ class MainWindowBase(QMainWindow):
                 # collect_module_level_constants() / resolve_value_text()
                 known_constants = collect_module_level_constants(file_path)
                 imported_parameters = parse_assignments(file_path)
+                # values that can't be resolved here, e.g. a loop variable in a sweep
+                # script (variable_overrides = {'Temp_Celsius': Temp_Celsius} inside
+                # "for Temp_Celsius in ..."): skipped and listed, instead of a crash
+                unresolved_messages = []
                 for import_key, import_value in imported_parameters.items():
                         if import_key in import_mapping.keys():
                             if import_key not in import_value:  # skip the section where key might appear in different context
-                                # get the internal name for this variable
-                                varname = import_mapping.get(import_key, '')
+                              # get the internal name for this variable
+                              varname = import_mapping.get(import_key, '')
+                              try:
                                 if varname in ("fpoint", "fdump"):
                                     # same Hz-in-code / GHz-in-GUI unit split as fstart/fstop/fstep below,
                                     # just per-element since these are lists - but a script may also
@@ -4311,6 +4316,8 @@ class MainWindowBase(QMainWindow):
                                             # (e.g. a value computed by a function call) - fall back to
                                             # the raw text exactly as before this resolution was added
                                             saved_values[varname] = raw
+                              except (SyntaxError, ValueError, TypeError, ZeroDivisionError, KeyError):
+                                unresolved_messages.append(f"{import_key} = {import_value}")
 
                 # GdsFile/SubstrateFile paths saved on a different OS/network-drive mapping
                 # often don't resolve here even as a full absolute path (the bare-relative-
@@ -4381,6 +4388,10 @@ class MainWindowBase(QMainWindow):
                     )
                 if path_messages:
                     loaded_message += "\n\n" + "\n".join(path_messages)
+                if unresolved_messages:
+                    loaded_message += ("\n\nThese values are computed when the script runs (e.g. in a "
+                                       "loop) and were not imported, the defaults are shown instead:\n  " +
+                                       "\n  ".join(unresolved_messages))
                 QMessageBox.information(self, "Loaded", loaded_message)
                 self.create_model_tab.log_area.clear()
                 self.create_model_tab._reset_live_status()
