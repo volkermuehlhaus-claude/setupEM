@@ -60,8 +60,10 @@ from gds2palace import *
 
 if __package__ in (None, ""):
     import gds_hierarchy_scan
+    from script_model import eval_simple_python_expression
 else:
     from . import gds_hierarchy_scan
+    from .script_model import eval_simple_python_expression
 
 # ------------------------------------------------------------------
 # gds2palace feature-compatibility detection: an older gds2palace (e.g. a stale
@@ -344,67 +346,6 @@ def resolve_missing_file_paths(saved_values, reference_dir, keys=("GdsFile", "Su
                 f"using {shorten_path_for_display(candidate)} instead"
             )
     return messages
-
-
-def eval_simple_python_expression(node, known_constants):
-    # Evaluate a single AST expression node against a symbol table of already-known
-    # module-level constants. This is intentionally NOT a general interpreter - it only
-    # understands literals (delegated to ast.literal_eval for plain Constant nodes, the
-    # same grammar callers used before this function existed, so anything that already
-    # worked keeps working unchanged), bare Name lookups against known_constants, simple
-    # arithmetic (BinOp/UnaryOp) combining those, and literal-ish List/Tuple/Set/Dict
-    # containers whose elements may themselves reference known constants (e.g.
-    # "[ftarget]"). Anything else (calls, attributes, subscripts, comprehensions, ...)
-    # raises so the caller can fall back to its own "could not resolve this" handling.
-    if isinstance(node, ast.Name):
-        if node.id in known_constants:
-            return known_constants[node.id]
-        raise ValueError(f"unknown name '{node.id}'")
-
-    if isinstance(node, ast.BinOp):
-        left = eval_simple_python_expression(node.left, known_constants)
-        right = eval_simple_python_expression(node.right, known_constants)
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.Div):
-            return left / right
-        if isinstance(node.op, ast.FloorDiv):
-            return left // right
-        if isinstance(node.op, ast.Mod):
-            return left % right
-        if isinstance(node.op, ast.Pow):
-            return left ** right
-        raise ValueError(f"unsupported operator {type(node.op).__name__}")
-
-    if isinstance(node, ast.UnaryOp):
-        operand = eval_simple_python_expression(node.operand, known_constants)
-        if isinstance(node.op, ast.UAdd):
-            return +operand
-        if isinstance(node.op, ast.USub):
-            return -operand
-        raise ValueError(f"unsupported unary operator {type(node.op).__name__}")
-
-    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        values = [eval_simple_python_expression(elt, known_constants) for elt in node.elts]
-        if isinstance(node, ast.Tuple):
-            return tuple(values)
-        if isinstance(node, ast.Set):
-            return set(values)
-        return values
-
-    if isinstance(node, ast.Dict):
-        return {
-            eval_simple_python_expression(k, known_constants): eval_simple_python_expression(v, known_constants)
-            for k, v in zip(node.keys, node.values)
-        }
-
-    # plain literals: numbers, strings, etc. - same code path used before
-    # Name/BinOp/UnaryOp/container support was added above
-    return ast.literal_eval(node)
 
 
 def collect_module_level_constants(file_path):
