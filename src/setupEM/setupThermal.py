@@ -88,8 +88,6 @@ sudo apt install libxcb-cursor0 libxcb-xinerama0 libxcb-xkb1 libxcb-icccm4 libxc
 CONFIG_SUFFIX = "tsimcfg"  # file suffix for native config file used here
 APP_NAME = "setupThermal" # name of this application
 
-DEFAULT_SETTINGS_FILE = os.path.join(os.path.expanduser("~"),"default." + CONFIG_SUFFIX)
-
 
 saved_values = {} # dictionary of user input in this application
 thermal_objects = simulation_setup.all_thermal_objects() # store thermal sources and thermal boundaries
@@ -1098,7 +1096,7 @@ class PreferencesDialog(QDialog):
     """File > Preferences ...: per-user defaults for fields that used to be plain
     hardcoded literals. Persisted via get_preference()/set_preference()
     (setup_common.py) - a dedicated QSettings store, separate from *.tsimcfg
-    project files and from "Save as Default Config". Editing a value here only
+    project files. Editing a value here only
     changes what a brand-new/blank field starts out showing; it never touches
     the currently open project's saved_values. Smaller than setupEM's version
     of this dialog - no Frequencies tab (thermal has no frequency sweep), and
@@ -1470,7 +1468,6 @@ class ThermalConductivityLegend(QWidget):
 class MainWindow(MainWindowBase):
     APP_NAME = APP_NAME
     CONFIG_SUFFIX = CONFIG_SUFFIX
-    DEFAULT_SETTINGS_FILE = DEFAULT_SETTINGS_FILE
 
     def __init__(self):
         super().__init__()
@@ -1523,12 +1520,6 @@ class MainWindow(MainWindowBase):
         # 3D Field Result Viewer window (PyVista), lazily created - see
         # CreateModelTab.open_field_viewer()
         self.field_viewer_window = None
-
-        # Do not auto-load default values at this early startup stage,
-        # instead this is done from File menu
-        # self.user_inputs_file = DEFAULT_SETTINGS_FILE
-        # self.user_inputs = self.load_user_inputs(DEFAULT_SETTINGS_FILE)
-        # saved_values.update(self.user_inputs)
 
         # Load all saved data into tabs
         self.load_all_tabs()

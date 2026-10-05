@@ -95,8 +95,6 @@ sudo apt install libxcb-cursor0 libxcb-xinerama0 libxcb-xkb1 libxcb-icccm4 libxc
 CONFIG_SUFFIX = "simcfg"  # file suffix for native config file used here
 APP_NAME = "setupEM" # name of this application
 
-DEFAULT_SETTINGS_FILE = os.path.join(os.path.expanduser("~"),"default." + CONFIG_SUFFIX)
-
 
 saved_values = {} # dictionary of user input in this application
 simulation_ports = simulation_setup.all_simulation_ports() # store port settings
@@ -2974,7 +2972,7 @@ class PreferencesDialog(QDialog):
     """File > Preferences ...: per-user defaults for fields that used to be plain
     hardcoded literals (e.g. FrequenciesTab's fstart/fstop). Persisted via
     get_preference()/set_preference() (setup_common.py) - a dedicated QSettings
-    store, separate from *.simcfg project files and from "Save as Default Config".
+    store, separate from *.simcfg project files.
     Editing a value here only changes what a brand-new/blank field starts out
     showing; it never touches the currently open project's saved_values.
     """
@@ -3361,7 +3359,6 @@ class PreferencesDialog(QDialog):
 class MainWindow(MainWindowBase):
     APP_NAME = APP_NAME
     CONFIG_SUFFIX = CONFIG_SUFFIX
-    DEFAULT_SETTINGS_FILE = DEFAULT_SETTINGS_FILE
 
     def __init__(self):
         super().__init__()
@@ -3428,12 +3425,6 @@ class MainWindow(MainWindowBase):
         # CreateModelTab.open_field_viewer(). Palace mode only for now - see that
         # method's docstring.
         self.field_viewer_window = None
-
-        # Do not auto-load default values at this early startup stage,
-        # instead this is done from File menu
-        # self.user_inputs_file = DEFAULT_SETTINGS_FILE
-        # self.user_inputs = self.load_user_inputs(DEFAULT_SETTINGS_FILE)
-        # saved_values.update(self.user_inputs)
 
         # Load all saved data into tabs
         self.load_all_tabs()

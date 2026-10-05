@@ -111,8 +111,7 @@ MAX_RECENT_FILES = 10
 # Preferences (File > Preferences...): per-user, per-app defaults for fields
 # that used to be plain hardcoded literals (e.g. FrequenciesTab's fstart/fstop
 # QLineEdit("0")/("50")). Deliberately a separate store from the *.simcfg /
-# *.tsimcfg project files and from the existing "Save as Default Config"
-# mechanism (DEFAULT_SETTINGS_FILE) - this is about what a brand-new/blank
+# *.tsimcfg project files - this is about what a brand-new/blank
 # field starts out showing, not a full saved project snapshot. Reuses the
 # same QSettings org/app scope as the recent-files lists above, just under
 # its own sub-group so the keys never collide.
@@ -3951,8 +3950,6 @@ class MainWindowBase(QMainWindow):
         self.new_action.setShortcut(QKeySequence.New)
         self.load_settings_action = QAction("Load Config ...", self)
         self.save_action = QAction("Save Config ...", self)
-        self.load_default_action = QAction("Load Default Config", self)
-        self.savedefault_action = QAction("Save as Default Config", self)
         self.import_model_action = QAction("Import from *.py model ...", self)
         self.open_script_action = QAction("Open model script (edit in place) ...", self)
         self.open_script_action.setToolTip("Edit an existing gds2palace model script: Create Model writes "
@@ -3967,9 +3964,7 @@ class MainWindowBase(QMainWindow):
 
         self.new_action.triggered.connect(lambda: self.new_configuration())
         self.load_settings_action.triggered.connect(lambda: self.load_configuration_dialog())
-        self.load_default_action.triggered.connect(lambda: self.load_configuration_from_file(self.DEFAULT_SETTINGS_FILE))
         self.save_action.triggered.connect(lambda: self.save_ask_filenamefile())
-        self.savedefault_action.triggered.connect(lambda: self.save_user_inputs_to_file(self.DEFAULT_SETTINGS_FILE))
 
         self.import_model_action.triggered.connect(lambda: self.import_from_python())
         self.open_script_action.triggered.connect(lambda: self.open_script_in_place())
@@ -3987,9 +3982,6 @@ class MainWindowBase(QMainWindow):
         self.recent_model_menu = file_menu.addMenu("Import Recent Model")
         file_menu.addAction(self.open_script_action)
         file_menu.addAction(self.export_model_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.load_default_action)
-        file_menu.addAction(self.savedefault_action)
         file_menu.addSeparator()
         file_menu.addAction(self.preferences_action)
         file_menu.addSeparator()
