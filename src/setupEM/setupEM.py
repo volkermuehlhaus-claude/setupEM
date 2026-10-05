@@ -1880,7 +1880,7 @@ class CreateModelTab(CreateModelTabBase):
         in the log."""
         self._init_status_state()
         if self.MainWindow.PalaceMode:
-            run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+            run_path = self.run_folder("palace_model")
             try:
                 with open(os.path.join(run_path, "config.json")) as f:
                     config_data = json.load(f)
@@ -2134,7 +2134,7 @@ class CreateModelTab(CreateModelTabBase):
         """
         try:
             if os.name == "nt":
-                run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+                run_path = self.run_folder("palace_model")
                 wsl_run_path = self._windows_to_wsl_path(run_path)
                 subprocess.run(
                     ["wsl.exe", "--cd", wsl_run_path, "--", "bash", "-lc",
@@ -2212,9 +2212,9 @@ class CreateModelTab(CreateModelTabBase):
             from .result_viewer import find_touchstone_files, is_amr_iteration_snapshot
 
         if self.MainWindow.PalaceMode:
-            run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+            run_path = self.run_folder("palace_model")
         else:
-            run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
+            run_path = self.run_folder("elmer_model")
 
         raw_files = [
             path for path in find_touchstone_files(run_path)
@@ -2251,8 +2251,8 @@ class CreateModelTab(CreateModelTabBase):
     def _append_results_summary(self):
         # Palace-only: parse palace.json / error-indicators.csv and append a results summary
         # to the log. Called from on_finished() after a real simulation run.
-        run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
-        summary = build_results_summary(run_path, saved_values['model_basename'])
+        run_path = self.run_folder("palace_model")
+        summary = build_results_summary(run_path, self.run_basename())
         self.log_area.appendPlainText("\n" + summary + "\n")
 
     def _update_viewer_button(self):
@@ -2278,11 +2278,11 @@ class CreateModelTab(CreateModelTabBase):
         """(file_paths, not_found_message) for Palace's field-dump output - shared
         by launch_paraview() (external ParaView) and open_field_viewer() (in-app
         PyVista viewer), so both use the exact same file resolution."""
-        run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
-        file_paths = find_paraview_files(run_path, saved_values['model_basename'])
+        run_path = self.run_folder("palace_model")
+        file_paths = find_paraview_files(run_path, self.run_basename())
         not_found = (
             f"⚠️ No Palace field-dump output found under "
-            f"{find_output_dir(run_path, saved_values['model_basename'])}\n"
+            f"{find_output_dir(run_path, self.run_basename())}\n"
             "(set fdump to specific frequencies before running the simulation)\n"
         )
         return file_paths, not_found
@@ -2295,7 +2295,7 @@ class CreateModelTab(CreateModelTabBase):
         one file: Elmer has no per-frequency .pvd collection like Palace, so
         each solved frequency's fields_t000N.vtu/.pvtu is its own separate file -
         the viewer's Result File picker lets the user choose between them."""
-        run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
+        run_path = self.run_folder("elmer_model")
         # Output File Name = File "fields" has no path prefix, so Elmer resolves it
         # relative to the Mesh DB directory ("mesh" under run_path) rather than
         # run_path itself - confirmed against a real run (same resolution mechanism
@@ -2510,7 +2510,7 @@ class CreateModelTab(CreateModelTabBase):
         is also checked, defensively, in case some variant writes there directly.
         """
         if self.MainWindow.PalaceMode:
-            output_dir = find_output_dir(run_path, saved_values['model_basename'])
+            output_dir = find_output_dir(run_path, self.run_basename())
             if not os.path.isdir(output_dir) or not os.listdir(output_dir):
                 return
             targets = [output_dir]
@@ -2529,19 +2529,27 @@ class CreateModelTab(CreateModelTabBase):
             if not targets:
                 return
 
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
-        box.setWindowTitle("Previous simulation results found")
-        box.setText(
-            f"This run's output directory already contains results from a previous "
-            f"simulation:\n\n{run_path}\n\nDelete the existing results before starting?"
-        )
-        delete_btn = box.addButton("Delete", QMessageBox.AcceptRole)
-        box.addButton("Keep", QMessageBox.RejectRole)
-        box.setDefaultButton(delete_btn)
-        box.exec()
+        # in a Start Simulation queue (several models of one script), ask once
+        delete = getattr(self, "_queue_clear_choice", None) if self._active_run is not None else None
+        if delete is None:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Question)
+            box.setWindowTitle("Previous simulation results found")
+            more = (" (the same applies to the other models in this run)"
+                    if self._active_run is not None and self._run_queue else "")
+            box.setText(
+                f"This run's output directory already contains results from a previous "
+                f"simulation:\n\n{run_path}\n\nDelete the existing results before starting{more}?"
+            )
+            delete_btn = box.addButton("Delete", QMessageBox.AcceptRole)
+            box.addButton("Keep", QMessageBox.RejectRole)
+            box.setDefaultButton(delete_btn)
+            box.exec()
+            delete = box.clickedButton() is delete_btn
+            if self._active_run is not None:
+                self._queue_clear_choice = delete
 
-        if box.clickedButton() is delete_btn:
+        if delete:
             for target in targets:
                 if os.path.isdir(target):
                     shutil.rmtree(target)
@@ -2552,9 +2560,9 @@ class CreateModelTab(CreateModelTabBase):
         # Run model that we created before
 
         if self.MainWindow.PalaceMode:
-            run_path = saved_values['sim_path'] + "/palace_model/" + saved_values['model_basename'] + "_data"
+            run_path = self.run_folder("palace_model")
         else:
-            run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
+            run_path = self.run_folder("elmer_model")
 
         # ---------- pre-flight checks: fail fast, before asking to delete
         # previous results or touching QProcess at all - see setup_common.py's
@@ -2606,8 +2614,9 @@ class CreateModelTab(CreateModelTabBase):
         try:
             self._confirm_clear_previous_results(run_path)
 
-            # clear log
-            self.log_area.clear()
+            # clear log (not between the models of one Start Simulation queue)
+            if self.should_clear_log():
+                self.log_area.clear()
             self._reset_status_for_run()
             self._process_purpose = "run_simulation"
 

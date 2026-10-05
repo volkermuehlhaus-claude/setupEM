@@ -16,7 +16,7 @@ FAKE_WORKFLOW = textwrap.dedent("""
     import json, os
     def create_model(excite_ports, settings):
         with open(os.path.join(os.path.dirname(__file__), "received.json"), "w") as f:
-            json.dump({k: v for k, v in settings.items() if k != "out"}, f)
+            json.dump({k: v for k, v in settings.items() if k != "out"}, f, default=str)
         return "config", "data"
     def create_palace(excite_ports, settings):
         settings["palace"] = True
@@ -61,6 +61,48 @@ def test_overrides_reach_create_model_through_create_palace(tmp_path):
 def test_without_overrides_script_values_are_kept(tmp_path):
     received = run(tmp_path)
     assert received["preview_only"] is False
+
+
+SWEEP_SCRIPT = textwrap.dedent("""
+    import os, sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "localflow"))
+    import util_stackup_reader as stackup_reader
+    import util_simulation_setup as simulation_setup
+    for T in [25, 85]:
+        stackup_reader.read_substrate("x.xml", variable_overrides={'Temp_Celsius': T})
+        settings = {'fstop': 10e9, 'sim_path': os.path.join(os.path.dirname(__file__), f"m_T{T}_data"),
+                    'model_basename': f"m_T{T}", 'materials_list': object()}
+        simulation_setup.create_palace([], settings)
+        print("built", T)
+""")
+
+
+def run_sweep(tmp_path, *extra):
+    flow = tmp_path / "localflow"
+    flow.mkdir()
+    (flow / "util_simulation_setup.py").write_text(FAKE_WORKFLOW)
+    (flow / "util_stackup_reader.py").write_text("def read_substrate(xml, variable_overrides=None):\n    return 1, 2, 3\n")
+    script = tmp_path / "sweep.py"
+    script.write_text(SWEEP_SCRIPT)
+    return subprocess.run([sys.executable, RUNNER, str(script), *extra], capture_output=True, text=True)
+
+
+def test_record_lists_every_model_of_a_sweep(tmp_path):
+    record = tmp_path / "out" / "sweep_models.json"
+    result = run_sweep(tmp_path, "--record", str(record), "--set", "no_preview=True")
+    assert result.returncode == 0, result.stderr
+    models = json.loads(record.read_text())
+    assert [m["model_basename"] for m in models] == ["m_T25", "m_T85"]
+    assert models[1]["sim_path"].endswith("/m_T85_data") and models[0]["solver"] == "palace"
+    assert models[1]["variable_overrides"] == {"Temp_Celsius": 85}
+    assert models[0]["settings"] == {"fstop": 10e9, "palace": True}   # objects and run flags left out
+
+
+def test_first_only_stops_before_the_second_model(tmp_path):
+    result = run_sweep(tmp_path, "--first-only")
+    assert result.returncode == 0, result.stderr
+    assert "built 25" in result.stdout and "built 85" not in result.stdout
+    assert "only the first is shown" in result.stdout
 
 
 def test_source_runs_other_code_as_the_script(tmp_path):

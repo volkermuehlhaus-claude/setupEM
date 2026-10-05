@@ -20,26 +20,51 @@
 
     python run_with_overrides.py model.py --set preview_only=True --set no_preview=False
     python run_with_overrides.py model.py --source unsaved.py --set preview_only=True
+    python run_with_overrides.py model.py --record models.json --set no_preview=True
 
-Used by setupEM's preserve mode, so Preview / Create Mesh don't have to write
-their control flags into the user's script. The script runs unchanged, as
-__main__ with its own __file__ and its own folder first on sys.path, exactly
-like "python model.py". The overrides are applied to the settings dict when
-the script calls the workflow's create_model() (also through create_palace(),
-create_elmer() or create_elmer_thermal()). That function is patched when the
-workflow module is imported, from wherever the script imports it (installed
-package or a local copy put on sys.path by the script).
+Used by setupEM's edit-in-place mode, so Preview / Create Mesh don't have to
+write their control flags into the user's script. The script runs unchanged,
+as __main__ with its own __file__ and its own folder first on sys.path,
+exactly like "python model.py". The overrides are applied to the settings dict
+when the script calls the workflow's create_model() (also through
+create_palace(), create_elmer() or create_elmer_thermal()). That function is
+patched when the workflow module is imported, from wherever the script
+imports it (installed package or a local copy put on sys.path by the script).
+
+A script may build several models, e.g. a parameter sweep calling
+create_palace() in a loop. --record writes every model it creates (run folder,
+name, solver, stackup variable overrides, plain settings values) to a JSON
+file, so setupEM knows which models to run. --first-only stops the script when
+it starts a second model (a preview only needs one).
 """
 
 import argparse
 import ast
 import importlib.abc
 import importlib.machinery
+import json
 import os
 import runpy
 import sys
 
 WORKFLOW_MODULE_SUFFIX = "util_simulation_setup"
+STACKUP_MODULE_SUFFIX = "util_stackup_reader"
+
+# settings values that are workflow objects or setupEM's own run control, not
+# parameters of a model
+_NOT_PARAMETERS = {"sim_path", "model_basename", "preview_only", "no_preview", "no_gui"}
+
+
+class _Run:
+    """What this run of the script does and records."""
+
+    def __init__(self, overrides, record=None, first_only=False):
+        self.overrides = overrides
+        self.record = record
+        self.first_only = first_only
+        self.models = []
+        self.models_started = 0
+        self.variable_overrides = None
 
 
 def _parse_value(text):
@@ -49,42 +74,104 @@ def _parse_value(text):
         return text
 
 
-def _patch(module, overrides):
+def _plain(value):
+    # JSON-able numbers / strings / bools, and lists or dicts of those
+    if isinstance(value, (bool, int, float, str)) or value is None:
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_plain(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _plain(v) for k, v in value.items())
+    return False
+
+
+def _record_model(run, settings, result):
+    if run.record is None:
+        return
+    if settings.get("elmer_thermal"):
+        solver = "elmer_thermal"
+    elif settings.get("elmer"):
+        solver = "elmer"
+    else:
+        solver = "palace"
+    config_name = result[0] if isinstance(result, tuple) and result and isinstance(result[0], str) else None
+    sim_path = settings.get("sim_path")
+    run.models.append({
+        "sim_path": os.path.abspath(sim_path).replace("\\", "/") if isinstance(sim_path, str) else None,
+        "model_basename": settings.get("model_basename"),
+        "solver": solver,
+        "config": config_name,
+        "variable_overrides": run.variable_overrides if _plain(run.variable_overrides) else None,
+        "settings": {k: v for k, v in settings.items() if k not in _NOT_PARAMETERS and _plain(v)},
+    })
+    # written after every model, so a run that stops halfway still lists what it built
+    os.makedirs(os.path.dirname(os.path.abspath(run.record)), exist_ok=True)
+    with open(run.record, "w", encoding="utf-8") as f:
+        json.dump(run.models, f, indent=1)
+
+
+def _patch(module, run):
+    name = getattr(module, "__name__", "").split(".")[-1]
+    if name == STACKUP_MODULE_SUFFIX:
+        original_read = getattr(module, "read_substrate", None)
+        if original_read is None or getattr(original_read, "_setupEM_run", False):
+            return
+
+        def read_substrate(*args, **kwargs):
+            # remember the stackup variables of the model being set up (a sweep
+            # parameter like Temp_Celsius often lives here)
+            run.variable_overrides = kwargs.get("variable_overrides", args[1] if len(args) > 1 else None)
+            return original_read(*args, **kwargs)
+
+        read_substrate._setupEM_run = True
+        module.read_substrate = read_substrate
+        return
+
     original = getattr(module, "create_model", None)
-    if original is None or getattr(original, "_setupEM_overrides", False):
+    if original is None or getattr(original, "_setupEM_run", False):
         return
 
     def create_model(*args, **kwargs):
+        run.models_started += 1
+        if run.first_only and run.models_started > 1:
+            print("\nsetupEM preview: the script builds more than one model, only the first is shown.")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            # a plain exit could be caught by the script's own try/except
+            os._exit(0)
         settings = kwargs.get("settings")
         if settings is None:
             settings = next((a for a in reversed(args) if isinstance(a, dict)), None)
         if settings is not None:
-            settings.update(overrides)
-        return original(*args, **kwargs)
+            settings.update(run.overrides)
+        result = original(*args, **kwargs)
+        if settings is not None:
+            _record_model(run, settings, result)
+        return result
 
-    create_model._setupEM_overrides = True
+    create_model._setupEM_run = True
     module.create_model = create_model
 
 
 class _PatchingLoader(importlib.abc.Loader):
-    def __init__(self, loader, overrides):
+    def __init__(self, loader, run):
         self.loader = loader
-        self.overrides = overrides
+        self.run = run
 
     def create_module(self, spec):
         return self.loader.create_module(spec)
 
     def exec_module(self, module):
         self.loader.exec_module(module)
-        _patch(module, self.overrides)
+        _patch(module, self.run)
 
 
 class _PatchingFinder(importlib.abc.MetaPathFinder):
-    def __init__(self, overrides):
-        self.overrides = overrides
+    def __init__(self, run):
+        self.run = run
 
     def find_spec(self, fullname, path, target=None):
-        if not fullname.split(".")[-1] == WORKFLOW_MODULE_SUFFIX:
+        if fullname.split(".")[-1] not in (WORKFLOW_MODULE_SUFFIX, STACKUP_MODULE_SUFFIX):
             return None
         for finder in sys.meta_path:
             if finder is self or not hasattr(finder, "find_spec"):
@@ -92,7 +179,7 @@ class _PatchingFinder(importlib.abc.MetaPathFinder):
             spec = finder.find_spec(fullname, path, target)
             if spec is not None:
                 if spec.loader is not None and hasattr(spec.loader, "exec_module"):
-                    spec.loader = _PatchingLoader(spec.loader, self.overrides)
+                    spec.loader = _PatchingLoader(spec.loader, self.run)
                 return spec
         return None
 
@@ -105,6 +192,10 @@ def main(argv=None):
     parser.add_argument("--source", metavar="FILE",
                         help="run the code in FILE as if it were the script (same __file__, folder and "
                              "output paths), e.g. unsaved changes for a preview")
+    parser.add_argument("--record", metavar="JSON",
+                        help="write the models the script creates (run folders, parameters) to this file")
+    parser.add_argument("--first-only", action="store_true",
+                        help="stop when the script starts building a second model")
     args = parser.parse_args(argv)
 
     overrides = {}
@@ -113,12 +204,13 @@ def main(argv=None):
         if not sep or not key:
             parser.error(f"--set expects KEY=VALUE, got {item!r}")
         overrides[key.strip()] = _parse_value(value.strip())
+    run = _Run(overrides, record=args.record, first_only=args.first_only)
 
     script = os.path.abspath(args.script)
     for module in list(sys.modules.values()):
-        if getattr(module, "__name__", "").split(".")[-1] == WORKFLOW_MODULE_SUFFIX:
-            _patch(module, overrides)
-    sys.meta_path.insert(0, _PatchingFinder(overrides))
+        if getattr(module, "__name__", "").split(".")[-1] in (WORKFLOW_MODULE_SUFFIX, STACKUP_MODULE_SUFFIX):
+            _patch(module, run)
+    sys.meta_path.insert(0, _PatchingFinder(run))
 
     # same environment as "python model.py"
     sys.argv = [script]

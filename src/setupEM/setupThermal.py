@@ -707,7 +707,7 @@ class CreateModelTab(CreateModelTabBase):
     def _append_thermal_results_summary(self):
         # Parse thermal_results.dat / thermal_results.vtu and append a results summary
         # to the log. Called from on_finished() after a real simulation run.
-        run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
+        run_path = self.run_folder("elmer_model")
 
         # Heat sources first, then constant-temperature boundaries, regardless of the
         # order they were added in the GUI.
@@ -756,7 +756,7 @@ class CreateModelTab(CreateModelTabBase):
         self.open_field_viewer()
 
     def launch_paraview(self):
-        run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
+        run_path = self.run_folder("elmer_model")
         vtu_path = find_thermal_paraview_file(run_path)
         self._open_in_paraview(
             [vtu_path] if vtu_path else [],
@@ -775,7 +775,7 @@ class CreateModelTab(CreateModelTabBase):
             self.MainWindow.field_viewer_window.activateWindow()
             return
 
-        run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
+        run_path = self.run_folder("elmer_model")
         vtu_path = find_thermal_paraview_file(run_path)
         if not vtu_path:
             self.log_area.appendPlainText(f"⚠️ No thermal results .vtu found yet under {run_path}\n")
@@ -882,7 +882,7 @@ class CreateModelTab(CreateModelTabBase):
         # Run model that we created before
 
         # try to start from output directory
-        run_path = saved_values['sim_path'] + "/elmer_model/" + saved_values['model_basename'] + "_data"
+        run_path = self.run_folder("elmer_model")
 
         # ---------- pre-flight checks: fail fast, before touching QProcess ----------
         # ELMERSOLVER_STARTINFO (written by "Create Mesh", alongside case.sif) is
@@ -902,8 +902,9 @@ class CreateModelTab(CreateModelTabBase):
             return
 
         try:
-            # clear log
-            self.log_area.clear()
+            # clear log (not between the models of one Start Simulation queue)
+            if self.should_clear_log():
+                self.log_area.clear()
             self._process_purpose = "run_simulation"
 
             # Windows and Linux/Mac both just resolve ElmerSolver via PATH

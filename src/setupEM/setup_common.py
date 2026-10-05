@@ -3403,7 +3403,7 @@ class CreateModelTabBase(QWidget):
         self.buttons_grid.addWidget(self.create_model_btn, 1, 0)
 
         self.create_run_btn = QPushButton("▶️ Start Simulation")
-        self.create_run_btn.clicked.connect(self.run_model)
+        self.create_run_btn.clicked.connect(self.start_simulation)
         self.buttons_grid.addWidget(self.create_run_btn, 2, 0)
         self.kill_btn = QPushButton("🛑 Terminate ")
         self.kill_btn.setFixedWidth(SECONDARY_BUTTON_WIDTH)
@@ -3411,6 +3411,28 @@ class CreateModelTabBase(QWidget):
         self.buttons_grid.addWidget(self.kill_btn, 2, 1)
 
         self.actions_layout.addLayout(self.buttons_grid)
+
+        # Models created by a script edited in place, when it builds more than one
+        # (e.g. a parameter sweep): Start Simulation runs the ticked ones one
+        # after another; the selected row is the one the result / field viewers use
+        self.runs_label = QLabel("Models created by the script - Start Simulation runs the ticked ones:")
+        self.runs_table = QTableWidget(0, 3)
+        self.runs_table.setHorizontalHeaderLabels(["Model", "Parameters", "Status"])
+        self.runs_table.verticalHeader().setVisible(False)
+        self.runs_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.runs_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.runs_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.runs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.runs_table.horizontalHeader().setStretchLastSection(True)
+        self.runs_table.setMaximumHeight(160)
+        self.actions_layout.addWidget(self.runs_label)
+        self.actions_layout.addWidget(self.runs_table)
+        self.runs_label.setVisible(False)
+        self.runs_table.setVisible(False)
+        self._run_queue = []
+        self._queue_total = 0
+        self._active_run = None
+        self._keep_log = False
 
         # Log area follows directly, no "Log file:" label - kept inside the Actions
         # frame (not its own group box) since it is the direct output of the actions
@@ -3444,6 +3466,144 @@ class CreateModelTabBase(QWidget):
         self.process.readyReadStandardError.connect(self.on_stderr)
         self.process.finished.connect(self.on_finished)
         self.process.errorOccurred.connect(self.on_process_error)
+
+    # ---------- models created by a script (e.g. a parameter sweep) ----------
+
+    def refresh_runs_table(self):
+        """Show the models the script edited in place created, when there is
+        more than one; keeps the ticks of models that are listed again."""
+        runs = self.MainWindow.script_runs if self.MainWindow.script_model is not None else []
+        show = len(runs) > 1
+        self.runs_label.setVisible(show)
+        self.runs_table.setVisible(show)
+        unticked = set()
+        for row in range(self.runs_table.rowCount()):
+            item = self.runs_table.item(row, 0)
+            if item is not None and item.checkState() != Qt.Checked:
+                unticked.add(item.data(Qt.UserRole))
+        selected = self.runs_table.currentRow()
+        self.runs_table.setRowCount(len(runs))
+        for row, run in enumerate(runs):
+            name = QTableWidgetItem(run["model_basename"] or os.path.basename(run["sim_path"]))
+            name.setFlags(name.flags() | Qt.ItemIsUserCheckable)
+            name.setCheckState(Qt.Unchecked if run["sim_path"] in unticked else Qt.Checked)
+            name.setData(Qt.UserRole, run["sim_path"])
+            name.setToolTip(run["sim_path"])
+            self.runs_table.setItem(row, 0, name)
+            self.runs_table.setItem(row, 1, QTableWidgetItem(run["label"]))
+            self.runs_table.setItem(row, 2, QTableWidgetItem(self._run_status(run)))
+        if runs:
+            self.runs_table.selectRow(selected if 0 <= selected < len(runs) else 0)
+
+    @staticmethod
+    def _run_status(run):
+        sim_path = run["sim_path"]
+        for _dirpath, _dirs, files in os.walk(sim_path):
+            if any(re.search(r"\.s\d+p$", f, re.IGNORECASE) for f in files):
+                return "results"
+        return "meshed" if os.path.isdir(sim_path) else "not created"
+
+    def _set_run_status(self, run, status):
+        for row in range(self.runs_table.rowCount()):
+            item = self.runs_table.item(row, 0)
+            if item is not None and item.data(Qt.UserRole) == run["sim_path"]:
+                self.runs_table.setItem(row, 2, QTableWidgetItem(status))
+
+    def ticked_runs(self):
+        runs = {run["sim_path"]: run for run in self.MainWindow.script_runs}
+        ticked = []
+        for row in range(self.runs_table.rowCount()):
+            item = self.runs_table.item(row, 0)
+            if item is not None and item.checkState() == Qt.Checked and item.data(Qt.UserRole) in runs:
+                ticked.append(runs[item.data(Qt.UserRole)])
+        return ticked
+
+    def active_run(self):
+        """The script-created model to work on: the one running in a Start
+        Simulation queue, else the selected row; None without a model list."""
+        if self._active_run is not None:
+            return self._active_run
+        if not self.runs_table.isHidden():
+            row = self.runs_table.currentRow()
+            runs = self.MainWindow.script_runs
+            if 0 <= row < len(runs):
+                return runs[row]
+        if self.MainWindow.script_model is not None and len(self.MainWindow.script_runs) == 1:
+            return self.MainWindow.script_runs[0]
+        return None
+
+    def run_folder(self, solver_folder):
+        """The run folder (where run_sim / run_elmer and the results are): the
+        one the script created, else the one setupEM's own scripts use."""
+        run = self.active_run()
+        if run is not None:
+            return run["sim_path"]
+        saved_values = self.MainWindow.saved_values
+        return saved_values['sim_path'] + "/" + solver_folder + "/" + saved_values['model_basename'] + "_data"
+
+    def run_basename(self):
+        run = self.active_run()
+        if run is not None and run["model_basename"]:
+            return run["model_basename"]
+        return self.MainWindow.saved_values['model_basename']
+
+    def start_simulation(self):
+        """Start Simulation: one model, or each ticked model of a script that
+        created several, one after another."""
+        self._run_queue = []
+        self._active_run = None
+        self._queue_clear_choice = None
+        if not self.runs_table.isHidden():
+            runs = self.ticked_runs()
+            if not runs:
+                self.log_area.appendPlainText("⚠️ No model ticked in the list above.\n")
+                return
+            self._run_queue = list(runs)
+            self._queue_total = len(runs)
+            self._start_next_run()
+            return
+        self.run_model()
+
+    def should_clear_log(self):
+        """run_model() clears the log, except between the models of one queue."""
+        return not self._keep_log
+
+    def _start_next_run(self):
+        run = self._run_queue.pop(0)
+        number = self._queue_total - len(self._run_queue)
+        if number == 1:
+            self.log_area.clear()
+        self._keep_log = True
+        self._active_run = run
+        self.log_area.appendPlainText(f"===== Model {number} of {self._queue_total}: "
+                                      f"{run['model_basename']} ({run['label']}) =====\n")
+        self._set_run_status(run, "running")
+        self.run_model()
+        if self.process.state() == QProcess.NotRunning:
+            # a pre-flight check stopped it (message already in the log)
+            self._set_run_status(run, "not started")
+            self._finish_queue(stopped=f"{run['model_basename']} could not be started")
+
+    def _continue_run_queue(self, exit_code):
+        run = self._active_run
+        if run is None:
+            return
+        # results only when the solver run left result files behind
+        self._set_run_status(run, self._run_status(run) if exit_code == 0 else f"failed ({exit_code})")
+        if exit_code == 0 and self._run_queue:
+            self._start_next_run()
+            return
+        self._finish_queue(stopped=None if exit_code == 0 else f"{run['model_basename']} failed")
+
+    def _finish_queue(self, stopped):
+        if stopped and self._run_queue:
+            self.log_area.appendPlainText(f"\n⚠️ Stopped: {stopped}, "
+                                          f"{len(self._run_queue)} more model(s) not run.\n")
+        elif self._queue_total > 1 and not stopped:
+            self.log_area.appendPlainText(f"\nAll {self._queue_total} models finished.\n")
+        self._run_queue = []
+        self._active_run = None
+        self._keep_log = False
 
     def set_output_locked(self, locked):
         """Edit-in-place mode: the output is the script itself, so the target
@@ -3551,8 +3711,13 @@ class CreateModelTabBase(QWidget):
             for key in ("preview_only", "no_preview"):
                 if key in MainWindow.saved_values:
                     args += ["--set", f"{key}={MainWindow.saved_values[key]!r}"]
-            if len(args) > 2:
-                return args
+            if MainWindow.saved_values.get("preview_only") is True:
+                # a sweep script would open one preview per model
+                args += ["--first-only"]
+            else:
+                # list the models the script creates, for Start Simulation
+                args += ["--record", MainWindow.script_models_file()]
+            return args
         return [pymodel_filename]
 
     def _reset_live_status(self):
@@ -3574,6 +3739,14 @@ class CreateModelTabBase(QWidget):
     def on_finished(self, exit_code, exit_status):
         """Handle process completion."""
         self.log_area.appendPlainText(f"\n--- Process finished with exit code {exit_code} ---\n")
+        purpose = getattr(self, "_process_purpose", None)
+        if purpose == "create_mesh" and self.MainWindow.script_model is not None:
+            # the script just recorded the models it created
+            self.MainWindow.load_script_runs()
+            self.refresh_runs_table()
+        if purpose == "run_simulation" and self._active_run is not None:
+            # after the app's own on_finished (results summary for this model)
+            QTimer.singleShot(0, lambda code=exit_code: self._continue_run_queue(code))
 
     def on_process_error(self, error):
         """Handle QProcess itself failing to launch or run - most importantly
@@ -3720,6 +3893,9 @@ class CreateModelTabBase(QWidget):
             self.log_area.appendPlainText("⚠️ Cannot load GDSII layout stackup file!\n" + saved_values.get("GdsFile") + "\n")
 
     def terminate_run(self):
+        if self._run_queue:
+            self.log_area.appendPlainText(f"\nTerminated: {len(self._run_queue)} more model(s) are not run.\n")
+            self._run_queue = []
         if self.process.state() == QProcess.Running:
             self.process.terminate()
             if not self.process.waitForFinished(2000):
@@ -3919,6 +4095,7 @@ class MainWindowBase(QMainWindow):
         # corresponds to; both None when not in preserve mode.
         self.script_model = None
         self.preserve_baseline = None
+        self.script_runs = []
 
     # ---------- Drag & drop native config (*.simcfg/*.tsimcfg) or *.py model file
     # onto the window. Restricted to the "Input Files" tab so it doesn't fire while
@@ -4547,6 +4724,49 @@ class MainWindowBase(QMainWindow):
             return
         self.load_configuration_from_file(file_path, in_place=True)
 
+    def script_models_file(self):
+        """Where run_with_overrides.py --record lists the models the script edited
+        in place creates (next to the outputs, so it is found again later)."""
+        if self.script_model is None:
+            return None
+        folder = "palace_model" if self.script_model.tool == "palace" else "elmer_model"
+        script = self.script_model.path
+        return os.path.join(os.path.dirname(os.path.abspath(script)), folder,
+                            pathlib.Path(script).stem + "_models.json")
+
+    def load_script_runs(self):
+        """Read the recorded models; each gets a label from the parameters that
+        differ between them (e.g. "Temp_Celsius=125.0" for a temperature sweep)."""
+        self.script_runs = []
+        path = self.script_models_file()
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                models = json.load(f)
+        except (OSError, ValueError):
+            return
+        runs = []
+        for model in models if isinstance(models, list) else []:
+            if not isinstance(model, dict) or not isinstance(model.get("sim_path"), str):
+                continue
+            params = {}
+            for key, value in (model.get("variable_overrides") or {}).items():
+                params[key] = value
+            for key, value in (model.get("settings") or {}).items():
+                params.setdefault(key, value)
+            runs.append({"sim_path": model["sim_path"], "model_basename": model.get("model_basename") or "",
+                         "solver": model.get("solver"), "params": params})
+        varying = []
+        for key in dict.fromkeys(k for run in runs for k in run["params"]):
+            values = [json.dumps(run["params"].get(key), sort_keys=True) for run in runs]
+            if len(set(values)) > 1:
+                varying.append(key)
+        for run in runs:
+            label = ", ".join(f"{key}={run['params'].get(key)}" for key in varying)
+            run["label"] = label or run["model_basename"]
+        self.script_runs = runs
+
     def _update_in_place_menu(self):
         # Save script / Revert only in edit-in-place mode; Save Config (*.simcfg)
         # is hidden there, a config file next to the script would be a second,
@@ -4561,8 +4781,10 @@ class MainWindowBase(QMainWindow):
         self.script_model = None
         self.preserve_baseline = None
         self._script_dirty = False
+        self.script_runs = []
         if was_active:
             self.create_model_tab.set_output_locked(False)
+            self.create_model_tab.refresh_runs_table()
             self._update_in_place_menu()
             self._refresh_title()
 
@@ -4578,6 +4800,8 @@ class MainWindowBase(QMainWindow):
         self.preserve_baseline = self._preserve_snapshot()
         # Create Model always writes back to this script
         self.create_model_tab.set_output_locked(True)
+        self.load_script_runs()
+        self.create_model_tab.refresh_runs_table()
         self._update_in_place_menu()
         self._set_script_dirty(False)
 
