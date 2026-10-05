@@ -34,8 +34,8 @@ imports it (installed package or a local copy put on sys.path by the script).
 A script may build several models, e.g. a parameter sweep calling
 create_palace() in a loop. --record writes every model it creates (run folder,
 name, solver, stackup variable overrides, plain settings values) to a JSON
-file, so setupEM knows which models to run. --first-only stops the script when
-it starts a second model (a preview only needs one).
+file, so setupEM knows which models to run. --first-only stops the script
+right after its first model is built (a preview only needs one).
 """
 
 import argparse
@@ -133,12 +133,6 @@ def _patch(module, run):
 
     def create_model(*args, **kwargs):
         run.models_started += 1
-        if run.first_only and run.models_started > 1:
-            print("\nsetupEM preview: the script builds more than one model, only the first is shown.")
-            sys.stdout.flush()
-            sys.stderr.flush()
-            # a plain exit could be caught by the script's own try/except
-            os._exit(0)
         settings = kwargs.get("settings")
         if settings is None:
             settings = next((a for a in reversed(args) if isinstance(a, dict)), None)
@@ -147,6 +141,15 @@ def _patch(module, run):
         result = original(*args, **kwargs)
         if settings is not None:
             _record_model(run, settings, result)
+        if run.first_only:
+            # a preview is done once the first model is built: the rest of the
+            # script would only set up further models (a sweep) or start the
+            # solver (start_simulation = True)
+            print("\nsetupEM preview: done after the first model, the rest of the script is not run.")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            # a plain exit could be caught by the script's own try/except
+            os._exit(0)
         return result
 
     create_model._setupEM_run = True
@@ -195,7 +198,7 @@ def main(argv=None):
     parser.add_argument("--record", metavar="JSON",
                         help="write the models the script creates (run folders, parameters) to this file")
     parser.add_argument("--first-only", action="store_true",
-                        help="stop when the script starts building a second model")
+                        help="stop right after the script has built its first model")
     args = parser.parse_args(argv)
 
     overrides = {}

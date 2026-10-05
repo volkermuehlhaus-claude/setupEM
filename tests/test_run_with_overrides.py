@@ -98,11 +98,15 @@ def test_record_lists_every_model_of_a_sweep(tmp_path):
     assert models[0]["settings"] == {"fstop": 10e9, "palace": True}   # objects and run flags left out
 
 
-def test_first_only_stops_before_the_second_model(tmp_path):
-    result = run_sweep(tmp_path, "--first-only")
+def test_first_only_stops_right_after_the_first_model(tmp_path):
+    # nothing after the first create_model() runs: not the rest of the loop
+    # pass ("built 25"), not the second model's setup
+    record = tmp_path / "models.json"
+    result = run_sweep(tmp_path, "--first-only", "--record", str(record))
     assert result.returncode == 0, result.stderr
-    assert "built 25" in result.stdout and "built 85" not in result.stdout
-    assert "only the first is shown" in result.stdout
+    assert "built" not in result.stdout
+    assert "done after the first model" in result.stdout
+    assert [m["model_basename"] for m in json.loads(record.read_text())] == ["m_T25"]
 
 
 def test_source_runs_other_code_as_the_script(tmp_path):
