@@ -3071,9 +3071,9 @@ class PreferencesDialog(QDialog):
         files_form.addWidget(self.confirm_reuse_checkbox)
         self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
         self.in_place_save_checkbox = QCheckBox("Save a script edited in place without asking before Create Mesh")
-        self.in_place_save_checkbox.setChecked(get_preference_bool(self.app_name, "in_place_save_without_asking", False))
+        self.in_place_save_checkbox.setChecked(get_preference_bool(self.app_name, "in_place_save_without_asking", True))
         files_form.addWidget(self.in_place_save_checkbox)
-        self._reset_targets.append((self.in_place_save_checkbox, "in_place_save_without_asking", False, "bool"))
+        self._reset_targets.append((self.in_place_save_checkbox, "in_place_save_without_asking", True, "bool"))
 
         files_form.addStretch()
         self.tabs.addTab(files_widget, "Files")

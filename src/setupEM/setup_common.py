@@ -3707,7 +3707,7 @@ class CreateModelTabBase(QWidget):
                     "Preview with unsaved changes (" + ", ".join(written) + "), the script file is not changed.\n")
                 self._in_place_source = code
                 return code
-            if not get_preference_bool(MainWindow.APP_NAME, "in_place_save_without_asking", False):
+            if not get_preference_bool(MainWindow.APP_NAME, "in_place_save_without_asking", True):
                 answer = QMessageBox.question(
                     self, "Create Model",
                     f"Save the changes to {os.path.basename(MainWindow.script_model.path)} first?\n\n"
