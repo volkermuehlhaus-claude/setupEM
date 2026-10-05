@@ -2512,7 +2512,7 @@ class CreateModelTab(CreateModelTabBase):
         if self.MainWindow.PalaceMode:
             output_dir = find_output_dir(run_path, self.run_basename())
             if not os.path.isdir(output_dir) or not os.listdir(output_dir):
-                return
+                return True
             targets = [output_dir]
         else:
             targets = []
@@ -2527,7 +2527,7 @@ class CreateModelTab(CreateModelTabBase):
                        fn.startswith("fields") or re.search(r'\.s\d+p$', fn, re.IGNORECASE):
                         targets.append(full_path)
             if not targets:
-                return
+                return True
 
         # in a Start Simulation queue (several models of one script), ask once
         delete = getattr(self, "_queue_clear_choice", None) if self._active_run is not None else None
@@ -2542,9 +2542,13 @@ class CreateModelTab(CreateModelTabBase):
                 f"simulation:\n\n{run_path}\n\nDelete the existing results before starting{more}?"
             )
             delete_btn = box.addButton("Delete", QMessageBox.AcceptRole)
-            box.addButton("Keep", QMessageBox.RejectRole)
+            keep_btn = box.addButton("Keep", QMessageBox.NoRole)
+            box.addButton("Cancel simulation", QMessageBox.RejectRole)
             box.setDefaultButton(delete_btn)
             box.exec()
+            if box.clickedButton() not in (delete_btn, keep_btn):
+                # Cancel (or the dialog closed): don't start the simulation at all
+                return False
             delete = box.clickedButton() is delete_btn
             if self._active_run is not None:
                 self._queue_clear_choice = delete
@@ -2555,6 +2559,7 @@ class CreateModelTab(CreateModelTabBase):
                     shutil.rmtree(target)
                 else:
                     os.remove(target)
+        return True
 
     def run_model(self):
         # Run model that we created before
@@ -2612,7 +2617,10 @@ class CreateModelTab(CreateModelTabBase):
                         return
 
         try:
-            self._confirm_clear_previous_results(run_path)
+            if not self._confirm_clear_previous_results(run_path):
+                self.log_area.appendPlainText("Start Simulation cancelled, the existing results are kept.\n")
+                self._run_cancelled = True
+                return
 
             # clear log (not between the models of one Start Simulation queue)
             if self.should_clear_log():

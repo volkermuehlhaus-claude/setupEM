@@ -3578,8 +3578,14 @@ class CreateModelTabBase(QWidget):
         self.log_area.appendPlainText(f"===== Model {number} of {self._queue_total}: "
                                       f"{run['model_basename']} ({run['label']}) =====\n")
         self._set_run_status(run, "running")
+        self._run_cancelled = False
         self.run_model()
         if self.process.state() == QProcess.NotRunning:
+            if self._run_cancelled:
+                # "Cancel simulation" when asked about previous results
+                self._set_run_status(run, self._run_status(run))
+                self._finish_queue(stopped="cancelled")
+                return
             # a pre-flight check stopped it (message already in the log)
             self._set_run_status(run, "not started")
             self._finish_queue(stopped=f"{run['model_basename']} could not be started")
@@ -3596,7 +3602,10 @@ class CreateModelTabBase(QWidget):
         self._finish_queue(stopped=None if exit_code == 0 else f"{run['model_basename']} failed")
 
     def _finish_queue(self, stopped):
-        if stopped and self._run_queue:
+        if stopped == "cancelled":
+            if self._run_queue:
+                self.log_area.appendPlainText(f"The other {len(self._run_queue)} model(s) are not run either.\n")
+        elif stopped and self._run_queue:
             self.log_area.appendPlainText(f"\n⚠️ Stopped: {stopped}, "
                                           f"{len(self._run_queue)} more model(s) not run.\n")
         elif self._queue_total > 1 and not stopped:
