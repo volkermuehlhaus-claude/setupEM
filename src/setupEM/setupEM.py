@@ -62,6 +62,7 @@ if __package__ in (None, ""):
         find_paraview_exe, FILL_FACTOR_CORRECTION_SOLVERS, PALACE_LINEAR_SOLVER_SETTINGS,
     )
     from palace_results import build_results_summary, find_output_dir, find_paraview_files
+    from script_model import ScriptModel
 else:
     from .setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
@@ -75,6 +76,7 @@ else:
         find_paraview_exe, FILL_FACTOR_CORRECTION_SOLVERS, PALACE_LINEAR_SOLVER_SETTINGS,
     )
     from .palace_results import build_results_summary, find_output_dir, find_paraview_files
+    from .script_model import ScriptModel
 
 
 '''
@@ -2425,15 +2427,16 @@ class CreateModelTab(CreateModelTabBase):
             # clear log
             self.log_area.clear()
 
-            # get code from model editor tab
-            self.MainWindow.modeleditor_tab.create_model_text()
-            code = self.MainWindow.modeleditor_tab.model_edit.toPlainText().strip()
+            # Python file to write
+            pymodel_filename = os.path.abspath(os.path.join(saved_values['sim_path'], saved_values['model_basename']+'.py'))
+
+            # generated code, or the imported script with the changes (preserve mode)
+            code = self.model_code(pymodel_filename)
+            if code is None:
+                return
             if not code:
                 self.log_area.appendPlainText("⚠️ No code to run.\n")
                 return
-
-            # Write code to Python file
-            pymodel_filename = os.path.abspath(os.path.join(saved_values['sim_path'], saved_values['model_basename']+'.py'))
 
             # Refuse to overwrite an imported openEMS model script - setupEM can only
             # generate Palace/Elmer code and has no way to regenerate an openEMS model.
@@ -2469,9 +2472,7 @@ class CreateModelTab(CreateModelTabBase):
                 if not overwrite:
                     return
 
-            with open(pymodel_filename, "w", encoding="utf-8") as f:
-                f.write(code)
-                f.close()
+            self.write_model_code(pymodel_filename, code)
             confirmed_paths.add(normalized_path)
 
             # Run Python interpreter on that file
@@ -2485,7 +2486,7 @@ class CreateModelTab(CreateModelTabBase):
             # reports it as the generic FailedToStart. Reset it so this launch never
             # depends on what a previous, unrelated action last pointed it at.
             self.process.setWorkingDirectory("")
-            self.process.start(python_exe, [pymodel_filename])
+            self.process.start(python_exe, self.model_launch_args(pymodel_filename))
 
 
         else:
@@ -2957,11 +2958,14 @@ class ModelEditorTab(QWidget):
 
 
     def save_values(self):
-        self.create_model_text(forExport=True)  # show "external" code including run from Python model
+        # preserve mode shows the imported script with the changes instead
+        if not self.MainWindow.show_preserve_preview(self.model_edit):
+            self.create_model_text(forExport=True)  # show "external" code including run from Python model
         return True
 
     def load_values(self):
-        self.create_model_text(forExport=True)  # show "external" code including run from Python model
+        if not self.MainWindow.show_preserve_preview(self.model_edit):
+            self.create_model_text(forExport=True)  # show "external" code including run from Python model
 
 
 # ---------- PREFERENCES DIALOG ----------
@@ -3561,8 +3565,24 @@ class MainWindow(MainWindowBase):
             self.setPalaceMode()
 
     def apply_python_import_data(self, file_path):
-        # read port assignments in workflow syntax for gds2palace Python code
-        ports = parse_python_ports_definitions(file_path)
+        # read port assignments in workflow syntax for gds2palace Python code;
+        # ScriptModel also reads ports written over several lines and is what
+        # preserve mode patches, so both see the same ports
+        try:
+            model = ScriptModel.from_file(file_path)
+        except (SyntaxError, ValueError, OSError, UnicodeDecodeError):
+            model = None
+        if model is not None:
+            ports = [dict(c.args) for c in model.ports if c.static]
+            skipped_count = len(model.ports) - len(ports)
+            if skipped_count:
+                QMessageBox.warning(
+                    self, "Import Model",
+                    f"{skipped_count} port definition(s) are computed in the script (in a loop, "
+                    "or from variables or function calls) and could not be imported.\n\n"
+                    "Add them manually on the Ports tab.")
+        else:
+            ports = parse_python_ports_definitions(file_path)
         self.ports_tab.update_port_from_import(ports)
 
         # Elmer/Palace mode isn't captured by the general settings-dict import
@@ -3585,6 +3605,28 @@ class MainWindow(MainWindowBase):
 
     def native_config_extra_struct(self):
         return {"ports": simulation_ports_to_struct(simulation_ports), "elmer_mode": self.ElmerMode}
+
+    # ---------- Preserve mode hooks (see MainWindowBase) ----------
+    PRESERVE_TOOLS = ("palace", "elmer")
+
+    def preserve_objects(self):
+        return simulation_ports_to_struct(simulation_ports)
+
+    def preserve_object_kwargs(self, baseline_objects, current_objects):
+        return {"baseline_ports": baseline_objects, "current_ports": current_objects}
+
+    def preserve_create_call(self):
+        return "create_elmer" if self.ElmerMode else "create_palace"
+
+    def preserve_extra(self, baseline_values, current_values):
+        # fdump_enabled is Elmer's GUI-only field dump checkbox; in Elmer mode it
+        # decides settings['fdump'] (see create_model_text())
+        ignore, raw_values = ["fdump_enabled"], {}
+        if self.ElmerMode:
+            ignore.append("fdump")
+            if bool(baseline_values.get("fdump_enabled")) != bool(current_values.get("fdump_enabled")):
+                raw_values["fdump"] = "[settings['fstop']]" if current_values.get("fdump_enabled") else "[]"
+        return ignore, raw_values
 
     def update_target_layer_choices(self, metals_list):
         self.ports_tab.update_layers(metals_list)

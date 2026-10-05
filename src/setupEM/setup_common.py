@@ -32,7 +32,7 @@ mesh fields, the Python model code generator bodies) is intentionally left
 in setupEM.py / setupThermal.py, not here.
 """
 
-import sys, os, json, pathlib, ast, webbrowser, io, contextlib, subprocess, shutil, glob, re
+import sys, os, json, pathlib, ast, webbrowser, io, contextlib, subprocess, shutil, glob, re, copy
 import importlib.metadata
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -60,10 +60,10 @@ from gds2palace import *
 
 if __package__ in (None, ""):
     import gds_hierarchy_scan
-    from script_model import eval_simple_python_expression
+    from script_model import eval_simple_python_expression, ScriptModel, patch_script
 else:
     from . import gds_hierarchy_scan
-    from .script_model import eval_simple_python_expression
+    from .script_model import eval_simple_python_expression, ScriptModel, patch_script
 
 # ------------------------------------------------------------------
 # gds2palace feature-compatibility detection: an older gds2palace (e.g. a stale
@@ -3447,6 +3447,67 @@ class CreateModelTabBase(QWidget):
         """
         pass
 
+    # ---------- model script for Create Model (generated, or the imported one patched) ----------
+
+    def model_code(self, pymodel_filename):
+        """The model script to write to pymodel_filename, or None to cancel.
+        In preserve mode (imported *.py, same folder) this is the imported script
+        with only the changed values written; otherwise create_model_text()'s
+        generated script, as before."""
+        MainWindow = self.MainWindow
+        self._pending_preserve = None
+        if MainWindow.preserve_mode_applies(pymodel_filename):
+            code, written, refused, snapshot = MainWindow.preserve_mode_patch(pymodel_filename)
+            if refused:
+                details = "\n".join(f"  {what}: {why}" for what, why in refused)
+                self.log_area.appendPlainText("⚠️ Not written into the script:\n" + details + "\n")
+                answer = QMessageBox.question(
+                    self, "Create Model",
+                    "These changes can't be written into the imported script:\n\n" + details +
+                    "\n\nWrite the other changes and continue?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if answer != QMessageBox.Yes:
+                    return None
+            if written:
+                self.log_area.appendPlainText("Changed in the script: " + ", ".join(written) + "\n")
+            else:
+                self.log_area.appendPlainText("No changes, the imported script is used as it is.\n")
+            MainWindow.modeleditor_tab.model_edit.setPlainText(code)
+            self._pending_preserve = snapshot
+            return code
+        if MainWindow.script_model is not None:
+            self.log_area.appendPlainText(
+                "Output folder differs from the imported script's folder: writing a new script.\n")
+        MainWindow.modeleditor_tab.create_model_text()
+        return MainWindow.modeleditor_tab.model_edit.toPlainText().strip()
+
+    def write_model_code(self, pymodel_filename, code):
+        if getattr(self, "_pending_preserve", None) is not None:
+            # keep the script's own line endings exactly
+            with open(pymodel_filename, "w", encoding="utf-8", newline="") as f:
+                f.write(code)
+            self.MainWindow.preserve_mode_written(pymodel_filename, code, self._pending_preserve)
+            self._pending_preserve = None
+        else:
+            with open(pymodel_filename, "w", encoding="utf-8") as f:
+                f.write(code)
+
+    def model_launch_args(self, pymodel_filename):
+        """Arguments for the Python process that runs the model script. In preserve
+        mode the Preview / Create Mesh flags are passed through run_with_overrides.py
+        instead of being written into the user's script."""
+        MainWindow = self.MainWindow
+        if MainWindow.preserve_mode_applies(pymodel_filename):
+            overrides = [f"{key}={MainWindow.saved_values[key]!r}"
+                         for key in ("preview_only", "no_preview") if key in MainWindow.saved_values]
+            if overrides:
+                runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_with_overrides.py")
+                args = [runner, pymodel_filename]
+                for override in overrides:
+                    args += ["--set", override]
+                return args
+        return [pymodel_filename]
+
     def _reset_live_status(self):
         """Hook called whenever the loaded model changes (new *.py/*.simcfg loaded,
         or a fresh mesh/config is about to be created) - anywhere the previous
@@ -3805,6 +3866,12 @@ class MainWindowBase(QMainWindow):
         # (tweak -> Create Model -> tweak -> Create Model ...) against the same output
         # file only prompts once, not on every click. Session-only, not persisted.
         self.confirmed_overwrite_paths = set()
+        # preserve mode: an imported *.py model is edited in place on Create Model,
+        # only values changed in the GUI are written (see script_model.py).
+        # script_model is the parsed script, preserve_baseline the GUI state it
+        # corresponds to; both None when not in preserve mode.
+        self.script_model = None
+        self.preserve_baseline = None
 
     # ---------- Drag & drop native config (*.simcfg/*.tsimcfg) or *.py model file
     # onto the window. Restricted to the "Input Files" tab so it doesn't fire while
@@ -4084,6 +4151,7 @@ class MainWindowBase(QMainWindow):
         field falls back to its built-in/Preferences default exactly like a
         first launch would.
         """
+        self._stop_preserve_mode()
         self.saved_values.clear()
         self.materials_list = None
         self.dielectrics_list = None
@@ -4114,6 +4182,7 @@ class MainWindowBase(QMainWindow):
     def load_configuration_from_file(self, file_path):
         saved_values = self.saved_values
         if file_path:
+            self._stop_preserve_mode()
             extension = pathlib.Path(file_path).suffix
             if self.CONFIG_SUFFIX.upper() in extension.upper():
                 # regular data storage
@@ -4299,6 +4368,10 @@ class MainWindowBase(QMainWindow):
                 self.load_all_tabs()
                 self._add_recent_file(RECENT_MODEL_KEY, file_path)
                 loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
+                if not is_openems_import:
+                    preserve_message = self._start_preserve_mode(file_path)
+                    if preserve_message:
+                        loaded_message += "\n\n" + preserve_message
                 if is_openems_import:
                     loaded_message += (
                         "\n\nThis looks like an openEMS model script. Ports and settings "
@@ -4314,6 +4387,121 @@ class MainWindowBase(QMainWindow):
 
             else:
                 QMessageBox.information(self, "Error", f"Could not load file {file_path}")
+
+    # ---------- Preserve mode: edit an imported *.py model in place ----------
+
+    # tools whose scripts this app can patch (set by the subclass), and settings
+    # that are only GUI/run control and never written into the script
+    PRESERVE_TOOLS = ()
+    PRESERVE_IGNORE_KEYS = ("model_basename", "sim_path", "preview_only", "no_preview")
+
+    def preserve_objects(self):
+        """Hook: current ports / thermal objects as a list of dicts."""
+        return []
+
+    def preserve_object_kwargs(self, baseline_objects, current_objects):
+        """Hook: patch_script() keyword arguments for the ports / thermal objects."""
+        return {}
+
+    def preserve_create_call(self):
+        """Hook: the workflow function the current settings need (create_palace, ...)."""
+        return None
+
+    def preserve_extra(self, baseline_values, current_values):
+        """Hook: (extra ignore keys, raw_values dict) for app-specific settings."""
+        return (), {}
+
+    def _preserve_snapshot(self):
+        return {"values": copy.deepcopy(dict(self.saved_values)),
+                "objects": copy.deepcopy(self.preserve_objects()),
+                "create_call": self.preserve_create_call()}
+
+    def _stop_preserve_mode(self):
+        self.script_model = None
+        self.preserve_baseline = None
+
+    def _start_preserve_mode(self, file_path):
+        """After a *.py import: keep the script, so Create Model only changes what
+        changed in the GUI. Returns a message for the import dialog ("" if the
+        script can't be kept, then Create Model writes a new script as before)."""
+        try:
+            model = ScriptModel.from_file(file_path)
+        except (SyntaxError, ValueError, OSError, UnicodeDecodeError):
+            return ""
+        if model.tool not in self.PRESERVE_TOOLS:
+            return ""
+        # the GUI state right after the import, after one save of all tabs, is the
+        # baseline: a value counts as changed only if it differs from this, so the
+        # tabs' own number / list conversions never show up as changes
+        self.save_all_tabs()
+        self.script_model = model
+        self.preserve_baseline = self._preserve_snapshot()
+
+        read_only = []
+        never_written = set(self.PRESERVE_IGNORE_KEYS) | set(self.preserve_extra(self.saved_values, self.saved_values)[0])
+        for key in sorted(self.saved_values):
+            if key in never_written:
+                continue
+            site = model.site(key)
+            if site is not None and not site.writable:
+                read_only.append(f"  {key}: {site.reason}")
+        message = ("Create Model edits this script in place: only values you change "
+                   "here are written, everything else in the script stays as it is.")
+        if read_only:
+            message += ("\n\nThese settings are set in a way the GUI can't change "
+                        "(edit them in the script):\n" + "\n".join(read_only))
+        return message
+
+    def show_preserve_preview(self, editor):
+        """Model editor tab in preserve mode: show the imported script with the
+        current changes. Returns False when not in preserve mode."""
+        if self.script_model is None:
+            return False
+        self.save_all_tabs()
+        code, _written, _refused, _snapshot = self.preserve_mode_patch(self.script_model.path)
+        editor.setPlainText(code)
+        return True
+
+    def preserve_mode_applies(self, pymodel_filename):
+        """True if Create Model should patch the imported script for this output
+        file: same folder as the imported script, so its relative paths still work."""
+        if self.script_model is None or not self.script_model.path:
+            return False
+        source_dir = os.path.dirname(os.path.abspath(self.script_model.path))
+        target_dir = os.path.dirname(os.path.abspath(pymodel_filename))
+        return os.path.normcase(source_dir) == os.path.normcase(target_dir)
+
+    def preserve_mode_patch(self, pymodel_filename):
+        """The imported script with the current GUI changes applied.
+        Returns (code, written, refused, snapshot)."""
+        current = self._preserve_snapshot()
+        baseline = self.preserve_baseline
+        model = ScriptModel(self.script_model.text, pymodel_filename)
+        refused = []
+        if current["create_call"] != baseline["create_call"]:
+            refused.append(("simulator", "switching between Palace and Elmer is not supported for "
+                                         "an imported script, import or create a model in the other mode"))
+        extra_ignore, raw_values = self.preserve_extra(baseline["values"], current["values"])
+        written, more_refused = patch_script(
+            model, baseline["values"], current["values"],
+            ignore_keys=tuple(self.PRESERVE_IGNORE_KEYS) + tuple(extra_ignore),
+            raw_values=raw_values,
+            **self.preserve_object_kwargs(baseline["objects"], current["objects"]))
+        refused.extend(more_refused)
+        # setupEM starts the solver itself; a script that starts it too would run it twice
+        site = model.site("start_simulation")
+        if site is not None and site.resolved and site.value is True:
+            if site.writable:
+                model.set_value("start_simulation", "False")
+                written.append("start_simulation = False (setupEM starts the solver)")
+            else:
+                refused.append(("start_simulation", site.reason))
+        return model.result(), written, refused, current
+
+    def preserve_mode_written(self, pymodel_filename, code, snapshot):
+        """After writing the patched script: it is the new baseline."""
+        self.script_model = ScriptModel(code, pymodel_filename)
+        self.preserve_baseline = snapshot
 
     # ---------- recent files (Load Config / Import Model) ----------
 

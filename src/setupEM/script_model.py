@@ -718,7 +718,11 @@ def _keep_spelling(model, callsite, values):
                 new_value = ast.literal_eval(values[kw.arg])
             except (ValueError, SyntaxError):
                 continue
-            if _same(new_value, callsite.args[kw.arg]):
+            old_value = callsite.args[kw.arg]
+            if kw.arg == "direction" and isinstance(new_value, str) and isinstance(old_value, str):
+                # the GUI shows directions in upper case, the workflow ignores case
+                new_value, old_value = new_value.upper(), old_value.upper()
+            if _same(new_value, old_value):
                 values[kw.arg] = model.source(kw.value)
     return values
 

@@ -291,6 +291,18 @@ def test_port_value_edit_keeps_rest_of_the_call():
     assert "voltage=1.0" in lines[1]          # unchanged values keep their spelling
 
 
+def test_direction_case_is_not_a_change():
+    text = ("ports = simulation_setup.all_simulation_ports()\n"
+            "ports.add_port(simulation_setup.simulation_port(portnumber=1, voltage=1, port_Z0=50, "
+            "source_layernum=201, from_layername='Metal1', to_layername='TopMetal2', direction='z'))\n")
+    model = ScriptModel(text)
+    old = [{"portnumber": 1, "voltage": 1.0, "port_Z0": 50.0, "source_layernum": 201,
+            "from_layername": "Metal1", "to_layername": "TopMetal2", "direction": "Z"}]
+    new = [dict(old[0], port_Z0=25.0)]
+    patch_script(model, {}, {}, baseline_ports=old, current_ports=new)
+    assert model.result() == text.replace("port_Z0=50", "port_Z0=25")
+
+
 def test_port_direction_change_rewrites_arguments():
     path = os.path.join(FIXTURES, "generated_setupEM_palace.py")
     model = load(path)

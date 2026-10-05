@@ -58,6 +58,7 @@ if __package__ in (None, ""):
         find_paraview_exe,
     )
     from thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
+    from script_model import ScriptModel
 else:
     from .setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
@@ -68,6 +69,7 @@ else:
         find_paraview_exe,
     )
     from .thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
+    from .script_model import ScriptModel
 
 
 '''
@@ -808,15 +810,16 @@ class CreateModelTab(CreateModelTabBase):
             # clear log
             self.log_area.clear()
 
-            # get code from model editor tab
-            self.MainWindow.modeleditor_tab.create_model_text()
-            code = self.MainWindow.modeleditor_tab.model_edit.toPlainText().strip()
+            # Python file to write
+            pymodel_filename = os.path.abspath(os.path.join(saved_values['sim_path'], saved_values['model_basename']+'.py'))
+
+            # generated code, or the imported script with the changes (preserve mode)
+            code = self.model_code(pymodel_filename)
+            if code is None:
+                return
             if not code:
                 self.log_area.appendPlainText("⚠️ No code to run.\n")
                 return
-
-            # Write code to Python file
-            pymodel_filename = os.path.abspath(os.path.join(saved_values['sim_path'], saved_values['model_basename']+'.py'))
 
             # Refuse to overwrite an imported openEMS model script - setupThermal can
             # only generate Palace/Elmer code and has no way to regenerate an openEMS
@@ -852,9 +855,7 @@ class CreateModelTab(CreateModelTabBase):
                 if not overwrite:
                     return
 
-            with open(pymodel_filename, "w", encoding="utf-8") as f:
-                f.write(code)
-                f.close()
+            self.write_model_code(pymodel_filename, code)
             confirmed_paths.add(normalized_path)
 
             # Run Python interpreter on that file
@@ -868,7 +869,7 @@ class CreateModelTab(CreateModelTabBase):
             # as the generic FailedToStart. Reset it so this launch never depends on
             # what a previous, unrelated action last pointed it at.
             self.process.setWorkingDirectory("")
-            self.process.start(python_exe, [pymodel_filename])
+            self.process.start(python_exe, self.model_launch_args(pymodel_filename))
 
 
         else:
@@ -1081,11 +1082,14 @@ class ModelEditorTab(QWidget):
 
 
     def save_values(self):
-        self.create_model_text(forExport=True)  # show "external" code including run from Python model
+        # preserve mode shows the imported script with the changes instead
+        if not self.MainWindow.show_preserve_preview(self.model_edit):
+            self.create_model_text(forExport=True)  # show "external" code including run from Python model
         return True
 
     def load_values(self):
-        self.create_model_text(forExport=True)  # show "external" code including run from Python model
+        if not self.MainWindow.show_preserve_preview(self.model_edit):
+            self.create_model_text(forExport=True)  # show "external" code including run from Python model
 
 
 # ---------- PREFERENCES DIALOG ----------
@@ -1556,12 +1560,49 @@ class MainWindow(MainWindowBase):
         self.thermal_tab.update_thermalobjects_from_JSON (data.get("thermal", []))
 
     def apply_python_import_data(self, file_path):
-        # read thermal object assignments in workflow syntax for gds2palace Python code
-        heatsource_defs, consttemp_defs  = parse_python_thermal_definitions(file_path)
+        # read thermal object assignments in workflow syntax for gds2palace Python code;
+        # ScriptModel also reads definitions written over several lines and is what
+        # preserve mode patches, so both see the same objects
+        try:
+            model = ScriptModel.from_file(file_path)
+        except (SyntaxError, ValueError, OSError, UnicodeDecodeError):
+            model = None
+        if model is not None:
+            heatsource_defs = [dict(c.args) for c in model.thermal if c.static and c.kind == "heatsource"]
+            consttemp_defs = [dict(c.args) for c in model.thermal if c.static and c.kind == "constanttemp"]
+            skipped_count = len(model.thermal) - len(heatsource_defs) - len(consttemp_defs)
+            if skipped_count:
+                QMessageBox.warning(
+                    self, "Import Model",
+                    f"{skipped_count} heat source / constant temperature definition(s) are computed "
+                    "in the script (in a loop, or from variables or function calls) and could not "
+                    "be imported.\n\nAdd them manually on the Thermal tab.")
+        else:
+            heatsource_defs, consttemp_defs  = parse_python_thermal_definitions(file_path)
         self.thermal_tab.update_thermalobjects_from_python (heatsource_defs, consttemp_defs)
 
     def native_config_extra_struct(self):
         return {"thermal": thermal_objects_to_struct(thermal_objects)}
+
+    # ---------- Preserve mode hooks (see MainWindowBase) ----------
+    PRESERVE_TOOLS = ("elmer_thermal",)
+
+    def preserve_objects(self):
+        objects = []
+        for obj in thermal_objects.objects:
+            if isinstance(obj, simulation_setup.heatsource):
+                objects.append({"type": "heatsource", "power": obj.power,
+                                "source_layernum": obj.source_layernum, "target_layername": obj.target_layername})
+            elif isinstance(obj, simulation_setup.constanttemp):
+                objects.append({"type": "constanttemp", "temp": obj.temp,
+                                "source_layernum": obj.source_layernum, "target_layername": obj.target_layername})
+        return objects
+
+    def preserve_object_kwargs(self, baseline_objects, current_objects):
+        return {"baseline_thermal": baseline_objects, "current_thermal": current_objects}
+
+    def preserve_create_call(self):
+        return "create_elmer_thermal"
 
     def update_target_layer_choices(self, metals_list):
         self.thermal_tab.update_layers(metals_list)
