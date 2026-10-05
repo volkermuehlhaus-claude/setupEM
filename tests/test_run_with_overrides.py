@@ -35,7 +35,7 @@ SCRIPT = textwrap.dedent("""
 """)
 
 
-def run(tmp_path, *overrides):
+def run(tmp_path, *overrides, source=None):
     flow = tmp_path / "localflow"
     flow.mkdir()
     (flow / "util_simulation_setup.py").write_text(FAKE_WORKFLOW)
@@ -43,6 +43,8 @@ def run(tmp_path, *overrides):
     script.write_text(SCRIPT)
     before = script.read_bytes()
     args = [sys.executable, RUNNER, str(script)]
+    if source is not None:
+        args += ["--source", str(source)]
     for o in overrides:
         args += ["--set", o]
     result = subprocess.run(args, capture_output=True, text=True, cwd=str(tmp_path.parent))
@@ -59,3 +61,14 @@ def test_overrides_reach_create_model_through_create_palace(tmp_path):
 def test_without_overrides_script_values_are_kept(tmp_path):
     received = run(tmp_path)
     assert received["preview_only"] is False
+
+
+def test_source_runs_other_code_as_the_script(tmp_path):
+    # unsaved changes: the code comes from another file, but __file__, the
+    # folder on sys.path and the output names stay those of the script
+    unsaved = tmp_path.parent / f"{tmp_path.name}_unsaved.py"
+    unsaved.write_text(SCRIPT.replace("10e9", "20e9") +
+                       "settings['file'] = os.path.basename(__file__)\n"
+                       "simulation_setup.create_palace([], settings)\n")
+    received = run(tmp_path, "preview_only=True", source=unsaved)
+    assert received["fstop"] == 20e9 and received["file"] == "model.py" and received["preview_only"] is True

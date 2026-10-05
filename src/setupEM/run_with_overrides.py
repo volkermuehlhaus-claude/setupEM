@@ -19,6 +19,7 @@
 """Run a gds2palace model script with some settings[] values overridden.
 
     python run_with_overrides.py model.py --set preview_only=True --set no_preview=False
+    python run_with_overrides.py model.py --source unsaved.py --set preview_only=True
 
 Used by setupEM's preserve mode, so Preview / Create Mesh don't have to write
 their control flags into the user's script. The script runs unchanged, as
@@ -101,6 +102,9 @@ def main(argv=None):
     parser.add_argument("script", help="model script to run")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                         help="settings[KEY] = VALUE (a Python literal) when the model is created")
+    parser.add_argument("--source", metavar="FILE",
+                        help="run the code in FILE as if it were the script (same __file__, folder and "
+                             "output paths), e.g. unsaved changes for a preview")
     args = parser.parse_args(argv)
 
     overrides = {}
@@ -119,7 +123,15 @@ def main(argv=None):
     # same environment as "python model.py"
     sys.argv = [script]
     sys.path[0] = os.path.dirname(script)
-    runpy.run_path(script, run_name="__main__")
+    if args.source:
+        # other code, but run as the script itself: __file__ decides the output
+        # folder names (utilities.get_basename(__file__)) and relative paths
+        with open(args.source, encoding="utf-8") as f:
+            code = compile(f.read(), script, "exec")
+        exec(code, {"__name__": "__main__", "__file__": script, "__builtins__": __builtins__,
+                    "__package__": None, "__spec__": None, "__doc__": None})
+    else:
+        runpy.run_path(script, run_name="__main__")
 
 
 if __name__ == "__main__":

@@ -1167,6 +1167,10 @@ class PreferencesDialog(QDialog):
         self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
         files_form.addWidget(self.confirm_reuse_checkbox)
         self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
+        self.in_place_save_checkbox = QCheckBox("Save a script edited in place without asking before Create Mesh")
+        self.in_place_save_checkbox.setChecked(get_preference_bool(self.app_name, "in_place_save_without_asking", False))
+        files_form.addWidget(self.in_place_save_checkbox)
+        self._reset_targets.append((self.in_place_save_checkbox, "in_place_save_without_asking", False, "bool"))
 
         files_form.addStretch()
         self.tabs.addTab(files_widget, "Files")
@@ -1303,6 +1307,7 @@ class PreferencesDialog(QDialog):
         set_preference(self.app_name, "purpose", self.purpose_edit.text())
         set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
         set_preference(self.app_name, "confirm_reuse_import_filename", self.confirm_reuse_checkbox.isChecked())
+        set_preference(self.app_name, "in_place_save_without_asking", self.in_place_save_checkbox.isChecked())
         set_preference(self.app_name, "xml_browse_directory", self.xml_browse_dir_edit.text())
         set_preference(self.app_name, "port_layer_min", self.port_layer_min_edit.text())
         set_preference(self.app_name, "port_layer_max", self.port_layer_max_edit.text())

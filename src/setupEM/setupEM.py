@@ -2446,9 +2446,10 @@ class CreateModelTab(CreateModelTabBase):
             if protected_path and os.path.normcase(pymodel_filename) == os.path.normcase(protected_path):
                 QMessageBox.warning(
                     self, "Create Model",
-                    "This would overwrite the imported openEMS model script:\n\n"
+                    "This would overwrite the model script\n\n"
                     f"{pymodel_filename}\n\n"
-                    "setupEM cannot regenerate an openEMS model, so this write was "
+                    "with a generated script (it is an imported openEMS model, or the script "
+                    "you edited in place before switching the solver), so this write was "
                     "blocked. Choose a different model name or output directory on "
                     "the Create Model(s) tab.")
                 return
@@ -3042,6 +3043,10 @@ class PreferencesDialog(QDialog):
         self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
         files_form.addWidget(self.confirm_reuse_checkbox)
         self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
+        self.in_place_save_checkbox = QCheckBox("Save a script edited in place without asking before Create Mesh")
+        self.in_place_save_checkbox.setChecked(get_preference_bool(self.app_name, "in_place_save_without_asking", False))
+        files_form.addWidget(self.in_place_save_checkbox)
+        self._reset_targets.append((self.in_place_save_checkbox, "in_place_save_without_asking", False, "bool"))
 
         files_form.addStretch()
         self.tabs.addTab(files_widget, "Files")
@@ -3320,6 +3325,7 @@ class PreferencesDialog(QDialog):
 
         set_preference(self.app_name, "purpose", self.purpose_edit.text())
         set_preference(self.app_name, "confirm_reuse_import_filename", self.confirm_reuse_checkbox.isChecked())
+        set_preference(self.app_name, "in_place_save_without_asking", self.in_place_save_checkbox.isChecked())
         set_preference(self.app_name, "xml_browse_directory", self.xml_browse_dir_edit.text())
         set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
         set_preference(self.app_name, "port_layer_min", self.port_layer_min_edit.text())
@@ -3438,8 +3444,8 @@ class MainWindow(MainWindowBase):
         self.optionPalace = QAction("Palace FEM", self, checkable=True)
         self.optionElmer  = QAction("Elmer FEM", self, checkable=True)
 
-        self.optionPalace.triggered.connect(lambda: self.setPalaceMode())
-        self.optionElmer.triggered.connect(lambda: self.setElmerMode())
+        self.optionPalace.triggered.connect(lambda: self._user_selects_solver("palace"))
+        self.optionElmer.triggered.connect(lambda: self._user_selects_solver("elmer"))
 
         simulator_group.addAction(self.optionPalace)
         simulator_group.addAction(self.optionElmer)
@@ -3449,6 +3455,31 @@ class MainWindow(MainWindowBase):
 
 
     # ---------- Menu actions ----------
+    def _user_selects_solver(self, solver):
+        # Simulator menu. A script edited in place keeps its own solver (switching
+        # changes more than one line of a script); the user can continue with a
+        # new, generated model for the other solver instead.
+        target_call = "create_elmer" if solver == "elmer" else "create_palace"
+        if self.script_model is not None and target_call != self.preserve_create_call():
+            name = os.path.basename(self.script_model.path)
+            stem = os.path.splitext(name)[0]
+            label = "Elmer" if solver == "elmer" else "Palace"
+            answer = QMessageBox.question(
+                self, "Switch solver",
+                f"{name} is edited in place and stays a {'Palace' if solver == 'elmer' else 'Elmer'} script.\n\n"
+                f"Create a new {label} model ({stem}_{solver}.py) from the current settings instead? "
+                f"{name} is not changed; its loops and custom code are not part of the new model.",
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+            if answer != QMessageBox.Yes:
+                # keep the menu on the script's solver
+                (self.optionElmer if self.ElmerMode else self.optionPalace).setChecked(True)
+                return
+            self.leave_in_place_for_new_model(solver)
+        if solver == "elmer":
+            self.setElmerMode()
+        else:
+            self.setPalaceMode()
+
     def setPalaceMode(self):
         self.optionPalace.setChecked(True)
         self.PalaceMode = True

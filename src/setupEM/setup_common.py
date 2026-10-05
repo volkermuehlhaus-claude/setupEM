@@ -32,7 +32,7 @@ mesh fields, the Python model code generator bodies) is intentionally left
 in setupEM.py / setupThermal.py, not here.
 """
 
-import sys, os, json, pathlib, ast, webbrowser, io, contextlib, subprocess, shutil, glob, re, copy
+import sys, os, json, pathlib, ast, webbrowser, io, contextlib, subprocess, shutil, glob, re, copy, tempfile
 import importlib.metadata
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -3471,68 +3471,87 @@ class CreateModelTabBase(QWidget):
         """
         pass
 
-    # ---------- model script for Create Model (generated, or the imported one patched) ----------
+    # ---------- model script for Create Model (generated, or the script edited in place) ----------
 
     def model_code(self, pymodel_filename):
-        """The model script to write to pymodel_filename, or None to cancel.
-        In preserve mode (imported *.py, same folder) this is the imported script
-        with only the changed values written; otherwise create_model_text()'s
+        """The model script to run for pymodel_filename, or None to cancel.
+
+        Edit-in-place mode: Preview runs unsaved changes from a temporary copy
+        and leaves the script file alone; Create Mesh asks to save them first
+        (Preferences can turn the question off), so mesh and results always
+        come from a script that exists on disk. Otherwise create_model_text()'s
         generated script, as before."""
         MainWindow = self.MainWindow
-        self._pending_preserve = None
-        if MainWindow.preserve_mode_applies(pymodel_filename):
-            code, written, refused, snapshot = MainWindow.preserve_mode_patch(pymodel_filename)
-            if refused:
-                details = "\n".join(f"  {what}: {why}" for what, why in refused)
-                self.log_area.appendPlainText("⚠️ Not written into the script:\n" + details + "\n")
+        self._in_place_source = None
+        if MainWindow.script_model is not None:
+            if not MainWindow.preserve_mode_applies(pymodel_filename):
+                # edit-in-place mode never falls back to a generated script
+                QMessageBox.warning(
+                    self, "Create Model",
+                    f"In edit-in-place mode Create Model writes back to\n\n{MainWindow.script_model.path}\n\n"
+                    "and nowhere else. Use File > New or Import to make a new model.")
+                return None
+            if not MainWindow.check_script_on_disk(saving=False):
+                return None
+            code, written, refused, _snapshot = MainWindow.preserve_mode_patch(pymodel_filename)
+            if code == MainWindow.script_model.text:
+                if refused:
+                    self._log_refused(refused)
+                return code
+            preview = MainWindow.saved_values.get("preview_only") is True
+            if preview:
+                if refused:
+                    self._log_refused(refused)
+                self.log_area.appendPlainText(
+                    "Preview with unsaved changes (" + ", ".join(written) + "), the script file is not changed.\n")
+                self._in_place_source = code
+                return code
+            if not get_preference_bool(MainWindow.APP_NAME, "in_place_save_without_asking", False):
                 answer = QMessageBox.question(
                     self, "Create Model",
-                    "These changes can't be written into the imported script:\n\n" + details +
-                    "\n\nWrite the other changes and continue?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                if answer != QMessageBox.Yes:
+                    f"Save the changes to {os.path.basename(MainWindow.script_model.path)} first?\n\n"
+                    "The mesh and the simulation results are created from the saved script.",
+                    QMessageBox.Save | QMessageBox.Cancel, QMessageBox.Save)
+                if answer != QMessageBox.Save:
                     return None
-            if written:
-                self.log_area.appendPlainText("Changed in the script: " + ", ".join(written) + "\n")
-            else:
-                self.log_area.appendPlainText("No changes, the imported script is used as it is.\n")
-            MainWindow.modeleditor_tab.model_edit.setPlainText(code)
-            self._pending_preserve = snapshot
-            return code
-        if MainWindow.script_model is not None:
-            # edit-in-place mode never falls back to a generated script
-            QMessageBox.warning(
-                self, "Create Model",
-                f"In edit-in-place mode Create Model writes back to\n\n{MainWindow.script_model.path}\n\n"
-                "and nowhere else. Use File > New or Import to make a new model.")
-            return None
+            if not MainWindow.save_script_in_place(check_disk=False):
+                return None
+            return MainWindow.script_model.text
         MainWindow.modeleditor_tab.create_model_text()
         return MainWindow.modeleditor_tab.model_edit.toPlainText().strip()
 
+    def _log_refused(self, refused):
+        self.log_area.appendPlainText("⚠️ Not written into the script:\n" +
+                                      "\n".join(f"  {what}: {why}" for what, why in refused) + "\n")
+
     def write_model_code(self, pymodel_filename, code):
-        if getattr(self, "_pending_preserve", None) is not None:
-            # keep the script's own line endings exactly
-            with open(pymodel_filename, "w", encoding="utf-8", newline="") as f:
-                f.write(code)
-            self.MainWindow.preserve_mode_written(pymodel_filename, code, self._pending_preserve)
-            self._pending_preserve = None
-        else:
-            with open(pymodel_filename, "w", encoding="utf-8") as f:
-                f.write(code)
+        if self.MainWindow.script_model is not None:
+            # edit-in-place mode: the script is only written by Save; a preview of
+            # unsaved changes runs from a temporary copy (see model_launch_args())
+            if getattr(self, "_in_place_source", None) is not None:
+                self._preview_source_path = os.path.join(
+                    tempfile.gettempdir(), f"setupEM_unsaved_{os.path.basename(pymodel_filename)}")
+                with open(self._preview_source_path, "w", encoding="utf-8", newline="") as f:
+                    f.write(self._in_place_source)
+            return
+        with open(pymodel_filename, "w", encoding="utf-8") as f:
+            f.write(code)
 
     def model_launch_args(self, pymodel_filename):
-        """Arguments for the Python process that runs the model script. In preserve
-        mode the Preview / Create Mesh flags are passed through run_with_overrides.py
-        instead of being written into the user's script."""
+        """Arguments for the Python process that runs the model script. In
+        edit-in-place mode run_with_overrides.py applies the Preview / Create Mesh
+        flags (instead of writing them into the script) and runs unsaved changes
+        as the script itself."""
         MainWindow = self.MainWindow
         if MainWindow.preserve_mode_applies(pymodel_filename):
-            overrides = [f"{key}={MainWindow.saved_values[key]!r}"
-                         for key in ("preview_only", "no_preview") if key in MainWindow.saved_values]
-            if overrides:
-                runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_with_overrides.py")
-                args = [runner, pymodel_filename]
-                for override in overrides:
-                    args += ["--set", override]
+            runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_with_overrides.py")
+            args = [runner, pymodel_filename]
+            if getattr(self, "_in_place_source", None) is not None:
+                args += ["--source", self._preview_source_path]
+            for key in ("preview_only", "no_preview"):
+                if key in MainWindow.saved_values:
+                    args += ["--set", f"{key}={MainWindow.saved_values[key]!r}"]
+            if len(args) > 2:
                 return args
         return [pymodel_filename]
 
@@ -3955,6 +3974,10 @@ class MainWindowBase(QMainWindow):
         self.open_script_action.setToolTip("Edit an existing gds2palace model script: Create Model writes "
                                            "only the values you change back into it, the rest of the "
                                            "script (loops, comments, custom code) stays as it is")
+        # only shown while a script is edited in place
+        self.save_script_action = QAction("Save script", self)
+        self.save_script_action.setShortcut(QKeySequence.Save)
+        self.revert_script_action = QAction("Revert script to saved", self)
         self.export_model_action = QAction("Export to *.py model ...", self)
         self.preferences_action = QAction("Preferences ...", self)
         exit_action = QAction("Exit", self)
@@ -3968,6 +3991,8 @@ class MainWindowBase(QMainWindow):
 
         self.import_model_action.triggered.connect(lambda: self.import_from_python())
         self.open_script_action.triggered.connect(lambda: self.open_script_in_place())
+        self.save_script_action.triggered.connect(lambda: self.save_script_in_place())
+        self.revert_script_action.triggered.connect(lambda: self.revert_script_in_place())
         self.export_model_action.triggered.connect(lambda: self.export_to_python())
         self.preferences_action.triggered.connect(lambda: self.open_preferences_dialog())
         exit_action.triggered.connect(self.close)
@@ -3981,7 +4006,10 @@ class MainWindowBase(QMainWindow):
         file_menu.addAction(self.import_model_action)
         self.recent_model_menu = file_menu.addMenu("Import Recent Model")
         file_menu.addAction(self.open_script_action)
+        file_menu.addAction(self.save_script_action)
+        file_menu.addAction(self.revert_script_action)
         file_menu.addAction(self.export_model_action)
+        self._update_in_place_menu()
         file_menu.addSeparator()
         file_menu.addAction(self.preferences_action)
         file_menu.addSeparator()
@@ -4137,6 +4165,9 @@ class MainWindowBase(QMainWindow):
             if not self.show_preserve_preview(self.modeleditor_tab.model_edit):
                 self.save_all_tabs()
                 self.modeleditor_tab.create_model_text()
+        elif self.script_model is not None:
+            # keep the unsaved-changes * in the title current
+            self.script_has_unsaved_changes()
 
         # Save model code only when model tab active
         self.export_model_action.setEnabled(index == modeleditor_index)
@@ -4180,6 +4211,8 @@ class MainWindowBase(QMainWindow):
         field falls back to its built-in/Preferences default exactly like a
         first launch would.
         """
+        if not self.confirm_unsaved_script():
+            return
         self._stop_preserve_mode()
         self.saved_values.clear()
         self.materials_list = None
@@ -4208,11 +4241,14 @@ class MainWindowBase(QMainWindow):
         if file_path:
             self.load_configuration_from_file(file_path)
 
-    def load_configuration_from_file(self, file_path, in_place=False):
+    def load_configuration_from_file(self, file_path, in_place=False, ask_unsaved=True):
         # in_place: *.py only, from open_script_in_place() - edit this script in
-        # place (preserve mode) instead of importing its values for a new script
+        # place (preserve mode) instead of importing its values for a new script.
+        # ask_unsaved: offer to save a script edited in place first (False for Revert / Reload)
         saved_values = self.saved_values
         if file_path:
+            if ask_unsaved and not self.confirm_unsaved_script():
+                return
             self._stop_preserve_mode()
             extension = pathlib.Path(file_path).suffix
             if self.CONFIG_SUFFIX.upper() in extension.upper():
@@ -4511,12 +4547,23 @@ class MainWindowBase(QMainWindow):
             return
         self.load_configuration_from_file(file_path, in_place=True)
 
+    def _update_in_place_menu(self):
+        # Save script / Revert only in edit-in-place mode; Save Config (*.simcfg)
+        # is hidden there, a config file next to the script would be a second,
+        # diverging copy of its settings
+        in_place = getattr(self, "script_model", None) is not None
+        self.save_script_action.setVisible(in_place)
+        self.revert_script_action.setVisible(in_place)
+        self.save_action.setVisible(not in_place)
+
     def _stop_preserve_mode(self):
         was_active = getattr(self, "script_model", None) is not None
         self.script_model = None
         self.preserve_baseline = None
+        self._script_dirty = False
         if was_active:
             self.create_model_tab.set_output_locked(False)
+            self._update_in_place_menu()
             self._refresh_title()
 
     def _start_preserve_mode(self, file_path):
@@ -4531,7 +4578,8 @@ class MainWindowBase(QMainWindow):
         self.preserve_baseline = self._preserve_snapshot()
         # Create Model always writes back to this script
         self.create_model_tab.set_output_locked(True)
-        self._refresh_title()
+        self._update_in_place_menu()
+        self._set_script_dirty(False)
 
         not_editable = []
         never_written = set(self.PRESERVE_IGNORE_KEYS) | set(self.preserve_extra(self.saved_values, self.saved_values)[0])
@@ -4549,7 +4597,8 @@ class MainWindowBase(QMainWindow):
         self._base_title = title
         model = getattr(self, "script_model", None)
         if model is not None and model.path:
-            title = f"{title} - editing {os.path.basename(model.path)} in place"
+            unsaved = "*" if getattr(self, "_script_dirty", False) else ""
+            title = f"{title} - editing {os.path.basename(model.path)}{unsaved} in place"
         super().setWindowTitle(title)
 
     def _refresh_title(self):
@@ -4563,6 +4612,7 @@ class MainWindowBase(QMainWindow):
         self.save_all_tabs()
         code, _written, _refused, _snapshot = self.preserve_mode_patch(self.script_model.path)
         editor.setPlainText(code)
+        self._set_script_dirty(code != self.script_model.text)
         return True
 
     def preserve_mode_applies(self, pymodel_filename):
@@ -4604,6 +4654,136 @@ class MainWindowBase(QMainWindow):
         """After writing the patched script: it is the new baseline."""
         self.script_model = ScriptModel(code, pymodel_filename)
         self.preserve_baseline = snapshot
+        self._set_script_dirty(False)
+
+    # ---------- edit-in-place: save, revert, unsaved changes ----------
+
+    def _set_script_dirty(self, dirty):
+        self._script_dirty = dirty
+        self.save_script_action.setEnabled(self.script_model is not None)
+        self._refresh_title()
+
+    def script_has_unsaved_changes(self):
+        """True if the GUI has changes not yet saved into the script (also
+        updates the * in the title)."""
+        if self.script_model is None:
+            return False
+        self.save_all_tabs()
+        code = self.preserve_mode_patch(self.script_model.path)[0]
+        dirty = code != self.script_model.text
+        self._set_script_dirty(dirty)
+        return dirty
+
+    def _read_script_from_disk(self):
+        try:
+            with open(self.script_model.path, encoding="utf-8", newline="") as f:
+                return f.read()
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def check_script_on_disk(self, saving):
+        """The script may have been edited outside setupEM since it was opened or
+        saved. Returns True to go on (saving: overwrite those edits); offers to
+        reload it instead."""
+        on_disk = self._read_script_from_disk()
+        if on_disk is None or on_disk == self.script_model.text:
+            return True
+        name = os.path.basename(self.script_model.path)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Script changed")
+        box.setText(f"{name} was changed outside setupEM since it was opened here.\n\n"
+                    "Reload it to work on the new version (changes made here are discarded)"
+                    + (", or save over it (the outside changes are lost)?" if saving else "?"))
+        reload_button = box.addButton("Reload", QMessageBox.AcceptRole)
+        overwrite_button = box.addButton("Save over it", QMessageBox.DestructiveRole) if saving else None
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(reload_button)
+        box.exec()
+        if box.clickedButton() is reload_button:
+            self.load_configuration_from_file(self.script_model.path, in_place=True, ask_unsaved=False)
+            return False
+        return overwrite_button is not None and box.clickedButton() is overwrite_button
+
+    def save_script_in_place(self, check_disk=True):
+        """File > Save script: write the GUI changes into the script edited in
+        place. Returns True when the script on disk is up to date."""
+        if self.script_model is None:
+            return False
+        if not self.save_all_tabs():
+            return False
+        if check_disk and not self.check_script_on_disk(saving=True):
+            return False
+        path = self.script_model.path
+        code, written, refused, snapshot = self.preserve_mode_patch(path)
+        log = self.create_model_tab.log_area
+        if refused:
+            details = "\n".join(f"  {what}: {why}" for what, why in refused)
+            log.appendPlainText("⚠️ Not written into the script:\n" + details + "\n")
+            answer = QMessageBox.question(
+                self, "Save script",
+                "These changes can't be written into the script:\n\n" + details +
+                "\n\nSave the other changes?",
+                QMessageBox.Save | QMessageBox.Cancel, QMessageBox.Cancel)
+            if answer != QMessageBox.Save:
+                return False
+        if code != self.script_model.text:
+            try:
+                # keep the script's own line endings exactly
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    f.write(code)
+            except OSError as e:
+                QMessageBox.warning(self, "Save script", f"Could not save {path}:\n{e}")
+                return False
+            log.appendPlainText(f"Saved {os.path.basename(path)}: " + ", ".join(written) + "\n")
+        self.preserve_mode_written(path, code, snapshot)
+        return True
+
+    def revert_script_in_place(self):
+        """File > Revert script: discard the changes made here, reload from disk."""
+        if self.script_model is None:
+            return
+        if self.script_has_unsaved_changes():
+            answer = QMessageBox.question(
+                self, "Revert script",
+                f"Discard the changes made here and reload {os.path.basename(self.script_model.path)}?",
+                QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Cancel)
+            if answer != QMessageBox.Discard:
+                return
+        self.load_configuration_from_file(self.script_model.path, in_place=True, ask_unsaved=False)
+
+    def confirm_unsaved_script(self):
+        """Before leaving edit-in-place mode (New, Load, Import, Open, Exit): offer
+        to save unsaved changes. Returns False to stay."""
+        if not self.script_has_unsaved_changes():
+            return True
+        answer = QMessageBox.question(
+            self, "Unsaved changes",
+            f"Save the changes to {os.path.basename(self.script_model.path)}?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+        if answer == QMessageBox.Save:
+            return self.save_script_in_place()
+        return answer == QMessageBox.Discard
+
+    def closeEvent(self, event):
+        if self.confirm_unsaved_script():
+            super().closeEvent(event)
+        else:
+            event.ignore()
+
+    def leave_in_place_for_new_model(self, suffix):
+        """Continue as a new, generated model (e.g. after switching the solver):
+        the script edited in place stays as it is on disk and is protected from
+        being overwritten by the generated script."""
+        script = self.script_model.path
+        self.save_all_tabs()
+        self._stop_preserve_mode()
+        self.protected_source_model_path = os.path.abspath(script)
+        self.saved_values["model_basename"] = pathlib.Path(script).stem + "_" + suffix
+        self.create_model_tab.load_values()
+        self.create_model_tab.log_area.appendPlainText(
+            f"New model {self.saved_values['model_basename']} from the settings of "
+            f"{os.path.basename(script)}; that script is not changed.\n")
 
     # ---------- recent files (Load Config / Import Model) ----------
 
