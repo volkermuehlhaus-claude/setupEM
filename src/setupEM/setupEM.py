@@ -2438,7 +2438,7 @@ class CreateModelTab(CreateModelTabBase):
                 self.log_area.appendPlainText("⚠️ No code to run.\n")
                 return
 
-            # Never overwrite a script opened with "Use its settings for a new model"
+            # Never overwrite a script opened with "New model from its settings"
             # (or an openEMS script, or the script left behind by a solver switch)
             # with a generated one. load_configuration_from_file() already names the
             # new model <script>_new, so this guards against picking the same
@@ -3059,7 +3059,7 @@ class PreferencesDialog(QDialog):
         self.py_open_combo.setStyleSheet(COMBO_STYLE_OPTIONAL)
         self.py_open_combo.addItem("Ask each time", "ask")
         self.py_open_combo.addItem("Edit the script in place", "in_place")
-        self.py_open_combo.addItem("Use its settings for a new model", "new_model")
+        self.py_open_combo.addItem("New model from its settings", "new_model")
         combo_index = self.py_open_combo.findData(get_preference(self.app_name, "py_open_mode", "ask"))
         self.py_open_combo.setCurrentIndex(combo_index if combo_index >= 0 else 0)
         py_open_row.addWidget(self.py_open_combo)
@@ -3466,41 +3466,34 @@ class MainWindow(MainWindowBase):
         self.optionPalace = QAction("Palace FEM", self, checkable=True)
         self.optionElmer  = QAction("Elmer FEM", self, checkable=True)
 
-        self.optionPalace.triggered.connect(lambda: self._user_selects_solver("palace"))
-        self.optionElmer.triggered.connect(lambda: self._user_selects_solver("elmer"))
+        self.optionPalace.triggered.connect(lambda: self.setPalaceMode())
+        self.optionElmer.triggered.connect(lambda: self.setElmerMode())
 
         simulator_group.addAction(self.optionPalace)
         simulator_group.addAction(self.optionElmer)
         # Palace is default
         self.optionPalace.setChecked(True)
         self.simulator_menu.addActions(simulator_group.actions())
+        self.simulator_menu.setToolTipsVisible(True)
+        self._update_in_place_menu()
 
 
     # ---------- Menu actions ----------
-    def _user_selects_solver(self, solver):
-        # Simulator menu. A script edited in place keeps its own solver (switching
-        # changes more than one line of a script); the user can continue with a
-        # new, generated model for the other solver instead.
-        target_call = "create_elmer" if solver == "elmer" else "create_palace"
-        if self.script_model is not None and target_call != self.preserve_create_call():
-            name = os.path.basename(self.script_model.path)
-            stem = os.path.splitext(name)[0]
-            label = "Elmer" if solver == "elmer" else "Palace"
-            answer = QMessageBox.question(
-                self, "Switch solver",
-                f"{name} is edited in place and stays a {'Palace' if solver == 'elmer' else 'Elmer'} script.\n\n"
-                f"Create a new {label} model ({stem}_{solver}.py) from the current settings instead? "
-                f"{name} is not changed; its loops and custom code are not part of the new model.",
-                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
-            if answer != QMessageBox.Yes:
-                # keep the menu on the script's solver
-                (self.optionElmer if self.ElmerMode else self.optionPalace).setChecked(True)
-                return
-            self.leave_in_place_for_new_model(solver)
-        if solver == "elmer":
-            self.setElmerMode()
-        else:
-            self.setPalaceMode()
+    def _update_in_place_menu(self):
+        # a script edited in place keeps its own solver: the other one is greyed out
+        # (switching changes more than one line of a script, a new model from its
+        # settings can use the other solver)
+        super()._update_in_place_menu()
+        if not hasattr(self, "optionElmer"):
+            return
+        for action in (self.optionPalace, self.optionElmer):
+            action.setEnabled(True)
+            action.setToolTip("")
+        if getattr(self, "script_model", None) is not None:
+            other = self.optionPalace if self.ElmerMode else self.optionElmer
+            other.setEnabled(False)
+            other.setToolTip("The script edited in place is a " + ("Elmer" if self.ElmerMode else "Palace") +
+                             " model. Open it as a new model from its settings to use the other solver.")
 
     def setPalaceMode(self):
         self.optionPalace.setChecked(True)
@@ -3650,6 +3643,40 @@ class MainWindow(MainWindowBase):
 
     # ---------- Preserve mode hooks (see MainWindowBase) ----------
     PRESERVE_TOOLS = ("palace", "elmer")
+
+    # fields to grey out when the script edited in place computes the setting
+    SETTING_WIDGETS = {
+        "GdsFile": ("file_tab", ["gds_file_edit"]),
+        "SubstrateFile": ("file_tab", ["XML_file_edit"]),
+        "cellname": ("file_tab", ["cellname_box"]),
+        "purpose": ("file_tab", ["purpose_edit"]),
+        "merge_polygon_size": ("file_tab", ["viamerge_edit"]),
+        "preprocess_gds": ("file_tab", ["preprocess_gds_checkbox"]),
+        "fill_factor_correction": ("file_tab", ["fill_factor_box"]),
+        "variable_overrides": ("file_tab", ["variable_overrides_table"]),
+        "fstart": ("frequencies_tab", ["start_edit"]),
+        "fstop": ("frequencies_tab", ["stop_edit"]),
+        "fstep": ("frequencies_tab", ["step_edit"]),
+        "fpoint": ("frequencies_tab", ["fpoint_edit"]),
+        "fdump": ("frequencies_tab", ["fdump_edit", "fdump_enabled_checkbox"]),
+        "refined_cellsize": ("mesh_tab", ["refinement_edit"]),
+        "refined_cellsize_override": ("mesh_tab", ["refined_override_btn"]),
+        "cells_per_wavelength": ("mesh_tab", ["cells_lambda_edit"]),
+        "meshsize_max": ("mesh_tab", ["cells_maxsize_edit"]),
+        "order": ("mesh_tab", ["mesh_order_box"]),
+        "filled_metals": ("mesh_tab", ["filled_metals_box"]),
+        "adaptive_mesh_iterations": ("mesh_tab", ["AMR_iterations_edit"]),
+        "amr_tol": ("mesh_tab", ["amr_goal_edit"]),
+        "amr_max_dof": ("mesh_tab", ["amr_maxdof_edit"]),
+        "adaptive_mesh_conformal": ("mesh_tab", ["amr_conformal_box"]),
+        "complex_coarse_solve": ("mesh_tab", ["complex_coarse_box"]),
+        "iterative": ("mesh_tab", ["solver_box"]),
+        "boundary": ("mesh_tab", ["boundary_box"]),
+        "margin": ("mesh_tab", ["margins_edit"]),
+        "air_around": ("mesh_tab", ["airaround_edit", "airxmin_edit", "airxmax_edit", "airymin_edit",
+                                    "airymax_edit", "airzmin_edit", "airzmax_edit"]),
+        "ELMER_MPI_THREADS": ("mesh_tab", ["threads_box"]),
+    }
 
     def preserve_objects(self):
         return simulation_ports_to_struct(simulation_ports)

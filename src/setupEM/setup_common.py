@@ -316,23 +316,6 @@ def protected_script_message(path):
             "output directory on the Create Model(s) tab.")
 
 
-def summarize_not_editable(items, in_place):
-    """One short line for the import dialog from (name, reason) pairs; the full
-    list goes to the Create Model log."""
-    names = [name for name, _reason in items]
-    if len(items) == 1:
-        listed = f"{names[0]} ({items[0][1]})"
-    else:
-        listed = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
-    if in_place:
-        text = f"Set by the script, not editable here: {listed}."
-    else:
-        text = f"Computed by the script, not imported (defaults shown): {listed}."
-    if len(items) > 1:
-        text += " Details are in the Create Model log."
-    return text
-
-
 def shorten_path_for_display(path, head_len=14):
     # A full network path can run to 100+ characters, unreadable crammed into a
     # dialog box next to a second equally long path. Keep just enough of the head
@@ -3422,19 +3405,25 @@ class CreateModelTabBase(QWidget):
         # Models created by a script edited in place, when it builds more than one
         # (e.g. a parameter sweep): Start Simulation runs the ticked ones one
         # after another; the selected row is the one the result / field viewers use
-        self.runs_label = QLabel("Models created by the script - Start Simulation runs the ticked ones:")
-        self.runs_table = QTableWidget(0, 3)
-        self.runs_table.setHorizontalHeaderLabels(["Model", "Parameters", "Status"])
+        self.runs_group = QGroupBox("Models")
+        self.runs_group.setToolTip("Models created by the script. Start Simulation runs the ticked ones.")
+        runs_layout = QVBoxLayout()
+        runs_layout.setContentsMargins(4, 4, 4, 4)
+        self.runs_table = QTableWidget(0, 2)
+        self.runs_table.horizontalHeader().setVisible(False)
         self.runs_table.verticalHeader().setVisible(False)
+        self.runs_table.setShowGrid(False)
         self.runs_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.runs_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.runs_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.runs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.runs_table.horizontalHeader().setStretchLastSection(True)
-        self.runs_table.setMaximumHeight(160)
-        self.actions_layout.addWidget(self.runs_label)
-        self.actions_layout.addWidget(self.runs_table)
-        self.runs_label.setVisible(False)
+        self.runs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.runs_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        runs_layout.addWidget(self.runs_table)
+        self.runs_group.setLayout(runs_layout)
+        # as tall as the list, the log gets the rest
+        self.runs_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.actions_layout.addWidget(self.runs_group)
+        self.runs_group.setVisible(False)
         self.runs_table.setVisible(False)
         self._run_queue = []
         self._queue_total = 0
@@ -3462,6 +3451,16 @@ class CreateModelTabBase(QWidget):
 
         self.actions_group.setLayout(self.actions_layout)
 
+        # edit-in-place mode shows the script instead of the output fields
+        # (Create Model writes back to that script, there is nothing to choose)
+        self.script_group = QGroupBox("Script")
+        script_layout = QHBoxLayout()
+        self.script_label = QLabel("")
+        self.script_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        script_layout.addWidget(self.script_label)
+        self.script_group.setLayout(script_layout)
+        self.script_group.setVisible(False)
+        self.main_layout.addWidget(self.script_group)
         self.main_layout.addWidget(self.file_group)
         self.main_layout.addSpacing(20)
         self.main_layout.addWidget(self.actions_group)
@@ -3481,8 +3480,9 @@ class CreateModelTabBase(QWidget):
         more than one; keeps the ticks of models that are listed again."""
         runs = self.MainWindow.script_runs if self.MainWindow.script_model is not None else []
         show = len(runs) > 1
-        self.runs_label.setVisible(show)
+        self.runs_group.setVisible(show)
         self.runs_table.setVisible(show)
+        self.runs_group.setTitle(f"Models ({len(runs)})")
         unticked = set()
         for row in range(self.runs_table.rowCount()):
             item = self.runs_table.item(row, 0)
@@ -3491,14 +3491,18 @@ class CreateModelTabBase(QWidget):
         selected = self.runs_table.currentRow()
         self.runs_table.setRowCount(len(runs))
         for row, run in enumerate(runs):
-            name = QTableWidgetItem(run["model_basename"] or os.path.basename(run["sim_path"]))
-            name.setFlags(name.flags() | Qt.ItemIsUserCheckable)
-            name.setCheckState(Qt.Unchecked if run["sim_path"] in unticked else Qt.Checked)
-            name.setData(Qt.UserRole, run["sim_path"])
-            name.setToolTip(run["sim_path"])
-            self.runs_table.setItem(row, 0, name)
-            self.runs_table.setItem(row, 1, QTableWidgetItem(run["label"]))
-            self.runs_table.setItem(row, 2, QTableWidgetItem(self._run_status(run)))
+            # the parameters that differ name the model; its name and folder are the tooltip
+            item = QTableWidgetItem(run["label"].replace("=", " = "))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked if run["sim_path"] in unticked else Qt.Checked)
+            item.setData(Qt.UserRole, run["sim_path"])
+            item.setToolTip(run["model_basename"] + "\n" + run["sim_path"])
+            self.runs_table.setItem(row, 0, item)
+            self._set_run_status(run, self._run_status(run))
+        # only as tall as its rows (up to 5, then it scrolls)
+        visible_rows = min(max(len(runs), 1), 5)
+        row_height = self.runs_table.verticalHeader().defaultSectionSize()
+        self.runs_table.setFixedHeight(visible_rows * row_height + 2 * self.runs_table.frameWidth())
         if runs:
             self.runs_table.selectRow(selected if 0 <= selected < len(runs) else 0)
 
@@ -3510,11 +3514,16 @@ class CreateModelTabBase(QWidget):
                 return "results"
         return "meshed" if os.path.isdir(sim_path) else "not created"
 
+    _STATUS_COLORS = {"running": "#1565C0", "results": "#2E7D32", "meshed": "#616161"}
+
     def _set_run_status(self, run, status):
         for row in range(self.runs_table.rowCount()):
             item = self.runs_table.item(row, 0)
             if item is not None and item.data(Qt.UserRole) == run["sim_path"]:
-                self.runs_table.setItem(row, 2, QTableWidgetItem(status))
+                status_item = QTableWidgetItem(status)
+                color = self._STATUS_COLORS.get(status, "#C62828")   # failed / not started: red
+                status_item.setForeground(QColor(color))
+                self.runs_table.setItem(row, 1, status_item)
 
     def ticked_runs(self):
         runs = {run["sim_path"]: run for run in self.MainWindow.script_runs}
@@ -3623,11 +3632,13 @@ class CreateModelTabBase(QWidget):
 
     def set_output_locked(self, locked):
         """Edit-in-place mode: the output is the script itself, so the target
-        directory and model name can't be changed."""
-        tip = "Editing a script in place: Create Model writes back to that script" if locked else ""
-        for widget in (self.targetdir_edit, self.targetdir_btn, self.modelname_edit):
-            widget.setEnabled(not locked)
-            widget.setToolTip(tip)
+        directory / model name fields are replaced by one line naming it."""
+        model = self.MainWindow.script_model if locked else None
+        if model is not None and model.path:
+            path = os.path.abspath(model.path).replace("\\", "/")
+            self.script_label.setText(f"<b>{os.path.basename(path)}</b>&nbsp;&nbsp;&nbsp;{os.path.dirname(path)}")
+        self.script_group.setVisible(model is not None)
+        self.file_group.setVisible(model is None)
 
     def on_modelname_edit_done(self):
         # Model name edit field has changed
@@ -4552,11 +4563,12 @@ class MainWindowBase(QMainWindow):
                                 elif varname in ("variable_overrides", "refined_cellsize_override"):
                                     saved_values[varname] = resolve_value_text(import_value, known_constants)
                                 elif varname in ["gds_filename", "XML_filename", "GdsFile", "SubstrateFile"]:
-                                    # check if we have full path for files in imported Python script,
-                                    # otherwise prefix from *.py path assuming that it was local to the *.py model script
-                                    value_path = os.path.dirname(import_value)
-                                    if value_path == '':
-                                        import_value = os.path.join(modelcode_path, import_value)
+                                    # a relative path in the script is relative to the script's
+                                    # folder (also "../XML_stackup/..."), not to setupEM's own
+                                    # working directory
+                                    if not os.path.isabs(import_value):
+                                        import_value = os.path.normpath(
+                                            os.path.join(modelcode_path, import_value)).replace('\\', '/')
                                     saved_values[varname] = import_value
                                 elif varname != '':
                                     raw = import_value.strip("[]")
@@ -4568,13 +4580,11 @@ class MainWindowBase(QMainWindow):
                                         # not the raw string parsed from the .py file
                                         saved_values[varname] = int(resolve_value_text(raw, known_constants))
                                     else:
-                                        try:
-                                            saved_values[varname] = resolve_value_text(raw, known_constants)
-                                        except (SyntaxError, ValueError, TypeError, ZeroDivisionError):
-                                            # not resolvable even with known module-level constants
-                                            # (e.g. a value computed by a function call) - fall back to
-                                            # the raw text exactly as before this resolution was added
-                                            saved_values[varname] = raw
+                                        # not resolvable (e.g. a loop variable, settings['order'] =
+                                        # order): handled below, the field keeps its default - the
+                                        # raw text "order" would only be an invalid entry in a
+                                        # number field
+                                        saved_values[varname] = resolve_value_text(raw, known_constants)
                               except (SyntaxError, ValueError, TypeError, ZeroDivisionError, KeyError):
                                 unresolved.append((varname or import_key, f"computed by the script: {import_value}"))
 
@@ -4583,6 +4593,10 @@ class MainWindowBase(QMainWindow):
                 # path fallback above only fires when there's no directory component at
                 # all) - fall back to a same-named file next to this model script instead
                 path_messages = resolve_missing_file_paths(saved_values, modelcode_path)
+                for key, label in (("GdsFile", "GDSII file"), ("SubstrateFile", "Stackup file")):
+                    path = saved_values.get(key)
+                    if path and not os.path.isfile(path):
+                        path_messages.append(f"⚠️ {label} not found: {path}")
 
                 is_openems_import = is_openems_model_script(file_path)
 
@@ -4615,42 +4629,42 @@ class MainWindowBase(QMainWindow):
                 # everything not imported / not editable: (name, reason), shown as one
                 # short line in the dialog and in full in the Create Model log
                 not_editable = []
+                name = os.path.basename(file_path)
                 if in_place:
                     not_editable = self._start_preserve_mode(file_path)
-                    loaded_message = (f"Editing {os.path.basename(file_path)} in place: Create Model "
-                                      "writes only what you change here back into this script.")
+                    status = f"Editing {name}"
                 else:
-                    loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
+                    status = f"New model {saved_values['model_basename']} from the settings of {name}"
                 # Revert / Reload re-open the same script, that's not a new recent entry
                 if ask_unsaved:
                     self._add_recent_file(RECENT_MODEL_KEY, file_path)
-                known = {name for name, _reason in not_editable}
-                for name, reason in unresolved + self._import_notes:
-                    if name not in known:
-                        not_editable.append((name, reason))
-                        known.add(name)
-                if is_openems_import:
-                    loaded_message += (
-                        "\n\nThis looks like an openEMS model script. Its ports and settings "
-                        "were imported; setupEM writes them as a new Palace/Elmer model, "
-                        "the openEMS script is not changed."
-                    )
-                if not in_place:
-                    loaded_message += (f"\n\nCreate Model writes the new model as "
-                                       f"{saved_values['model_basename']}.py next to it, "
-                                       f"{os.path.basename(file_path)} itself is not changed.")
-                if path_messages:
-                    loaded_message += "\n\n" + "\n".join(path_messages)
-                if not_editable:
-                    loaded_message += "\n\n" + summarize_not_editable(not_editable, in_place)
-                QMessageBox.information(self, "Loaded", loaded_message)
+                known = {key for key, _reason in not_editable}
+                for key, reason in unresolved + self._import_notes:
+                    if key not in known:
+                        not_editable.append((key, reason))
+                        known.add(key)
+
+                # no popup: one status bar line, the details in the Create Model log
+                # (greyed-out fields show what the script sets itself, see
+                # _grey_out_script_settings())
                 self.create_model_tab.log_area.clear()
                 self.create_model_tab._reset_live_status()
+                log_lines = [status + "."]
+                if is_openems_import:
+                    log_lines.append("It is an openEMS script: setupEM writes a new Palace/Elmer model "
+                                     "from its settings, the openEMS script is not changed.")
+                if not in_place:
+                    log_lines.append(f"Create Model writes {saved_values['model_basename']}.py next to "
+                                     f"{name}, which itself is not changed.")
+                log_lines.extend(path_messages)
                 if not_editable:
-                    heading = "Set by the script, not editable here:" if in_place else \
-                              "Computed by the script, not imported (defaults shown):"
-                    self.create_model_tab.log_area.appendPlainText(
-                        heading + "\n" + "\n".join(f"  {name}: {reason}" for name, reason in not_editable) + "\n")
+                    log_lines.append("Set by the script, not editable here:" if in_place else
+                                     "Computed by the script, not imported (defaults shown):")
+                    log_lines.extend(f"  {key}: {reason}" for key, reason in not_editable)
+                self.create_model_tab.log_area.appendPlainText("\n".join(log_lines) + "\n")
+                if path_messages or not_editable:
+                    status += " - see the log on the Create Model tab"
+                self.statusBar().showMessage(status, 15000)
 
             else:
                 QMessageBox.information(self, "Error", f"Could not load file {file_path}")
@@ -4731,20 +4745,19 @@ class MainWindowBase(QMainWindow):
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Question)
             box.setWindowTitle("Open *.py model")
-            text = f"How do you want to open {name}?\n\n"
-            if problem:
-                text += (f"It can't be edited in place: {problem}.\n\n"
-                         "Use its settings for a new model: setupEM writes its own script.")
-            else:
-                text += ("Edit this script: your changes are saved back into it, loops and "
-                         "custom code stay as they are.\n\n"
-                         "Use its settings for a new model: setupEM writes its own script.")
-            box.setText(text)
-            edit_button = None if problem else box.addButton("Edit this script", QMessageBox.AcceptRole)
-            new_button = box.addButton("Use its settings for a new model", QMessageBox.AcceptRole)
+            # short text, the details are in the button tooltips
+            box.setText(f"{name} can't be edited in place ({problem})." if problem else f"Open {name}:")
+            edit_button = None
+            if not problem:
+                edit_button = box.addButton("Edit this script", QMessageBox.AcceptRole)
+                edit_button.setToolTip("Your changes are saved back into the script. "
+                                       "Loops, comments and custom code stay as they are.")
+            new_button = box.addButton("New model from its settings", QMessageBox.AcceptRole)
+            new_button.setToolTip("setupEM writes its own script next to it; this one is not changed.")
             box.addButton(QMessageBox.Cancel)
             box.setDefaultButton(edit_button or new_button)
-            remember = QCheckBox("Don't ask again (change in File > Preferences > Files)")
+            remember = QCheckBox("Don't ask again")
+            remember.setToolTip("Change it later in File > Preferences > Files")
             box.setCheckBox(remember)
             box.exec()
             clicked = box.clickedButton()
@@ -4760,8 +4773,7 @@ class MainWindowBase(QMainWindow):
             # say so instead of silently opening it the other way
             answer = QMessageBox.question(
                 self, "Open *.py model",
-                f"{name} can't be edited in place: {problem}.\n\n"
-                "Use its settings for a new model instead (setupEM writes its own script)?",
+                f"{name} can't be edited in place ({problem}).\n\nOpen it as a new model from its settings?",
                 QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes)
             if answer != QMessageBox.Yes:
                 return
@@ -4821,6 +4833,28 @@ class MainWindowBase(QMainWindow):
         self.revert_script_action.setVisible(in_place)
         self.save_action.setVisible(not in_place)
 
+    # saved_values key -> (tab attribute, [widget attributes]) of the fields that
+    # show it; set by the subclass. Used to grey out settings a script computes.
+    SETTING_WIDGETS = {}
+
+    def _grey_out_script_settings(self, not_editable):
+        """Disable the fields of settings the script edited in place sets itself
+        (e.g. from a loop variable), with the reason as tooltip; {} restores them."""
+        for widget, enabled, tooltip in getattr(self, "_greyed_widgets", []):
+            widget.setEnabled(enabled)
+            widget.setToolTip(tooltip)
+        self._greyed_widgets = []
+        for key, reason in not_editable.items():
+            tab_name, widget_names = self.SETTING_WIDGETS.get(key, (None, []))
+            tab = getattr(self, tab_name, None) if tab_name else None
+            for widget_name in widget_names:
+                widget = getattr(tab, widget_name, None)
+                if widget is None:
+                    continue
+                self._greyed_widgets.append((widget, widget.isEnabled(), widget.toolTip()))
+                widget.setEnabled(False)
+                widget.setToolTip(f"Set by the script ({reason}) - change it there")
+
     def _stop_preserve_mode(self):
         was_active = getattr(self, "script_model", None) is not None
         self.script_model = None
@@ -4828,6 +4862,7 @@ class MainWindowBase(QMainWindow):
         self._script_dirty = False
         self.script_runs = []
         if was_active:
+            self._grey_out_script_settings({})
             self.create_model_tab.set_output_locked(False)
             self.create_model_tab.refresh_runs_table()
             self._update_in_place_menu()
@@ -4858,6 +4893,7 @@ class MainWindowBase(QMainWindow):
             site = model.site(key)
             if site is not None and not site.writable:
                 not_editable.append((key, site.reason))
+        self._grey_out_script_settings(dict(not_editable))
         return not_editable
 
     def setWindowTitle(self, title):
@@ -5039,22 +5075,6 @@ class MainWindowBase(QMainWindow):
             super().closeEvent(event)
         else:
             event.ignore()
-
-    def leave_in_place_for_new_model(self, suffix):
-        """Continue as a new, generated model (e.g. after switching the solver):
-        the script edited in place stays as it is on disk and is protected from
-        being overwritten by the generated script."""
-        script = self.script_model.path
-        self.save_all_tabs()
-        self._stop_preserve_mode()
-        self.protected_source_model_path = os.path.abspath(script)
-        self.saved_values["model_basename"] = pathlib.Path(script).stem + "_" + suffix
-        self.create_model_tab.load_values()
-        self.create_model_tab.log_area.appendPlainText(
-            f"New model {self.saved_values['model_basename']} from the settings of "
-            f"{os.path.basename(script)}; that script is not changed.\n")
-
-    # ---------- recent files (Load Config / Import Model) ----------
 
     def _recent_files(self, key):
         files = QSettings(RECENT_FILES_ORG, self.APP_NAME).value(key, [])

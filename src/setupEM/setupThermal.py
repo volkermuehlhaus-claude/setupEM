@@ -821,7 +821,7 @@ class CreateModelTab(CreateModelTabBase):
                 self.log_area.appendPlainText("⚠️ No code to run.\n")
                 return
 
-            # Never overwrite a script opened with "Use its settings for a new model"
+            # Never overwrite a script opened with "New model from its settings"
             # (or an openEMS script) with a generated one. load_configuration_from_file()
             # already names the new model <script>_new, so this guards against picking
             # the same name/directory again on the Create Model(s) tab.
@@ -1167,7 +1167,7 @@ class PreferencesDialog(QDialog):
         self.py_open_combo.setStyleSheet(COMBO_STYLE_OPTIONAL)
         self.py_open_combo.addItem("Ask each time", "ask")
         self.py_open_combo.addItem("Edit the script in place", "in_place")
-        self.py_open_combo.addItem("Use its settings for a new model", "new_model")
+        self.py_open_combo.addItem("New model from its settings", "new_model")
         combo_index = self.py_open_combo.findData(get_preference(self.app_name, "py_open_mode", "ask"))
         self.py_open_combo.setCurrentIndex(combo_index if combo_index >= 0 else 0)
         py_open_row.addWidget(self.py_open_combo)
@@ -1586,6 +1586,22 @@ class MainWindow(MainWindowBase):
 
     # ---------- Preserve mode hooks (see MainWindowBase) ----------
     PRESERVE_TOOLS = ("elmer_thermal",)
+
+    # fields to grey out when the script edited in place computes the setting
+    SETTING_WIDGETS = {
+        "GdsFile": ("file_tab", ["gds_file_edit"]),
+        "SubstrateFile": ("file_tab", ["XML_file_edit"]),
+        "cellname": ("file_tab", ["cellname_box"]),
+        "purpose": ("file_tab", ["purpose_edit"]),
+        "merge_polygon_size": ("file_tab", ["viamerge_edit"]),
+        "preprocess_gds": ("file_tab", ["preprocess_gds_checkbox"]),
+        "fill_factor_correction": ("file_tab", ["fill_factor_box"]),
+        "variable_overrides": ("file_tab", ["variable_overrides_table"]),
+        "refined_cellsize": ("mesh_tab", ["refinement_edit"]),
+        "meshsize_max": ("mesh_tab", ["cells_maxsize_edit"]),
+        "margin": ("mesh_tab", ["margins_edit"]),
+        "iterative": ("mesh_tab", ["solver_box"]),
+    }
 
     def preserve_objects(self):
         objects = []
