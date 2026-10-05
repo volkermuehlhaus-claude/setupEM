@@ -56,6 +56,7 @@ if __package__ in (None, ""):
         next_available_source_layer, update_missing_layer_column,
         get_preference, get_preference_bool, set_preference, clear_preferences,
         find_paraview_exe,
+        protected_script_message,
     )
     from thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
     from script_model import ScriptModel
@@ -67,6 +68,7 @@ else:
         next_available_source_layer, update_missing_layer_column,
         get_preference, get_preference_bool, set_preference, clear_preferences,
         find_paraview_exe,
+        protected_script_message,
     )
     from .thermal_results import build_thermal_summary, format_source_table, find_thermal_paraview_file
     from .script_model import ScriptModel
@@ -819,21 +821,13 @@ class CreateModelTab(CreateModelTabBase):
                 self.log_area.appendPlainText("⚠️ No code to run.\n")
                 return
 
-            # Refuse to overwrite an imported openEMS model script - setupThermal can
-            # only generate Palace/Elmer code and has no way to regenerate an openEMS
-            # model. Normally load_configuration_from_file() already steers the output
-            # elsewhere for such an import (see protected_source_model_path), so this
-            # is a second-layer guard for the case where the user manually re-picks
-            # the same name/directory on the Create Model(s) tab afterwards.
+            # Never overwrite a script opened with "Use its settings for a new model"
+            # (or an openEMS script) with a generated one. load_configuration_from_file()
+            # already names the new model <script>_new, so this guards against picking
+            # the same name/directory again on the Create Model(s) tab.
             protected_path = getattr(self.MainWindow, 'protected_source_model_path', None)
             if protected_path and os.path.normcase(pymodel_filename) == os.path.normcase(protected_path):
-                QMessageBox.warning(
-                    self, "Create Model",
-                    "This would overwrite the imported openEMS model script:\n\n"
-                    f"{pymodel_filename}\n\n"
-                    "setupThermal cannot regenerate an openEMS model, so this write was "
-                    "blocked. Choose a different model name or output directory on "
-                    "the Create Model(s) tab.")
+                QMessageBox.warning(self, "Create Model", protected_script_message(pymodel_filename))
                 return
 
             # General overwrite protection: ask once per session before clobbering a
@@ -1179,10 +1173,6 @@ class PreferencesDialog(QDialog):
         py_open_row.addWidget(self.py_open_combo)
         files_form.addLayout(py_open_row)
         self._reset_targets.append((self.py_open_combo, "py_open_mode", "ask", "combo"))
-        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an imported model's filename as the output file")
-        self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
-        files_form.addWidget(self.confirm_reuse_checkbox)
-        self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
         self.in_place_save_checkbox = QCheckBox("Save a script edited in place without asking before Create Mesh")
         self.in_place_save_checkbox.setChecked(get_preference_bool(self.app_name, "in_place_save_without_asking", False))
         files_form.addWidget(self.in_place_save_checkbox)
@@ -1322,7 +1312,6 @@ class PreferencesDialog(QDialog):
 
         set_preference(self.app_name, "purpose", self.purpose_edit.text())
         set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
-        set_preference(self.app_name, "confirm_reuse_import_filename", self.confirm_reuse_checkbox.isChecked())
         set_preference(self.app_name, "in_place_save_without_asking", self.in_place_save_checkbox.isChecked())
         set_preference(self.app_name, "py_open_mode", self.py_open_combo.currentData())
         set_preference(self.app_name, "xml_browse_directory", self.xml_browse_dir_edit.text())

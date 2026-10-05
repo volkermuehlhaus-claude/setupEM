@@ -308,6 +308,14 @@ def cellname_from_display(text):
     return "" if text == CELLNAME_DEFAULT_LABEL else text
 
 
+def protected_script_message(path):
+    """Create Model refused to write a generated script over an opened one."""
+    return (f"This would overwrite the opened model script\n\n{path}\n\nwith a generated one, so "
+            "this write was blocked.\n\nTo change that script itself, open it with File > Open "
+            "*.py model > Edit this script. For a new model, choose a different model name or "
+            "output directory on the Create Model(s) tab.")
+
+
 def summarize_not_editable(items, in_place):
     """One short line for the import dialog from (name, reason) pairs; the full
     list goes to the Create Model log."""
@@ -403,11 +411,10 @@ def is_openems_model_script(file_path):
     # Detect whether an imported .py model script is an openEMS model rather than a
     # gds2palace/Palace/Elmer one. setupEM/setupThermal can only ever GENERATE
     # Palace/Elmer model scripts via "Create Model" - there is no way to write an
-    # openEMS model back out. If "Create Model" were allowed to reuse an imported
-    # openEMS script's own file path as its output (see the "reuse" logic in
-    # load_configuration_from_file() below), the next "Create Model" click would
-    # silently overwrite the user's real openEMS solver script with generated Palace
-    # code, which setupEM has no way to regenerate.
+    # openEMS model back out, and can't edit one in place (see _in_place_problem());
+    # its settings can only be used for a new model, written next to it as
+    # <script>_new.py while the openEMS script itself is protected from being
+    # overwritten (protected_source_model_path).
     #
     # openEMS models import the openEMS/CSXCAD Python bindings directly
     # ("from openEMS import openEMS", "import CSXCAD") - markers that never appear in
@@ -4397,6 +4404,7 @@ class MainWindowBase(QMainWindow):
         if not self.confirm_unsaved_script():
             return
         self._stop_preserve_mode()
+        self.protected_source_model_path = None
         self.saved_values.clear()
         self.materials_list = None
         self.dielectrics_list = None
@@ -4433,6 +4441,7 @@ class MainWindowBase(QMainWindow):
             if ask_unsaved and not self.confirm_unsaved_script():
                 return
             self._stop_preserve_mode()
+            self.protected_source_model_path = None
             extension = pathlib.Path(file_path).suffix
             if self.CONFIG_SUFFIX.upper() in extension.upper():
                 # regular data storage
@@ -4575,51 +4584,25 @@ class MainWindowBase(QMainWindow):
                 # all) - fall back to a same-named file next to this model script instead
                 path_messages = resolve_missing_file_paths(saved_values, modelcode_path)
 
-                # openEMS models can never be reused as Create Model's output target -
-                # see is_openems_model_script() / protected_source_model_path above
                 is_openems_import = is_openems_model_script(file_path)
-                self.protected_source_model_path = os.path.abspath(file_path) if is_openems_import else None
 
-                # ask whether future "Create Model" output should overwrite this same
-                # file, or start a fresh model (today's GDS-derived default) - only if
-                # the user has turned this question on in Preferences > Files; by
-                # default, silently agree (reuse the imported file) without asking.
-                # Never offered for an openEMS import - setupEM can only ever generate
-                # Palace/Elmer code, so reusing that path would silently destroy the
-                # user's real openEMS solver script the next time "Create Model" runs
-                # (create_model() also refuses the write directly, as a second layer,
-                # in case the user manually re-selects the same path later).
+                # where Create Model writes. Same folder as the opened script in both
+                # cases, so its relative GDS / XML paths still work.
+                saved_values['sim_path'] = os.path.dirname(file_path).replace('\\', '/')
                 if in_place:
-                    # edit-in-place mode: the output is always this script
-                    reuse = True
-                elif is_openems_import:
-                    reuse = False
-                elif get_preference_bool(self.APP_NAME, "confirm_reuse_import_filename", False):
-                    reuse = QMessageBox.question(
-                        self, "Import Model",
-                        f"Use '{os.path.basename(file_path)}' as the output file for this model too?\n\n"
-                        "Yes: Create Model / Start Simulation will overwrite this file.\n"
-                        "No: pick a model name and target directory on the Create Model(s) tab.",
-                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                    ) == QMessageBox.Yes
-                else:
-                    reuse = True
-                if reuse:
-                    saved_values['sim_path'] = os.path.dirname(file_path).replace('\\', '/')
+                    # edit-in-place mode: the output is always this script itself;
+                    # trusted right away, so Create Model doesn't also ask "this will
+                    # overwrite an existing file" for the very file being edited
                     saved_values['model_basename'] = pathlib.Path(file_path).stem
-                    # the user has now explicitly designated this exact file as Create
-                    # Model's output target (either by answering "Yes" above, or via
-                    # the default silent-reuse when "Ask before reusing..." is off) -
-                    # trust it immediately, so the very next Create Model click doesn't
-                    # ALSO trigger the general "this will overwrite an existing file"
-                    # confirmation in create_model() for the very file we were just
-                    # told to use. Computed the same way create_model()
-                    # builds pymodel_filename, so the two match exactly. Only reachable
-                    # for non-openEMS imports (is_openems_import forces reuse=False
-                    # above) - a file the user never explicitly pointed Create Model at
-                    # this way still gets that confirmation.
-                    reused_output_path = os.path.abspath(os.path.join(saved_values['sim_path'], saved_values['model_basename'] + '.py'))
-                    self.confirmed_overwrite_paths.add(os.path.normcase(reused_output_path))
+                    self.protected_source_model_path = None
+                    self.confirmed_overwrite_paths.add(os.path.normcase(os.path.abspath(file_path)))
+                else:
+                    # a new model from the script's settings: written next to it as
+                    # <script>_new.py, and the opened script is never overwritten by the
+                    # generated one (create_model() refuses that path) - editing the
+                    # script itself is what "Open *.py model > Edit this script" is for
+                    saved_values['model_basename'] = pathlib.Path(file_path).stem + "_new"
+                    self.protected_source_model_path = os.path.abspath(file_path)
 
                 # read port/thermal assignments in workflow syntax for gds2palace Python code, and
                 # apply any app-specific post-import state (e.g. setupEM's simulator mode);
@@ -4648,11 +4631,14 @@ class MainWindowBase(QMainWindow):
                         known.add(name)
                 if is_openems_import:
                     loaded_message += (
-                        "\n\nThis looks like an openEMS model script. Ports and settings "
-                        "were imported for editing, but setupEM can only generate Palace/"
-                        "Elmer models - Create Model will NOT overwrite this file. Pick a "
-                        "new model name/output directory on the Create Model(s) tab."
+                        "\n\nThis looks like an openEMS model script. Its ports and settings "
+                        "were imported; setupEM writes them as a new Palace/Elmer model, "
+                        "the openEMS script is not changed."
                     )
+                if not in_place:
+                    loaded_message += (f"\n\nCreate Model writes the new model as "
+                                       f"{saved_values['model_basename']}.py next to it, "
+                                       f"{os.path.basename(file_path)} itself is not changed.")
                 if path_messages:
                     loaded_message += "\n\n" + "\n".join(path_messages)
                 if not_editable:
