@@ -4964,6 +4964,10 @@ class MainWindowBase(QMainWindow):
             if site is not None and not site.writable:
                 not_editable.append((key, site.reason))
         self._grey_out_script_settings(dict(not_editable))
+        # the Code tab was filled with a generated script while the tabs were
+        # loaded; show the script itself now (it's otherwise only refreshed on a
+        # tab switch, so an already open Code tab kept the generated one)
+        self.show_preserve_preview(self.modeleditor_tab.model_edit)
         return not_editable
 
     def setWindowTitle(self, title):
