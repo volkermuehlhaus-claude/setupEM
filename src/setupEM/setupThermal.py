@@ -821,10 +821,11 @@ class CreateModelTab(CreateModelTabBase):
                 self.log_area.appendPlainText("⚠️ No code to run.\n")
                 return
 
-            # Never overwrite a script opened with "New model from its settings"
-            # (or an openEMS script) with a generated one. load_configuration_from_file()
-            # already names the new model <script>_new, so this guards against picking
-            # the same name/directory again on the Create Model(s) tab.
+            # Never overwrite a protected script with a generated one: an openEMS
+            # script, or one opened as a new model where the user chose not to reuse
+            # its file name. load_configuration_from_file() names that new model
+            # <script>_new, so this guards against picking the same name/directory
+            # again on the Create Model(s) tab.
             protected_path = getattr(self.MainWindow, 'protected_source_model_path', None)
             if protected_path and os.path.normcase(pymodel_filename) == os.path.normcase(protected_path):
                 QMessageBox.warning(self, "Create Model", protected_script_message(pymodel_filename))
@@ -1173,6 +1174,11 @@ class PreferencesDialog(QDialog):
         py_open_row.addWidget(self.py_open_combo)
         files_form.addLayout(py_open_row)
         self._reset_targets.append((self.py_open_combo, "py_open_mode", "ask", "combo"))
+        # "New model from its settings" writes back into the opened script, as setupEM always did
+        self.confirm_reuse_checkbox = QCheckBox("Ask before reusing an opened model's filename as the output file")
+        self.confirm_reuse_checkbox.setChecked(get_preference_bool(self.app_name, "confirm_reuse_import_filename", False))
+        files_form.addWidget(self.confirm_reuse_checkbox)
+        self._reset_targets.append((self.confirm_reuse_checkbox, "confirm_reuse_import_filename", False, "bool"))
         self.in_place_save_checkbox = QCheckBox("Save a script edited in place without asking before Create Mesh")
         self.in_place_save_checkbox.setChecked(get_preference_bool(self.app_name, "in_place_save_without_asking", False))
         files_form.addWidget(self.in_place_save_checkbox)
@@ -1314,6 +1320,7 @@ class PreferencesDialog(QDialog):
         set_preference(self.app_name, "merge_polygon_size", self.viamerge_edit.text())
         set_preference(self.app_name, "in_place_save_without_asking", self.in_place_save_checkbox.isChecked())
         set_preference(self.app_name, "py_open_mode", self.py_open_combo.currentData())
+        set_preference(self.app_name, "confirm_reuse_import_filename", self.confirm_reuse_checkbox.isChecked())
         set_preference(self.app_name, "xml_browse_directory", self.xml_browse_dir_edit.text())
         set_preference(self.app_name, "port_layer_min", self.port_layer_min_edit.text())
         set_preference(self.app_name, "port_layer_max", self.port_layer_max_edit.text())

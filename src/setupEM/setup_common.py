@@ -32,7 +32,7 @@ mesh fields, the Python model code generator bodies) is intentionally left
 in setupEM.py / setupThermal.py, not here.
 """
 
-import sys, os, json, pathlib, ast, webbrowser, io, contextlib, subprocess, shutil, glob, re, copy, tempfile
+import sys, os, json, pathlib, ast, webbrowser, io, contextlib, subprocess, shutil, glob, re, copy, tempfile, time
 import importlib.metadata
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -307,6 +307,18 @@ def cellname_for_display(cellname):
 
 def cellname_from_display(text):
     return "" if text == CELLNAME_DEFAULT_LABEL else text
+
+
+def is_setupem_generated(path):
+    """True for a script setupEM / setupThermal wrote itself (create_model_text()
+    puts that in its first line) - overwriting it with a new generated one loses
+    nothing, so no backup is needed."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            first = f.readline()
+    except OSError:
+        return False
+    return "created using setupEM" in first or "created using setupThermal" in first
 
 
 def protected_script_message(path):
@@ -3723,8 +3735,24 @@ class CreateModelTabBase(QWidget):
                 with open(self._preview_source_path, "w", encoding="utf-8", newline="") as f:
                     f.write(self._in_place_source)
             return
+        self._backup_before_first_overwrite(pymodel_filename)
         with open(pymodel_filename, "w", encoding="utf-8") as f:
             f.write(code)
+
+    def _backup_before_first_overwrite(self, pymodel_filename):
+        """A *.py opened as "New model from its settings" is overwritten by the
+        generated script (as setupEM always did); if setupEM didn't write that
+        script itself, keep a copy of it first, once."""
+        MainWindow = self.MainWindow
+        source = getattr(MainWindow, "backup_before_overwrite", None)
+        if not source or os.path.normcase(os.path.abspath(pymodel_filename)) != os.path.normcase(source):
+            return
+        if os.path.isfile(source):
+            stem, ext = os.path.splitext(source)
+            backup = f"{stem}_backup_{time.strftime('%Y%m%d_%H%M%S')}{ext}"
+            shutil.copy2(source, backup)
+            self.log_area.appendPlainText(f"Kept a copy of the original script: {os.path.basename(backup)}\n")
+        MainWindow.backup_before_overwrite = None
 
     def model_launch_args(self, pymodel_filename):
         """Arguments for the Python process that runs the model script. In
@@ -4160,6 +4188,7 @@ class MainWindowBase(QMainWindow):
         # code to this exact path, since setupEM can never regenerate an openEMS
         # script. Cleared/reset on every import (of either kind), not just set once.
         self.protected_source_model_path = None
+        self.backup_before_overwrite = None
         # normalized (os.path.normcase) output paths that create_model() has already
         # either confirmed overwriting (always asked, see create_model()) or itself
         # written to in this session - so the normal iterative workflow
@@ -4465,6 +4494,7 @@ class MainWindowBase(QMainWindow):
             return
         self._stop_preserve_mode()
         self.protected_source_model_path = None
+        self.backup_before_overwrite = None
         self.saved_values.clear()
         self.materials_list = None
         self.dielectrics_list = None
@@ -4502,6 +4532,7 @@ class MainWindowBase(QMainWindow):
                 return
             self._stop_preserve_mode()
             self.protected_source_model_path = None
+            self.backup_before_overwrite = None
             extension = pathlib.Path(file_path).suffix
             if self.CONFIG_SUFFIX.upper() in extension.upper():
                 # regular data storage
@@ -4667,14 +4698,33 @@ class MainWindowBase(QMainWindow):
                     # overwrite an existing file" for the very file being edited
                     saved_values['model_basename'] = pathlib.Path(file_path).stem
                     self.protected_source_model_path = None
+                    self.backup_before_overwrite = None
                     self.confirmed_overwrite_paths.add(os.path.normcase(os.path.abspath(file_path)))
                 else:
-                    # a new model from the script's settings: written next to it as
-                    # <script>_new.py, and the opened script is never overwritten by the
-                    # generated one (create_model() refuses that path) - editing the
-                    # script itself is what "Open *.py model > Edit this script" is for
-                    saved_values['model_basename'] = pathlib.Path(file_path).stem + "_new"
-                    self.protected_source_model_path = os.path.abspath(file_path)
+                    # a new model from the script's settings: as setupEM always did,
+                    # Create Model writes it back into the opened script - unless the
+                    # "Ask before reusing..." preference is on and the user says no,
+                    # or it's an openEMS script (setupEM can't regenerate those), then
+                    # it goes next to it as <script>_new.py and the script is protected.
+                    # A script setupEM didn't generate is backed up before the first
+                    # overwrite (see CreateModelTabBase.write_model_code()).
+                    reuse = not is_openems_import
+                    if reuse and get_preference_bool(self.APP_NAME, "confirm_reuse_import_filename", False):
+                        reuse = QMessageBox.question(
+                            self, "Open *.py model",
+                            f"Use {os.path.basename(file_path)} as the output file for this model too?\n\n"
+                            "Yes: Create Model overwrites it (a backup copy is kept).\n"
+                            f"No: the new model is written as {pathlib.Path(file_path).stem}_new.py.",
+                            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes
+                    if reuse:
+                        saved_values['model_basename'] = pathlib.Path(file_path).stem
+                        self.protected_source_model_path = None
+                        self.confirmed_overwrite_paths.add(os.path.normcase(os.path.abspath(file_path)))
+                        self.backup_before_overwrite = (None if is_setupem_generated(file_path)
+                                                        else os.path.abspath(file_path))
+                    else:
+                        saved_values['model_basename'] = pathlib.Path(file_path).stem + "_new"
+                        self.protected_source_model_path = os.path.abspath(file_path)
 
                 # read port/thermal assignments in workflow syntax for gds2palace Python code, and
                 # apply any app-specific post-import state (e.g. setupEM's simulator mode);
@@ -4712,8 +4762,13 @@ class MainWindowBase(QMainWindow):
                     log_lines.append("It is an openEMS script: setupEM writes a new Palace/Elmer model "
                                      "from its settings, the openEMS script is not changed.")
                 if not in_place:
-                    log_lines.append(f"Create Model writes {saved_values['model_basename']}.py next to "
-                                     f"{name}, which itself is not changed.")
+                    output = f"{saved_values['model_basename']}.py"
+                    if output == name:
+                        keep = (", a backup copy of it is kept first"
+                                if getattr(self, "backup_before_overwrite", None) else "")
+                        log_lines.append(f"Create Model writes the generated script over {name}{keep}.")
+                    else:
+                        log_lines.append(f"Create Model writes {output} next to {name}, which itself is not changed.")
                 log_lines.extend(path_messages)
                 if not_editable:
                     log_lines.append("Set by the script, not editable here:" if in_place else
