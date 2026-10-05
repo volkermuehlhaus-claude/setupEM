@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QLabel, QLineEdit, QComboBox,
     QPushButton, QFileDialog, QMessageBox, QGroupBox,
-    QCheckBox, QPlainTextEdit, QDialog, QSizePolicy, QFrame,
+    QCheckBox, QPlainTextEdit, QDialog, QSizePolicy, QFrame, QRadioButton, QDialogButtonBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsRectItem, QToolTip,
     )
@@ -4089,6 +4089,51 @@ class CreateModelTabBase(QWidget):
 
 # ---------- MAIN WINDOW (shared base) ----------
 
+class OpenPyModelDialog(QDialog):
+    """File > Open *.py model, when Preferences say "Ask each time": edit the
+    script in place, or make a new model from its settings."""
+
+    def __init__(self, parent, name, problem=""):
+        super().__init__(parent)
+        self.setWindowTitle("Open *.py model")
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Open <b>{name}</b> as:"))
+
+        self.edit_radio = QRadioButton("Edit this script")
+        edit_hint = QLabel(f"Not possible: {problem}." if problem else
+                           "Your changes are saved back into it. Loops and custom code stay.")
+        self.new_radio = QRadioButton("New model from its settings")
+        new_hint = QLabel("setupEM writes its own script next to it, this one is not changed.")
+        for radio, hint in ((self.edit_radio, edit_hint), (self.new_radio, new_hint)):
+            hint.setStyleSheet("color: #666;")
+            hint.setContentsMargins(22, 0, 0, 6)   # indented under the radio button text
+            hint.setWordWrap(True)
+            layout.addWidget(radio)
+            layout.addWidget(hint)
+        self.edit_radio.setEnabled(not problem)
+        (self.new_radio if problem else self.edit_radio).setChecked(True)
+
+        # bottom row: "Don't ask again" on the left, OK / Cancel on the right
+        layout.addSpacing(6)
+        bottom = QHBoxLayout()
+        self.remember = QCheckBox("Don't ask again")
+        self.remember.setToolTip("Change it later in File > Preferences > Files")
+        # a choice forced by this one script isn't a general setting
+        self.remember.setVisible(not problem)
+        bottom.addWidget(self.remember)
+        bottom.addStretch()
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Open")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        bottom.addWidget(buttons)
+        layout.addLayout(bottom)
+        self.setMinimumWidth(420)
+
+    def mode(self):
+        return "in_place" if self.edit_radio.isChecked() else "new_model"
+
+
 class MainWindowBase(QMainWindow):
     """Shared base for the setupEM and setupThermal MainWindow classes.
 
@@ -4788,32 +4833,11 @@ class MainWindowBase(QMainWindow):
             mode = "ask"
 
         if mode == "ask":
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Question)
-            box.setWindowTitle("Open *.py model")
-            # short text, the details are in the button tooltips
-            box.setText(f"{name} can't be edited in place ({problem})." if problem else f"Open {name}:")
-            edit_button = None
-            if not problem:
-                edit_button = box.addButton("Edit this script", QMessageBox.AcceptRole)
-                edit_button.setToolTip("Your changes are saved back into the script. "
-                                       "Loops, comments and custom code stay as they are.")
-            new_button = box.addButton("New model from its settings", QMessageBox.AcceptRole)
-            new_button.setToolTip("setupEM writes its own script next to it; this one is not changed.")
-            box.addButton(QMessageBox.Cancel)
-            box.setDefaultButton(edit_button or new_button)
-            remember = QCheckBox("Don't ask again")
-            remember.setToolTip("Change it later in File > Preferences > Files")
-            box.setCheckBox(remember)
-            box.exec()
-            clicked = box.clickedButton()
-            if clicked is edit_button and edit_button is not None:
-                mode = "in_place"
-            elif clicked is new_button:
-                mode = "new_model"
-            else:
+            dialog = OpenPyModelDialog(self, name, problem)
+            if dialog.exec() != QDialog.Accepted:
                 return
-            if remember.isChecked():
+            mode = dialog.mode()
+            if dialog.remember.isChecked():
                 set_preference(self.APP_NAME, "py_open_mode", mode)
         elif mode == "in_place" and problem:
             # say so instead of silently opening it the other way
