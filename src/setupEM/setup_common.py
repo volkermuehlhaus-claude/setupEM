@@ -100,7 +100,7 @@ FILL_FACTOR_CORRECTION_SOLVERS = getattr(
 PALACE_LINEAR_SOLVER_SETTINGS = tuple(getattr(simulation_setup, "PALACE_LINEAR_SOLVER_SETTINGS", ()))
 
 
-# QSettings scope for the File menu's "Load Recent Config"/"Import Recent Model" lists -
+# QSettings scope for the File menu's "Load Recent Config"/"Recent Models" lists -
 # per-app (organization + self.APP_NAME, i.e. "setupEM" or "setupThermal"), mirroring
 # stackupEditor.py's own "Open Recent" mechanism (same org name, separate app/key there).
 RECENT_FILES_ORG = "muehlhaus.com"
@@ -3658,7 +3658,8 @@ class CreateModelTabBase(QWidget):
                 QMessageBox.warning(
                     self, "Create Model",
                     f"In edit-in-place mode Create Model writes back to\n\n{MainWindow.script_model.path}\n\n"
-                    "and nowhere else. Use File > New or Import to make a new model.")
+                    "and nowhere else. Use File > New, or Open *.py model with \"Use its settings "
+                    "for a new model\", to make a new model.")
                 return None
             if not MainWindow.check_script_on_disk(saving=False):
                 return None
@@ -4141,7 +4142,7 @@ class MainWindowBase(QMainWindow):
         file_path = self._droppable_file_from_drop(event)
         if file_path:
             event.acceptProposedAction()
-            self.load_configuration_from_file(file_path)
+            self.open_file(file_path)
         else:
             event.ignore()
 
@@ -4155,11 +4156,9 @@ class MainWindowBase(QMainWindow):
         self.new_action.setShortcut(QKeySequence.New)
         self.load_settings_action = QAction("Load Config ...", self)
         self.save_action = QAction("Save Config ...", self)
-        self.import_model_action = QAction("Import from *.py model ...", self)
-        self.open_script_action = QAction("Open model script (edit in place) ...", self)
-        self.open_script_action.setToolTip("Edit an existing gds2palace model script: Create Model writes "
-                                           "only the values you change back into it, the rest of the "
-                                           "script (loops, comments, custom code) stays as it is")
+        # one entry for *.py models: edit in place or use the settings for a new
+        # model, as set in Preferences > Files (or asked each time)
+        self.import_model_action = QAction("Open *.py model ...", self)
         # only shown while a script is edited in place
         self.save_script_action = QAction("Save script", self)
         self.save_script_action.setShortcut(QKeySequence.Save)
@@ -4175,8 +4174,7 @@ class MainWindowBase(QMainWindow):
         self.load_settings_action.triggered.connect(lambda: self.load_configuration_dialog())
         self.save_action.triggered.connect(lambda: self.save_ask_filenamefile())
 
-        self.import_model_action.triggered.connect(lambda: self.import_from_python())
-        self.open_script_action.triggered.connect(lambda: self.open_script_in_place())
+        self.import_model_action.triggered.connect(lambda: self.open_py_model())
         self.save_script_action.triggered.connect(lambda: self.save_script_in_place())
         self.revert_script_action.triggered.connect(lambda: self.revert_script_in_place())
         self.export_model_action.triggered.connect(lambda: self.export_to_python())
@@ -4190,8 +4188,7 @@ class MainWindowBase(QMainWindow):
         file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         file_menu.addAction(self.import_model_action)
-        self.recent_model_menu = file_menu.addMenu("Import Recent Model")
-        file_menu.addAction(self.open_script_action)
+        self.recent_model_menu = file_menu.addMenu("Recent Models")
         file_menu.addAction(self.save_script_action)
         file_menu.addAction(self.revert_script_action)
         file_menu.addAction(self.export_model_action)
@@ -4425,10 +4422,10 @@ class MainWindowBase(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Config File", filter=f"*.{self.CONFIG_SUFFIX};;Python model code *.py")
         # we can load JSON or Python models, decide which suffix we have
         if file_path:
-            self.load_configuration_from_file(file_path)
+            self.open_file(file_path)
 
     def load_configuration_from_file(self, file_path, in_place=False, ask_unsaved=True):
-        # in_place: *.py only, from open_script_in_place() - edit this script in
+        # in_place: *.py only, from open_py_model() - edit this script in
         # place (preserve mode) instead of importing its values for a new script.
         # ask_unsaved: offer to save a script edited in place first (False for Revert / Reload)
         saved_values = self.saved_values
@@ -4640,8 +4637,10 @@ class MainWindowBase(QMainWindow):
                     loaded_message = (f"Editing {os.path.basename(file_path)} in place: Create Model "
                                       "writes only what you change here back into this script.")
                 else:
-                    self._add_recent_file(RECENT_MODEL_KEY, file_path)
                     loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
+                # Revert / Reload re-open the same script, that's not a new recent entry
+                if ask_unsaved:
+                    self._add_recent_file(RECENT_MODEL_KEY, file_path)
                 known = {name for name, _reason in not_editable}
                 for name, reason in unresolved + self._import_notes:
                     if name not in known:
@@ -4717,21 +4716,72 @@ class MainWindowBase(QMainWindow):
             return f"it is {label} model, open it in {other}"
         return ""
 
-    def open_script_in_place(self, file_path=None):
-        """File > Open model script (edit in place): edit an existing gds2palace
-        script; Create Model writes only the changed values back into it."""
+    # Preferences > Files > "When opening a *.py model"
+    PY_OPEN_MODES = ("ask", "in_place", "new_model")
+
+    def open_file(self, file_path):
+        """Open a file from Recent, drag & drop or Load Config: a *.py model the
+        way Preferences says, anything else as a settings file."""
+        if pathlib.Path(file_path).suffix.upper() == ".PY":
+            self.open_py_model(file_path)
+        else:
+            self.load_configuration_from_file(file_path)
+
+    def open_py_model(self, file_path=None):
+        """File > Open *.py model: edit the script in place (Create Model writes
+        only the changed values back into it), or use its settings for a new,
+        generated model - as set in Preferences, or asked each time."""
         if not file_path:
-            file_path, _ = QFileDialog.getOpenFileName(self, "Open Model Script", filter="*.py model code")
+            file_path, _ = QFileDialog.getOpenFileName(self, "Open *.py Model", filter="*.py model code")
             if not file_path:
                 return
+        name = os.path.basename(file_path)
         problem = self._in_place_problem(file_path)
-        if problem:
-            QMessageBox.warning(
-                self, "Open Model Script",
-                f"{os.path.basename(file_path)} can't be edited in place: {problem}.\n\n"
-                "File > Import from *.py model uses its values for a new, generated script instead.")
-            return
-        self.load_configuration_from_file(file_path, in_place=True)
+        mode = get_preference(self.APP_NAME, "py_open_mode", "ask")
+        if mode not in self.PY_OPEN_MODES:
+            mode = "ask"
+
+        if mode == "ask":
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Question)
+            box.setWindowTitle("Open *.py model")
+            text = f"How do you want to open {name}?\n\n"
+            if problem:
+                text += (f"It can't be edited in place: {problem}.\n\n"
+                         "Use its settings for a new model: setupEM writes its own script.")
+            else:
+                text += ("Edit this script: your changes are saved back into it, loops and "
+                         "custom code stay as they are.\n\n"
+                         "Use its settings for a new model: setupEM writes its own script.")
+            box.setText(text)
+            edit_button = None if problem else box.addButton("Edit this script", QMessageBox.AcceptRole)
+            new_button = box.addButton("Use its settings for a new model", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(edit_button or new_button)
+            remember = QCheckBox("Don't ask again (change in File > Preferences > Files)")
+            box.setCheckBox(remember)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is edit_button and edit_button is not None:
+                mode = "in_place"
+            elif clicked is new_button:
+                mode = "new_model"
+            else:
+                return
+            if remember.isChecked():
+                set_preference(self.APP_NAME, "py_open_mode", mode)
+        elif mode == "in_place" and problem:
+            # say so instead of silently opening it the other way
+            answer = QMessageBox.question(
+                self, "Open *.py model",
+                f"{name} can't be edited in place: {problem}.\n\n"
+                "Use its settings for a new model instead (setupEM writes its own script)?",
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes)
+            if answer != QMessageBox.Yes:
+                return
+            mode = "new_model"
+
+        self.load_configuration_from_file(file_path, in_place=(mode == "in_place"))
 
     def script_models_file(self):
         """Where run_with_overrides.py --record lists the models the script edited
@@ -5073,7 +5123,7 @@ class MainWindowBase(QMainWindow):
                 f"Could not find {filename}.\n\nIt will be removed from the recent files list.")
             self._remove_recent_file(key, filename)
             return
-        self.load_configuration_from_file(filename)
+        self.open_file(filename)
 
     def apply_native_config_data(self, data):
         # Hook: update the app-specific tab (ports / thermal objects) from
@@ -5085,14 +5135,6 @@ class MainWindowBase(QMainWindow):
         # of an imported *.py model and apply any other app-specific state
         # (e.g. setupEM's Palace/Elmer mode). Implemented in subclass.
         raise NotImplementedError
-
-    def import_from_python(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", filter=f"*.py model code")
-        # we can load JSON or Python models, decide which suffix we have
-        if file_path:
-            self.load_configuration_from_file(file_path)
-        else:
-            QMessageBox.information(self, "Error", f"Could not load file {file_path}")
 
     def save_user_inputs_to_file(self, filename):
         # make sure all tabs save their values
