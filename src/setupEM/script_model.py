@@ -327,9 +327,10 @@ class ScriptModel:
             if not stmts:
                 # a loop variable, an imported name, ...
                 return Site(key, node, _UNRESOLVED, False, f"uses {node.id}", kind, wrapper)
-            stmt, reason = self._single_assignment(stmts, self._var_other.get(node.id, 0), f"'{node.id}'")
+            other = self._var_other.get(node.id, 0)
+            stmt, reason = self._single_assignment(stmts, other, f"'{node.id}'")
             if stmt is None:
-                return Site(key, node, _UNRESOLVED, False, f"{node.id} is {reason}", kind, wrapper)
+                return self._read_only_last(key, stmts, other, f"{node.id} is {reason}", kind, node, wrapper, depth)
             return self._follow(key, stmt.value, "variable", wrapper, depth + 1)
         if isinstance(node, ast.Subscript):
             dkey = self._subscript_key(node)
@@ -339,7 +340,7 @@ class ScriptModel:
                     return Site(key, node, _UNRESOLVED, False, f"uses {dkey[0]}['{dkey[1]}']", kind, wrapper)
                 stmt, reason = self._single_assignment(stmts, 0, f"{dkey[0]}['{dkey[1]}']")
                 if stmt is None:
-                    return Site(key, node, _UNRESOLVED, False, reason, kind, wrapper)
+                    return self._read_only_last(key, stmts, 0, reason, kind, node, wrapper, depth)
                 return self._follow(key, stmt.value, "dict", wrapper, depth + 1)
         # a value that refers to other names (e.g. fstop = 2*ftarget, or a sweep's
         # loop variable) would lose that link if overwritten - keep it read-only
@@ -398,18 +399,32 @@ class ScriptModel:
                 stmts = self._dict_assigns[(self.settings_dict, name)]
                 stmt, reason = self._single_assignment(stmts, 0, f"{self.settings_dict}['{name}']")
                 if stmt is None:
-                    return Site(key, stmts[0].targets[0] if isinstance(stmts[0], ast.Assign) else stmts[0].target,
-                                _UNRESOLVED, False, reason, "dict")
+                    target = stmts[0].targets[0] if isinstance(stmts[0], ast.Assign) else stmts[0].target
+                    return self._read_only_last(key, stmts, 0, reason, "dict", target)
                 return self._follow(key, stmt.value, "dict")
         for name in GUI_KEY_ALIASES.get(key, (key,)):
             if name in self._var_assigns or self._var_other.get(name):
                 stmts = self._var_assigns.get(name, [])
-                stmt, reason = self._single_assignment(stmts, self._var_other.get(name, 0), f"'{name}'")
+                other = self._var_other.get(name, 0)
+                stmt, reason = self._single_assignment(stmts, other, f"'{name}'")
                 if stmt is None:
-                    target = stmts[0].targets[0] if stmts else self.tree
-                    return Site(key, target, _UNRESOLVED, False, reason, "variable")
+                    if not stmts:
+                        # only a loop variable or similar
+                        return Site(key, self.tree, _UNRESOLVED, False, f"uses {name}", "variable")
+                    return self._read_only_last(key, stmts, other, reason, "variable", stmts[0].targets[0])
                 return self._follow(key, stmt.value, "variable")
         return None
+
+    def _read_only_last(self, key, stmts, other_bindings, reason, kind, node, wrapper=None, depth=0):
+        """A setting assigned several times is read-only; its value for showing
+        in the GUI is the last plain assignment in the file, the one the script
+        ends up using (unless a loop or similar also binds it)."""
+        assigns = [s for s in stmts if isinstance(s, ast.Assign)]
+        if assigns and not other_bindings:
+            last = max(assigns, key=lambda s: (s.lineno, s.col_offset))
+            inner = self._follow(key, last.value, kind, wrapper, depth + 1)
+            return Site(key, inner.node, inner.value, False, reason, kind, wrapper)
+        return Site(key, node, _UNRESOLVED, False, reason, kind, wrapper)
 
     # ---- ports and thermal objects ---------------------------------------
 

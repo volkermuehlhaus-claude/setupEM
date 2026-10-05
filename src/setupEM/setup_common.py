@@ -3733,7 +3733,9 @@ class CreateModelTabBase(QWidget):
         MainWindow = self.MainWindow
         if MainWindow.preserve_mode_applies(pymodel_filename):
             runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_with_overrides.py")
-            args = [runner, pymodel_filename]
+            # the script may start the solver itself (start_simulation = True);
+            # in setupEM, Start Simulation does that
+            args = [runner, pymodel_filename, "--no-solver"]
             if getattr(self, "_in_place_source", None) is not None:
                 args += ["--source", self._preview_source_path]
             for key in ("preview_only", "no_preview"):
@@ -4525,17 +4527,26 @@ class MainWindowBase(QMainWindow):
                 # check what directory the Python code is in, we might use that to prefix gdsfile and XML file
                 modelcode_path = os.path.dirname(file_path)
 
-                # variable assignments
-                # resolve simple module-level variables/expressions (e.g.
-                # settings['fstart'] = ftarget, or settings['fpoint'] = [ftarget]) to
-                # their literal value before the per-key type coercion below - see
-                # collect_module_level_constants() / resolve_value_text()
-                known_constants = collect_module_level_constants(file_path)
-                imported_parameters = parse_assignments(file_path)
                 # values that can't be resolved here, e.g. a loop variable in a sweep
                 # script (variable_overrides = {'Temp_Celsius': Temp_Celsius} inside
                 # "for Temp_Celsius in ..."): skipped and listed, instead of a crash
                 unresolved = []
+                try:
+                    script = ScriptModel.from_file(file_path)
+                except (SyntaxError, ValueError, OSError, UnicodeDecodeError):
+                    script = None
+                if script is not None:
+                    # read with the same parser that edits a script in place, so the
+                    # GUI shows exactly the values Save would find and write back
+                    self._import_values_from_script(script, set(import_mapping.values()),
+                                                    modelcode_path, unresolved)
+                    imported_parameters = {}
+                else:
+                    # not valid Python: the older line-based reader, which resolves
+                    # simple module-level variables/expressions (settings['fstart'] =
+                    # ftarget) - see collect_module_level_constants() / resolve_value_text()
+                    known_constants = collect_module_level_constants(file_path)
+                    imported_parameters = parse_assignments(file_path)
                 for import_key, import_value in imported_parameters.items():
                         if import_key in import_mapping.keys():
                             if import_key not in import_value:  # skip the section where key might appear in different context
@@ -4668,6 +4679,41 @@ class MainWindowBase(QMainWindow):
 
             else:
                 QMessageBox.information(self, "Error", f"Could not load file {file_path}")
+
+    def _import_values_from_script(self, script, keys, modelcode_path, unresolved):
+        """Fill saved_values from a parsed model script (ScriptModel), in GUI
+        units: GHz instead of Hz, purpose as a flat list, paths relative to the
+        script resolved. A value the script computes (e.g. from a loop variable)
+        is added to unresolved and keeps its default."""
+        saved_values = self.saved_values
+        for key in sorted(keys):
+            site = script.site(key)
+            if site is None:
+                continue
+            if not site.resolved:
+                unresolved.append((key, site.reason or "computed by the script"))
+                continue
+            value = site.value
+            try:
+                if key in ("fpoint", "fdump"):
+                    values = value if isinstance(value, (list, tuple)) else [value]
+                    value = [float(f) / 1e9 for f in values]
+                elif key in ("fstart", "fstop", "fstep"):
+                    value = float(value) / 1e9
+                elif key == "purpose":
+                    value = normalize_purpose_list(value)
+                elif key == "ELMER_MPI_THREADS":
+                    value = int(value)
+                elif key in ("GdsFile", "SubstrateFile"):
+                    value = str(value)
+                    if not os.path.isabs(value):
+                        value = os.path.normpath(os.path.join(modelcode_path, value)).replace('\\', '/')
+                elif isinstance(value, tuple):
+                    value = list(value)
+            except (TypeError, ValueError):
+                unresolved.append((key, f"not a valid value: {script.source(site.node)}"))
+                continue
+            saved_values[key] = value
 
     # ---------- Preserve mode: edit an imported *.py model in place ----------
 
@@ -4945,14 +4991,8 @@ class MainWindowBase(QMainWindow):
             raw_values=raw_values,
             **self.preserve_object_kwargs(baseline["objects"], current["objects"]))
         refused.extend(more_refused)
-        # setupEM starts the solver itself; a script that starts it too would run it twice
-        site = model.site("start_simulation")
-        if site is not None and site.resolved and site.value is True:
-            if site.writable:
-                model.set_value("start_simulation", "False")
-                written.append("start_simulation = False (setupEM starts the solver)")
-            else:
-                refused.append(("start_simulation", site.reason))
+        # start_simulation in the script stays as written: when setupEM runs the
+        # script, run_with_overrides.py --no-solver skips its own solver start
         return model.result(), written, refused, current
 
     def preserve_mode_written(self, pymodel_filename, code, snapshot):

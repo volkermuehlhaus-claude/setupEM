@@ -35,7 +35,9 @@ A script may build several models, e.g. a parameter sweep calling
 create_palace() in a loop. --record writes every model it creates (run folder,
 name, solver, stackup variable overrides, plain settings values) to a JSON
 file, so setupEM knows which models to run. --first-only stops the script
-right after its first model is built (a preview only needs one).
+right after its first model is built (a preview only needs one). --no-solver
+keeps a script with start_simulation = True from starting the solver itself
+(setupEM's Start Simulation does that).
 """
 
 import argparse
@@ -65,6 +67,46 @@ class _Run:
         self.models = []
         self.models_started = 0
         self.variable_overrides = None
+
+
+# programs that start the solver; a script with start_simulation = True runs
+# one of these (e.g. run_command = ['./run_sim']) after building each model
+_SOLVER_PROGRAMS = ("run_sim", "run_elmer", "run_palace", "elmersolver", "palace")
+
+
+def _starts_solver(command):
+    if isinstance(command, (list, tuple)):
+        words = [str(w) for w in command]
+    else:
+        words = str(command).replace("&&", " ").replace(";", " ").split()
+    for word in words:
+        name = os.path.basename(word.strip("'\"")).lower()
+        if name.endswith((".bat", ".sh", ".exe")):
+            name = name.rsplit(".", 1)[0]
+        if name.startswith(_SOLVER_PROGRAMS[:4]) or name == "palace":
+            return True
+    return False
+
+
+def _skip_solver_starts():
+    """setupEM starts the solver itself (Start Simulation, one model after the
+    other): while it runs a script, the script's own solver start is skipped
+    instead of running every simulation inside Create Mesh."""
+    import subprocess
+
+    def wrap(original, result):
+        def call(*args, **kwargs):
+            command = args[0] if args else kwargs.get("args", kwargs.get("command", ""))
+            if _starts_solver(command):
+                print(f"setupEM: not starting {command!r} from the script, Start Simulation runs the solver.")
+                return result(command)
+            return original(*args, **kwargs)
+        return call
+
+    subprocess.run = wrap(subprocess.run, lambda c: subprocess.CompletedProcess(c, 0, "", ""))
+    subprocess.call = wrap(subprocess.call, lambda c: 0)
+    subprocess.check_call = wrap(subprocess.check_call, lambda c: 0)
+    os.system = wrap(os.system, lambda c: 0)
 
 
 def _parse_value(text):
@@ -199,6 +241,8 @@ def main(argv=None):
                         help="write the models the script creates (run folders, parameters) to this file")
     parser.add_argument("--first-only", action="store_true",
                         help="stop right after the script has built its first model")
+    parser.add_argument("--no-solver", action="store_true",
+                        help="don't let the script start the solver itself (start_simulation = True)")
     args = parser.parse_args(argv)
 
     overrides = {}
@@ -214,6 +258,8 @@ def main(argv=None):
         if getattr(module, "__name__", "").split(".")[-1] in (WORKFLOW_MODULE_SUFFIX, STACKUP_MODULE_SUFFIX):
             _patch(module, run)
     sys.meta_path.insert(0, _PatchingFinder(run))
+    if args.no_solver:
+        _skip_solver_starts()
 
     # same environment as "python model.py"
     sys.argv = [script]

@@ -109,6 +109,22 @@ def test_first_only_stops_right_after_the_first_model(tmp_path):
     assert [m["model_basename"] for m in json.loads(record.read_text())] == ["m_T25"]
 
 
+def test_no_solver_skips_the_scripts_own_solver_start(tmp_path):
+    # start_simulation = True: the script runs ./run_sim itself; other commands still run
+    script = tmp_path / "model.py"
+    script.write_text(textwrap.dedent("""
+        import subprocess, sys, os
+        subprocess.run(['./run_sim'], shell=True)
+        os.system('wsl.exe --cd /tmp -- bash -lc ./run_sim')
+        r = subprocess.run([sys.executable, '-c', 'print(42)'], capture_output=True, text=True)
+        print('other command output:', r.stdout.strip())
+    """))
+    result = subprocess.run([sys.executable, RUNNER, str(script), "--no-solver"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("not starting") == 2
+    assert "other command output: 42" in result.stdout
+
+
 def test_source_runs_other_code_as_the_script(tmp_path):
     # unsaved changes: the code comes from another file, but __file__, the
     # folder on sys.path and the output names stay those of the script
