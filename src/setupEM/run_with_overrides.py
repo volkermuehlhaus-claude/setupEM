@@ -60,10 +60,11 @@ _NOT_PARAMETERS = {"sim_path", "model_basename", "preview_only", "no_preview", "
 class _Run:
     """What this run of the script does and records."""
 
-    def __init__(self, overrides, record=None, first_only=False):
+    def __init__(self, overrides, record=None, first_only=False, gui_first_only=False):
         self.overrides = overrides
         self.record = record
         self.first_only = first_only
+        self.gui_first_only = gui_first_only
         self.models = []
         self.models_started = 0
         self.variable_overrides = None
@@ -180,6 +181,11 @@ def _patch(module, run):
             settings = next((a for a in reversed(args) if isinstance(a, dict)), None)
         if settings is not None:
             settings.update(run.overrides)
+            if run.gui_first_only and run.models_started > 1:
+                # a sweep: the gmsh window only for the first model, the others
+                # are built without one (no_gui only controls the windows)
+                settings["no_gui"] = True
+                print(f"setupEM: model {run.models_started} is built without a gmsh window.")
         result = original(*args, **kwargs)
         if settings is not None:
             _record_model(run, settings, result)
@@ -243,6 +249,8 @@ def main(argv=None):
                         help="stop right after the script has built its first model")
     parser.add_argument("--no-solver", action="store_true",
                         help="don't let the script start the solver itself (start_simulation = True)")
+    parser.add_argument("--gui-first-only", action="store_true",
+                        help="show gmsh windows only for the first model the script builds")
     args = parser.parse_args(argv)
 
     overrides = {}
@@ -251,7 +259,7 @@ def main(argv=None):
         if not sep or not key:
             parser.error(f"--set expects KEY=VALUE, got {item!r}")
         overrides[key.strip()] = _parse_value(value.strip())
-    run = _Run(overrides, record=args.record, first_only=args.first_only)
+    run = _Run(overrides, record=args.record, first_only=args.first_only, gui_first_only=args.gui_first_only)
 
     script = os.path.abspath(args.script)
     for module in list(sys.modules.values()):

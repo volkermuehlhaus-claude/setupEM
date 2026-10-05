@@ -98,6 +98,17 @@ def test_record_lists_every_model_of_a_sweep(tmp_path):
     assert models[0]["settings"] == {"fstop": 10e9, "palace": True}   # objects and run flags left out
 
 
+def test_gui_first_only_hides_windows_after_the_first_model(tmp_path):
+    record = tmp_path / "models.json"
+    result = run_sweep(tmp_path, "--record", str(record), "--gui-first-only")
+    assert result.returncode == 0, result.stderr
+    # the fake workflow writes what the last create_model() got
+    assert json.loads((tmp_path / "localflow" / "received.json").read_text())["no_gui"] is True
+    assert result.stdout.count("built without a gmsh window") == 1   # model 2 only
+    # no_gui isn't a model parameter: it must not make the models look different
+    assert all("no_gui" not in m["settings"] for m in json.loads(record.read_text()))
+
+
 def test_first_only_stops_right_after_the_first_model(tmp_path):
     # nothing after the first create_model() runs: not the rest of the loop
     # pass ("built 25"), not the second model's setup

@@ -3745,8 +3745,9 @@ class CreateModelTabBase(QWidget):
                 # a sweep script would open one preview per model
                 args += ["--first-only"]
             else:
-                # list the models the script creates, for Start Simulation
-                args += ["--record", MainWindow.script_models_file()]
+                # list the models the script creates, for Start Simulation; a sweep
+                # shows the gmsh window for its first model only
+                args += ["--record", MainWindow.script_models_file(), "--gui-first-only"]
             return args
         return [pymodel_filename]
 
