@@ -265,7 +265,8 @@ Also runnable standalone, without the full setupEM/setupThermal GUI, either dire
 
 ## KLayout (draft)
 
-The KLayout tab prepares an EM model in a running KLayout, without the EM panel of the klayout_em_export plug-in:
+Off by default: **File > Preferences > KLayout** shows the KLayout tab, as the first tab; without it the
+tabs are as before. The KLayout tab prepares an EM model in a running KLayout, without the EM panel of the klayout_em_export plug-in:
 choose the stackup, pick ports in the layout (click a metal edge for a via port, Shift+click into a gap for an
 in-plane port), replace PDK devices by ports, mark the EM region and the ground, and press **Export and Load**: the
 EM layout, its .simcfg and port map are written and the .simcfg is loaded here.
@@ -273,6 +274,10 @@ EM layout, its .simcfg and port map are written and the .simcfg is loaded here.
 It needs the KLayout package `klayout_remote` (a local link: Tools > Remote Link in KLayout) and the
 `klayout_em_export` package in setupEM's Python (`pip install -e <klayout_em_export repo>`), whose code setupEM
 sends into KLayout. **Connect** finds a KLayout with the link switched on, or starts one (editor mode, link on).
+
+The ports of such a model live in the layout: the KLayout tab lists and edits them, Export and Load copies them
+into the Ports tab (which then says so). Change them in KLayout and export again. Create Circuit (below Export)
+puts the PDK devices back around the EM result for a circuit simulator.
 
 ## Code 
 Behind the scenes, the setupEM user interface created Python model code for gds2palace, and you can check the resulting code on the "Code" tab.

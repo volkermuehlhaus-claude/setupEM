@@ -81,8 +81,11 @@ def tab(request, monkeypatch, tmp_path):
     import setupEM.klayout_remote_client as krc
     monkeypatch.setattr(krc, "FOLDER", str(links))
     monkeypatch.setattr(klayout_link, "set_preference", lambda *a: None)     # not the user's preferences
-    from setupEM.setupEM import MainWindow
-    window = MainWindow()
+    import setupEM.setupEM as setupem
+    real = setupem.get_preference_bool       # the KLayout tab on (File > Preferences > KLayout), without storing it
+    monkeypatch.setattr(setupem, "get_preference_bool", lambda app, key, default: True if key == "klayout_tab"
+                        else real(app, key, default))
+    window = setupem.MainWindow()
     monkeypatch.setattr(window, "_add_recent_file", lambda *a: None)        # nor the user's recent files
     tab = window.klayout_tab
     env = dict(os.environ, KLAYOUT_HOME=str(home), KLAYOUT_PATH=str(home), HOME=str(user), USERPROFILE=str(user))
@@ -168,3 +171,17 @@ def test_connects_after_start_dialog(tab, tmp_path):
     closed = tmp_path / "links" / "closed_dialogs.txt"
     assert closed.exists() and "Tip" in closed.read_text(), "no start dialog: the test checks nothing"
     assert messages == [], messages
+
+
+def test_off_by_default(monkeypatch):
+    """Without the preference the tabs are as before: no KLayout tab, Input Files first."""
+    import setupEM.setupEM as setupem
+    real = setupem.get_preference_bool
+    monkeypatch.setattr(setupem, "get_preference_bool", lambda app, key, default: False if key == "klayout_tab"
+                        else real(app, key, default))
+    app = QApplication.instance() or QApplication([])
+    window = setupem.MainWindow()
+    names = [window.tabs_widget.tabText(i) for i in range(window.tabs_widget.count())]
+    assert "KLayout" not in names and names[0] == "Input Files" and window.klayout_tab is None, names
+    window.close()
+    app.processEvents()

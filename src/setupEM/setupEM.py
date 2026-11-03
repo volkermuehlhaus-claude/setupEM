@@ -3384,6 +3384,19 @@ class PreferencesDialog(QDialog):
         create_form.addStretch()
         self.tabs.addTab(create_widget, "Viewer")
 
+        # ---------- KLayout tab ----------
+        klayout_widget = QWidget()
+        klayout_form = QVBoxLayout(klayout_widget)
+        klayout_form.setAlignment(Qt.AlignTop)
+        self.klayout_tab_checkbox = QCheckBox("Show the KLayout tab: prepare the model in a running KLayout "
+                                              "(ports, devices, EM region, export)")
+        self.klayout_tab_checkbox.setChecked(get_preference_bool(self.app_name, "klayout_tab", False))
+        self.klayout_tab_checkbox.setToolTip("Needs the klayout_remote package in KLayout and the klayout_em_export "
+                                             "package in this Python. Off: the tabs are as before.")
+        klayout_form.addWidget(self.klayout_tab_checkbox)
+        self._reset_targets.append((self.klayout_tab_checkbox, "klayout_tab", False, "bool"))
+        self.tabs.addTab(klayout_widget, "KLayout")
+
         # ---------- Simplify GDS tab ----------
         simplify_widget = QWidget()
         simplify_form = QVBoxLayout(simplify_widget)
@@ -3527,6 +3540,7 @@ class PreferencesDialog(QDialog):
         set_preference(self.app_name, "palace_max_ram_gb", self.palace_max_ram_edit.text())
         set_preference(self.app_name, "enable_model_fit_button", self.enable_model_fit_checkbox.isChecked())
         set_preference(self.app_name, "enable_status_bar", self.enable_status_bar_checkbox.isChecked())
+        set_preference(self.app_name, "klayout_tab", self.klayout_tab_checkbox.isChecked())
         set_preference(self.app_name, "viewer_3d", self.viewer_3d_combo.currentData())
         set_preference(self.app_name, "simplify_max_hole_area", self.simplify_max_hole_area_edit.text())
         set_preference(self.app_name, "simplify_fill_maxsize", self.simplify_fill_maxsize_edit.text())
@@ -3535,6 +3549,7 @@ class PreferencesDialog(QDialog):
 
         # live update, no restart needed
         self.MainWindow.create_model_tab.apply_preference_visibility()
+        self.MainWindow.apply_klayout_tab()
 
         super().accept()
 
@@ -3546,8 +3561,6 @@ class MainWindow(MainWindowBase):
     APP_NAME = APP_NAME
     MODEL_KIND = MODEL_KIND_EM
     CONFIG_SUFFIX = CONFIG_SUFFIX
-    # the KLayout tab comes first (grey); the other tabs keep their colors
-    TAB_HEADER_COLORS = ["#E0E0E0"] + MainWindowBase.TAB_HEADER_COLORS
 
     def __init__(self):
         super().__init__()
@@ -3588,10 +3601,9 @@ class MainWindow(MainWindowBase):
         self.mesh_tab = MeshTab(self)
         self.create_model_tab = CreateModelTab(self)
         self.modeleditor_tab = ModelEditorTab(self)
-        self.klayout_tab = KLayoutTab(self)
+        self.klayout_tab = None         # File > Preferences > KLayout; see apply_klayout_tab()
 
-        # Add tabs, in the order of the work: the KLayout tab prepares the layout and fills Input Files and Ports
-        self.tabs_widget.addTab(self.klayout_tab, "KLayout")
+        # Add tabs
         self.tabs_widget.addTab(self.file_tab, "Input Files")
         self.tabs_widget.addTab(self.frequencies_tab, "Frequencies")
         self.tabs_widget.addTab(self.ports_tab, "Ports")
@@ -3600,10 +3612,9 @@ class MainWindow(MainWindowBase):
         self.tabs_widget.addTab(self.modeleditor_tab, "Code")
 
         self.apply_tab_header_colors()
-        # start on Input Files: a model without KLayout needs nothing from the KLayout tab
-        self.tabs_widget.setCurrentWidget(self.file_tab)
-        self._previous_index = self.tabs_widget.indexOf(self.file_tab)
+        self._previous_index = 0
         self.tabs_widget.currentChanged.connect(self.on_tab_change)
+        self.apply_klayout_tab()
         main_layout.addWidget(self.tabs_widget)
 
         # Stackup data from XML, used when showing stackup viewer
@@ -3910,6 +3921,30 @@ class MainWindow(MainWindowBase):
 
 
     # ---------- Preferences dialog hook ----------
+    def apply_klayout_tab(self):
+        """Show or hide the KLayout tab (preference "klayout_tab", off by default: the tabs stay as they were).
+        Shown, it comes first, in the order of the work: it prepares the layout and fills Input Files and Ports."""
+        wanted = get_preference_bool(APP_NAME, "klayout_tab", False)
+        shown = self.klayout_tab is not None and self.tabs_widget.indexOf(self.klayout_tab) >= 0
+        if wanted == shown:
+            return
+        current = self.tabs_widget.currentWidget()
+        self.tabs_widget.blockSignals(True)
+        if wanted:
+            if self.klayout_tab is None:
+                self.klayout_tab = KLayoutTab(self)
+            self.tabs_widget.insertTab(0, self.klayout_tab, "KLayout")
+            self.TAB_HEADER_COLORS = ["#E0E0E0"] + MainWindowBase.TAB_HEADER_COLORS     # grey, the others unchanged
+        else:
+            self.klayout_tab.disconnect()
+            self.tabs_widget.removeTab(self.tabs_widget.indexOf(self.klayout_tab))
+            self.TAB_HEADER_COLORS = MainWindowBase.TAB_HEADER_COLORS
+        self.apply_tab_header_colors()
+        self.tabs_widget.setCurrentWidget(current if current is not self.klayout_tab or wanted else self.file_tab)
+        self._previous_index = self.tabs_widget.currentIndex()
+        self.tabs_widget.blockSignals(False)
+        self.ports_tab.update_klayout_note()
+
     def open_preferences_dialog(self):
         dialog = PreferencesDialog(self)
         dialog.exec()

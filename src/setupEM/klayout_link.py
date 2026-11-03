@@ -16,11 +16,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -37,6 +39,7 @@ PACKAGE = "klayout_em_export"
 REMOTE = PACKAGE + ".remote"
 PREF_PROGRAM = "klayout_program"
 PREF_TECHNOLOGY = "klayout_technology"
+PREF_PDK = "circuit_pdk"
 START_TIMEOUT = 120                 # s for a KLayout started here to switch the link on
 MARKS = {"ok": ("✓", "#1a8f1a"), "warn": ("⚠", "#c87800"), "error": ("✗", "#c00000")}
 MENU_HINT = "In KLayout: Tools > Remote Link > Enable Remote Link (needs the klayout_remote package)."
@@ -169,6 +172,7 @@ class KLayoutTab(QWidget):
         layout.addWidget(self._devices_group())
         layout.addWidget(self._ports_group())
         layout.addWidget(self._export_group())
+        layout.addWidget(self._circuit_group())
         layout.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll)
@@ -346,6 +350,100 @@ class KLayoutTab(QWidget):
         row.addStretch(1)
         box.addLayout(row)
         return group
+
+    def _circuit_group(self):
+        group = QGroupBox("Create Circuit: the EM result with the PDK devices put back, for a circuit simulator")
+        form = QFormLayout(group)
+        self.portmap_edit, self.snp_edit, self.pdk_edit, self.circuit_out_edit = (QLineEdit() for _ in range(4))
+        self.pdk_edit.setText(get_preference("setupEM", PREF_PDK, ""))
+        for label, edit, browse in (("Port map", self.portmap_edit, self._browse_portmap),
+                                    ("S-parameters (.sNp, with 0 Hz)", self.snp_edit, self._browse_snp),
+                                    ("PDK folder", self.pdk_edit, self._browse_pdk),
+                                    ("Output", self.circuit_out_edit, self._browse_circuit_out)):
+            edit.setStyleSheet(EDIT_STYLE_OPTIONAL)
+            row = QHBoxLayout()
+            row.addWidget(edit, 1)
+            b = QPushButton("Browse ...")
+            b.clicked.connect(browse)
+            row.addWidget(b)
+            form.addRow(label, row)
+        self.pdk_edit.setToolTip("Optional: the ihp-sg13g2 or ihp-sg13cmos5l folder of IHP-Open-PDK, for the model "
+                                 "library paths")
+        self.simulator_box = QComboBox()
+        self.circuit_choices = []
+        try:
+            from klayout_em_export import circuit
+            self.circuit_choices = list(circuit.CHOICES)
+        except Exception:               # an older klayout_em_export: its circuit module needs KLayout
+            pass
+        self.simulator_box.addItems([label for label, _, _ in self.circuit_choices])
+        self.simulator_box.currentIndexChanged.connect(lambda index: self._update_circuit_output())
+        self.snp_edit.textChanged.connect(lambda text: self._update_circuit_output())
+        form.addRow("Simulator", self.simulator_box)
+        self.circuit_btn = QPushButton("Create Circuit")
+        self.circuit_btn.setEnabled(bool(self.circuit_choices))
+        self.circuit_btn.setToolTip(f"runs the circuit wrapper of {PACKAGE} with this Python ({sys.executable}), "
+                                    "which needs snp2le")
+        self.circuit_btn.clicked.connect(self.create_circuit)
+        form.addRow("", self.circuit_btn)
+        return group
+
+    def _browse_portmap(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Port map of the export", self.portmap_edit.text(),
+                                              "Port map (*_portmap.json);;All files (*)")
+        if path:
+            self.portmap_edit.setText(path)
+
+    def _browse_snp(self):
+        path, _ = QFileDialog.getOpenFileName(self, "EM result with a 0 Hz point", self.snp_edit.text(),
+                                              "Touchstone (*.s*p);;All files (*)")
+        if path:
+            self.snp_edit.setText(path)
+
+    def _browse_pdk(self):
+        path = QFileDialog.getExistingDirectory(self, "IHP-Open-PDK folder (ihp-sg13g2 or ihp-sg13cmos5l)",
+                                                self.pdk_edit.text())
+        if path:
+            self.pdk_edit.setText(path)
+            set_preference("setupEM", PREF_PDK, path)
+
+    def _browse_circuit_out(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Circuit file", self.circuit_out_edit.text(), "All files (*)")
+        if path:
+            self.circuit_out_edit.setText(path)
+
+    def _update_circuit_output(self):
+        if not self.circuit_choices:
+            return
+        from klayout_em_export import circuit
+        _, simulator, em = self.circuit_choices[self.simulator_box.currentIndex()]
+        self.circuit_out_edit.setText(circuit.default_output(self.snp_edit.text().strip(), simulator, em))
+
+    def create_circuit(self):
+        from klayout_em_export import circuit
+        portmap, snp = self.portmap_edit.text().strip(), self.snp_edit.text().strip()
+        output = self.circuit_out_edit.text().strip()
+        missing = [name for name, path in (("port map", portmap), ("S-parameter file", snp)) if not os.path.isfile(path)]
+        if missing or not output:
+            QMessageBox.warning(self, "Create Circuit", "Choose the " + (" and ".join(missing) or "output file") +
+                                " first.")
+            return
+        _, simulator, em = self.circuit_choices[self.simulator_box.currentIndex()]
+        self.circuit_btn.setEnabled(False)
+        self.circuit_btn.setText("Creating ...")
+        QApplication.processEvents()
+        try:
+            ok, report = circuit.run_wrapper(sys.executable, portmap, snp, output, simulator, em,
+                                             self.pdk_edit.text().strip())
+        finally:
+            self.circuit_btn.setEnabled(True)
+            self.circuit_btn.setText("Create Circuit")
+        box = QMessageBox(QMessageBox.Information if ok else QMessageBox.Warning, "Create Circuit",
+                          f"Circuit for {simulator}: {output}" if ok else "The circuit wrapper failed.",
+                          QMessageBox.Ok, self)
+        box.setDetailedText(report)
+        box.exec()
+        return ok
 
     # ---------- link ----------
 
@@ -833,6 +931,7 @@ class KLayoutTab(QWidget):
             box.exec()
         self.MainWindow.load_configuration_from_file(result["simcfg"])
         self.MainWindow.ports_tab.update_klayout_note()
+        self.portmap_edit.setText(result["portmap"])
 
     def is_last_export(self, gds):
         """Whether gds is the EM layout of this tab's last Export and Load."""
