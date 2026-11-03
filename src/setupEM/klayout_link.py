@@ -12,6 +12,7 @@ Needs:
 """
 import html
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -20,9 +21,9 @@ import time
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 if __package__ in (None, ""):
@@ -152,14 +153,25 @@ class KLayoutTab(QWidget):
         self.port_rows = []             # ("port", row) / ("proposed", row) / ("cut", row) per table row
         self.device_rows = []
         self._starting = None           # (process, deadline) while a started KLayout comes up
+        self.last_export = None         # remote.export() result of the last Export and Load
 
-        layout = QVBoxLayout(self)
+        # in a scroll area: the tab is taller than setupEM's window
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignTop)
         layout.addWidget(self._link_group())
         layout.addWidget(self._setup_group())
         layout.addWidget(self._devices_group())
         layout.addWidget(self._ports_group())
         layout.addWidget(self._export_group())
+        layout.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(200)
@@ -258,6 +270,7 @@ class KLayoutTab(QWidget):
         box = QVBoxLayout(group)
         self.devices_label = QLabel()
         self.devices_label.setWordWrap(True)
+        self.devices_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         box.addWidget(self.devices_label)
         self.devices_table = self._table(["#", "Type", "Value", "Ports", "Status"])
         self.devices_table.setMaximumHeight(160)
@@ -286,6 +299,7 @@ class KLayoutTab(QWidget):
         self.ports_label.setWordWrap(True)
         box.addWidget(self.ports_label)
         self.ports_table = self._table(["Port", "Layer", "Settings", "Export #", "Problems"])
+        self.ports_table.setMinimumHeight(220)
         self.ports_table.itemSelectionChanged.connect(self._ports_selected)
         self.ports_table.cellDoubleClicked.connect(self._port_activated)
         box.addWidget(self.ports_table)
@@ -583,6 +597,7 @@ class KLayoutTab(QWidget):
                 self.devices_table.setItem(i, col, self._item(value, f"{row['where']}\n{row['why']}"))
 
     def _fill_ports(self, p):
+        types = self.state.get("devices", {}).get("types", {})     # device id -> type (npn13G2, rhigh, ...)
         self.ports_label.setText(marked(p["state"], p["text"]))
         self.port_rows = [("port", r) for r in p["rows"]] + [("proposed", r) for r in p["proposed"]] + \
                          [("cut", r) for r in p["cut_without_ground"]]
@@ -592,8 +607,8 @@ class KLayoutTab(QWidget):
                 text = r["text"]
                 if r["device"]:
                     k = r["device"]["number"]
-                    text += f"  [{r['device']['terminal']} of {'#' + str(k) + ' ' if k else ''}" \
-                            f"{r['device']['id'].split('@')[0]}]"
+                    name = types.get(r["device"]["id"]) or r["device"]["id"].split("@")[0]
+                    text += f"  [{r['device']['terminal']} of {'#' + str(k) + ' ' if k else ''}{name}]"
                 export = "– (outside)" if r["export_number"] is None else str(r["export_number"])
                 values = (str(r["port"]), str(r["layer"]), text, export, "; ".join(r["problems"]) or "ok")
             elif kind == "proposed":
@@ -799,6 +814,7 @@ class KLayoutTab(QWidget):
             r = self.call("export", overwrite=True, **args)
         if not isinstance(r, dict):
             return
+        self.last_export = r
         self.refresh()
         self.MainWindow.statusBar().showMessage(f"Exported {r['gds']} ({r['simcfg_ports']} of {r['ports']} port(s) in "
                                                 "the .simcfg)", 10000)
@@ -816,3 +832,21 @@ class KLayoutTab(QWidget):
                                             for s in result["stale_scripts"]))
             box.exec()
         self.MainWindow.load_configuration_from_file(result["simcfg"])
+
+    def highlight_exported_port(self, layer):
+        """Highlight in KLayout the layout port that became the exported port on GDS layer `layer` (setupEM's Ports
+        tab), if the loaded model is the last export from this tab."""
+        r = self.last_export
+        if self.link is None or r is None:
+            return
+        gds = str(self.MainWindow.saved_values.get("GdsFile", ""))
+        if os.path.normcase(os.path.abspath(gds)) != os.path.normcase(os.path.abspath(r["gds"])):
+            return
+        try:
+            with open(r["portmap"]) as f:
+                ports = json.load(f)["ports"]
+        except (OSError, ValueError, KeyError):
+            return
+        layout_ports = [p["layout_port"] for p in ports if str(p.get("layer")) == str(layer)]
+        if layout_ports:
+            self.call("highlight", quiet=True, ports=layout_ports)

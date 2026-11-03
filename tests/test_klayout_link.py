@@ -149,6 +149,11 @@ def test_guide_steps(tab, tmp_path):
     table = tab.MainWindow.ports_tab.portslist
     layers = [table.item(r, 2).text() for r in range(table.rowCount()) if table.item(r, 2) and table.item(r, 2).text()]
     assert layers == [str(201 + i) for i in range(15)], layers       # the guide's 15 ports, numbered without gaps
+    # a port selected in the Ports tab is highlighted in KLayout (exported port 3 = layout port 3, the npn's base)
+    link.call("klayout_em_export.remote", "highlight")
+    table.selectRow(2)
+    pump(1)
+    assert link.call("support", "highlight_count") >= 1
     assert not [m for m in messages if m[0] in ("critical", "warning")], messages
     print("messages:", messages)
 

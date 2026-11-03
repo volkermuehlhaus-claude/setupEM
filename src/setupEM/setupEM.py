@@ -708,6 +708,11 @@ class PortsTab(QWidget):
                     # may not exist in the layout, leave it visibly empty
                     self.sourcelayer_edit.clear()
                     self.sourcelayer_edit.setPlaceholderText("no unused GDS layer found")
+            # the model comes from an export in the KLayout tab: show the port in the layout there
+            layer_item = self.portslist.item(selected_row, 2)
+            klayout_tab = getattr(self.MainWindow, "klayout_tab", None)
+            if klayout_tab is not None and layer_item is not None and layer_item.text():
+                klayout_tab.highlight_exported_port(layer_item.text())
 
     def _used_source_layers(self):
         """Layer numbers (column 2) already entered in the table, across all
