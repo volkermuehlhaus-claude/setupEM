@@ -577,6 +577,12 @@ class PortsTab(QWidget):
         self.bottom_group.setLayout(self.bottom_layout)
         self.top_group.setLayout(self.top_layout)
 
+        # shown when these ports come from an export in the KLayout tab (see update_klayout_note)
+        self.klayout_note = QLabel()
+        self.klayout_note.setWordWrap(True)
+        self.klayout_note.setVisible(False)
+        self.main_layout.addWidget(self.klayout_note)
+
         self.main_layout.addWidget(self.top_group)
         self.main_layout.addSpacing(20)
 
@@ -689,6 +695,20 @@ class PortsTab(QWidget):
                 self.portslist.setItem(selected_row, col, None)
             self.portslist.setItem(selected_row, 7, None)  # clear any "(missing in layout)" note too
 
+
+    def update_klayout_note(self):
+        """Say where the ports live when the model is the KLayout tab's last export: in the layout."""
+        klayout_tab = getattr(self.MainWindow, "klayout_tab", None)
+        from_layout = klayout_tab is not None and klayout_tab.is_last_export(self.MainWindow.saved_values.get("GdsFile"))
+        self.klayout_note.setVisible(from_layout)
+        if from_layout:
+            self.klayout_note.setText("These ports come from the layout in KLayout (KLayout tab). Change them there and "
+                                      "press Export and Load again: the next export replaces changes made here. "
+                                      "Selecting a port shows it in KLayout.")
+
+    def showEvent(self, event):
+        self.update_klayout_note()
+        super().showEvent(event)
 
     def portslist_selection_changed(self):
         selected_indexes = self.portslist.selectedIndexes()
@@ -3526,6 +3546,8 @@ class MainWindow(MainWindowBase):
     APP_NAME = APP_NAME
     MODEL_KIND = MODEL_KIND_EM
     CONFIG_SUFFIX = CONFIG_SUFFIX
+    # the KLayout tab comes first (grey); the other tabs keep their colors
+    TAB_HEADER_COLORS = ["#E0E0E0"] + MainWindowBase.TAB_HEADER_COLORS
 
     def __init__(self):
         super().__init__()
@@ -3568,17 +3590,19 @@ class MainWindow(MainWindowBase):
         self.modeleditor_tab = ModelEditorTab(self)
         self.klayout_tab = KLayoutTab(self)
 
-        # Add tabs
+        # Add tabs, in the order of the work: the KLayout tab prepares the layout and fills Input Files and Ports
+        self.tabs_widget.addTab(self.klayout_tab, "KLayout")
         self.tabs_widget.addTab(self.file_tab, "Input Files")
         self.tabs_widget.addTab(self.frequencies_tab, "Frequencies")
         self.tabs_widget.addTab(self.ports_tab, "Ports")
         self.tabs_widget.addTab(self.mesh_tab, "Mesh and Boundaries")
         self.tabs_widget.addTab(self.create_model_tab, "Create Model")
         self.tabs_widget.addTab(self.modeleditor_tab, "Code")
-        self.tabs_widget.addTab(self.klayout_tab, "KLayout")
 
         self.apply_tab_header_colors()
-        self._previous_index = 0
+        # start on Input Files: a model without KLayout needs nothing from the KLayout tab
+        self.tabs_widget.setCurrentWidget(self.file_tab)
+        self._previous_index = self.tabs_widget.indexOf(self.file_tab)
         self.tabs_widget.currentChanged.connect(self.on_tab_change)
         main_layout.addWidget(self.tabs_widget)
 

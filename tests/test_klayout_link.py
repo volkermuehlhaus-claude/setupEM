@@ -149,6 +149,8 @@ def test_guide_steps(tab, tmp_path):
     table = tab.MainWindow.ports_tab.portslist
     layers = [table.item(r, 2).text() for r in range(table.rowCount()) if table.item(r, 2) and table.item(r, 2).text()]
     assert layers == [str(201 + i) for i in range(15)], layers       # the guide's 15 ports, numbered without gaps
+    assert tab.MainWindow.ports_tab.klayout_note.isVisibleTo(tab.MainWindow.ports_tab)    # "ports come from the layout"
+    assert tab.MainWindow.tabs_widget.indexOf(tab) == 0                                     # first in the work order
     # a port selected in the Ports tab is highlighted in KLayout (exported port 3 = layout port 3, the npn's base)
     link.call("klayout_em_export.remote", "highlight")
     table.selectRow(2)

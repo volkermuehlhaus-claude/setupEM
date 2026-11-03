@@ -293,7 +293,7 @@ class KLayoutTab(QWidget):
         return group
 
     def _ports_group(self):
-        group = QGroupBox("Ports")
+        group = QGroupBox("Ports in the layout (Export and Load copies them to the Ports tab)")
         box = QVBoxLayout(group)
         self.ports_label = QLabel()
         self.ports_label.setWordWrap(True)
@@ -832,15 +832,18 @@ class KLayoutTab(QWidget):
                                             for s in result["stale_scripts"]))
             box.exec()
         self.MainWindow.load_configuration_from_file(result["simcfg"])
+        self.MainWindow.ports_tab.update_klayout_note()
+
+    def is_last_export(self, gds):
+        """Whether gds is the EM layout of this tab's last Export and Load."""
+        r = self.last_export
+        return bool(r and gds) and os.path.normcase(os.path.abspath(str(gds))) == os.path.normcase(os.path.abspath(r["gds"]))
 
     def highlight_exported_port(self, layer):
         """Highlight in KLayout the layout port that became the exported port on GDS layer `layer` (setupEM's Ports
         tab), if the loaded model is the last export from this tab."""
         r = self.last_export
-        if self.link is None or r is None:
-            return
-        gds = str(self.MainWindow.saved_values.get("GdsFile", ""))
-        if os.path.normcase(os.path.abspath(gds)) != os.path.normcase(os.path.abspath(r["gds"])):
+        if self.link is None or not self.is_last_export(self.MainWindow.saved_values.get("GdsFile")):
             return
         try:
             with open(r["portmap"]) as f:
