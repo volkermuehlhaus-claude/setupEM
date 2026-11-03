@@ -66,6 +66,7 @@ if __package__ in (None, ""):
     from palace_results import build_results_summary, find_output_dir, find_paraview_files
     from script_model import ScriptModel
     from config_update import LAYOUT_KEYS, layout_differences, port_differences
+    from klayout_link import KLayoutTab
 else:
     from .setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
@@ -83,6 +84,7 @@ else:
     from .palace_results import build_results_summary, find_output_dir, find_paraview_files
     from .script_model import ScriptModel
     from .config_update import LAYOUT_KEYS, layout_differences, port_differences
+    from .klayout_link import KLayoutTab
 
 
 '''
@@ -3559,6 +3561,7 @@ class MainWindow(MainWindowBase):
         self.mesh_tab = MeshTab(self)
         self.create_model_tab = CreateModelTab(self)
         self.modeleditor_tab = ModelEditorTab(self)
+        self.klayout_tab = KLayoutTab(self)
 
         # Add tabs
         self.tabs_widget.addTab(self.file_tab, "Input Files")
@@ -3567,6 +3570,7 @@ class MainWindow(MainWindowBase):
         self.tabs_widget.addTab(self.mesh_tab, "Mesh and Boundaries")
         self.tabs_widget.addTab(self.create_model_tab, "Create Model")
         self.tabs_widget.addTab(self.modeleditor_tab, "Code")
+        self.tabs_widget.addTab(self.klayout_tab, "KLayout")
 
         self.apply_tab_header_colors()
         self._previous_index = 0

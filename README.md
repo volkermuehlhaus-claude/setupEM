@@ -263,6 +263,17 @@ Choose which viewer **View fields (...)...** opens - **Built-in** (default, need
 
 Also runnable standalone, without the full setupEM/setupThermal GUI, either directly (`python field_viewer.py <file_path> [--source palace|elmer_em|elmer_thermal]`) or via the `fieldViewer` console script installed with the package.
 
+## KLayout (draft)
+
+The KLayout tab prepares an EM model in a running KLayout, without the EM panel of the klayout_em_export plug-in:
+choose the stackup, pick ports in the layout (click a metal edge for a via port, Shift+click into a gap for an
+in-plane port), replace PDK devices by ports, mark the EM region and the ground, and press **Export and Load**: the
+EM layout, its .simcfg and port map are written and the .simcfg is loaded here.
+
+It needs the KLayout package `klayout_remote` (a local link: Tools > Remote Link in KLayout) and the
+`klayout_em_export` package in setupEM's Python (`pip install -e <klayout_em_export repo>`), whose code setupEM
+sends into KLayout. **Connect** finds a KLayout with the link switched on, or starts one (editor mode, link on).
+
 ## Code 
 Behind the scenes, the setupEM user interface created Python model code for gds2palace, and you can check the resulting code on the "Code" tab.
 
