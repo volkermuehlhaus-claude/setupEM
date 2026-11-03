@@ -159,6 +159,15 @@ def test_guide_steps(tab, tmp_path):
     table.selectRow(2)
     pump(1)
     assert link.call("support", "highlight_count") >= 1
+    # Create Circuit with the guide's EM result of this cascode (same port map), for ngspice
+    snp = palace_testcases("klayout_export", "guide", "cascode_em_dc.s15p")
+    if os.path.isfile(snp):
+        assert tab.portmap_edit.text() == out[:-4] + "_portmap.json"
+        tab.snp_edit.setText(snp)
+        tab.simulator_box.setCurrentIndex(0)
+        tab.circuit_out_edit.setText(str(tmp_path / "cascode_ngspice.cir"))
+        assert tab.create_circuit(), messages[-1:]
+        assert "npn13G2" in (tmp_path / "cascode_ngspice.cir").read_text()
     assert not [m for m in messages if m[0] in ("critical", "warning")], messages
     print("messages:", messages)
 
