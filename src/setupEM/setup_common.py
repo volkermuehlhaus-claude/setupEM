@@ -4537,6 +4537,7 @@ class MainWindowBase(QMainWindow):
         self._stop_preserve_mode()
         self.protected_source_model_path = None
         self.backup_before_overwrite = None
+        self.user_inputs_file = None
         self.saved_values.clear()
         self.materials_list = None
         self.dielectrics_list = None
@@ -4601,6 +4602,7 @@ class MainWindowBase(QMainWindow):
                 self._stop_preserve_mode()
                 self.protected_source_model_path = None
                 self.backup_before_overwrite = None
+                self.user_inputs_file = None
 
             extension = pathlib.Path(file_path).suffix
             # *.simcfg is setupEM's, *.tsimcfg setupThermal's - tell the user which
@@ -4625,6 +4627,7 @@ class MainWindowBase(QMainWindow):
                             return
                         if choice == "update":
                             self._update_script_from_config(file_path, data)
+                            self.user_inputs_file = file_path      # its next export reloads here (instances.py)
                             return
                     else:
                         # a model script for the same layout has the settings made in setupEM since
@@ -4637,6 +4640,7 @@ class MainWindowBase(QMainWindow):
                             if self.script_model is not None:
                                 self.hide_info_bar()
                                 self._update_script_from_config(file_path, data)
+                                self.user_inputs_file = file_path  # its next export reloads here (instances.py)
                             return
                 leave_current_script()
                 self.user_inputs_file = file_path
@@ -5615,6 +5619,10 @@ class MainWindowBase(QMainWindow):
             self.showNormal()
         self.raise_()
         self.activateWindow()
+        if self.script_model is not None:
+            # a script edited in place: loading asks whether to update the script from the file
+            self.load_configuration_from_file(file_path)
+            return
         answer = QMessageBox.question(
             self, "Reload",
             f"{os.path.basename(file_path)} was written again, for example by a new export from KLayout.\n\n"

@@ -105,6 +105,30 @@ def test_open_config_continues_with_script(win, layout, monkeypatch):
     assert "source_layernum=203" in lines[2]
 
 
+def test_next_export_updates_the_script(win, layout, monkeypatch):
+    """Continue with the script, then the layout tool exports again and hands the config over (instances.py):
+    the window asks to update its script from it, without the plain Reload question."""
+    folder, write_config = layout
+    set_age(folder / "chip_em.py", 100)
+    config = write_config("chip_em.simcfg", [via(1, 201), via(2, 202)], age=10)
+    monkeypatch.setattr(win, "_ask_continue_with_script", lambda c, s: "script")
+    win.load_configuration_from_file(config)
+    assert win.script_model is not None and win.user_inputs_file == config
+
+    write_config("chip_em.simcfg", [via(1, 201), via(2, 202), via(3, 203)], age=0)
+    asked = []
+    monkeypatch.setattr(win, "_ask_update_script_from_config", lambda c, d: asked.append(c) or "update")
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: pytest.fail("Reload asked")))
+    win.reload_handed_over(config)
+    assert asked == [config] and len(port_lines(code_of(win))) == 3
+    assert win.user_inputs_file == config
+
+    win._script_dirty = False
+    monkeypatch.setattr(win, "confirm_unsaved_script", lambda: True)
+    win.new_configuration()
+    assert win.user_inputs_file is None                 # File > New: no longer takes this config's exports
+
+
 def test_open_config_without_script_asks_nothing(win, layout, monkeypatch):
     folder, write_config = layout
     os.remove(folder / "chip_em.py")                # no model script for this layout yet
