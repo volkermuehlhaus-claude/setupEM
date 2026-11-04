@@ -326,6 +326,10 @@ If you then start KLayout using this script, a new menu item is available: Tools
 
 3. Name it e.g. **setupEM via KLayout**  
 
+## Exports from the KLayout EM Export plug-in
+
+The [klayout_em_export](https://github.com/volkermuehlhaus-claude/klayout_em_export) plug-in can open its exported `.simcfg` in setupEM (`setupEM -simcfg <file>`). If a setupEM window already has that file loaded, no second window opens: that window comes to the front and asks to reload the file, so the next export of the same layout updates the model you are working on. Settings changed in setupEM and not saved are replaced by the file's settings. Any other `.simcfg` opens in a new window, as before.
+
 # License
 
 This project is licensed under the GNU General Public License v3.0 or later (GPL-3.0-or-later) - see [LICENSE](./LICENSE) for the full text.

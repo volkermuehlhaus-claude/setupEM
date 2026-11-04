@@ -4584,10 +4584,11 @@ class MainWindowBase(QMainWindow):
             f"{MODEL_KIND_DESCRIPTIONS[owner_kind]}. This is {self.APP_NAME}.\n\n"
             f"Open the file with {owner_app} instead.")
 
-    def load_configuration_from_file(self, file_path, in_place=False, ask_unsaved=True):
+    def load_configuration_from_file(self, file_path, in_place=False, ask_unsaved=True, announce=True):
         # in_place: *.py only, from edit_py_model() - edit this script in
         # place (preserve mode) instead of importing its values for a new script.
         # ask_unsaved: offer to save a script edited in place first (False for Revert / Reload)
+        # announce: confirm a loaded config in a message box (False: in the status bar)
         saved_values = self.saved_values
         if file_path:
             if ask_unsaved and not self.confirm_unsaved_script():
@@ -4654,7 +4655,10 @@ class MainWindowBase(QMainWindow):
                     loaded_message = f"Config loaded from {shorten_path_for_display(file_path)}"
                     if path_messages:
                         loaded_message += "\n\n" + "\n".join(path_messages)
-                    QMessageBox.information(self, "Loaded", loaded_message)
+                    if announce or path_messages:
+                        QMessageBox.information(self, "Loaded", loaded_message)
+                    else:
+                        self.statusBar().showMessage(loaded_message, 15000)
                     self.create_model_tab.log_area.clear()
                     self.create_model_tab._reset_live_status()
                 else:
@@ -5603,6 +5607,21 @@ class MainWindowBase(QMainWindow):
         if answer == QMessageBox.Save:
             return self.save_script_in_place()
         return answer == QMessageBox.Discard
+
+    def reload_handed_over(self, file_path):
+        """Another start of this app for the config loaded here (KLayout's EM Export after a new
+        export, see instances.py): bring this window to the front and offer to load the file again."""
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        answer = QMessageBox.question(
+            self, "Reload",
+            f"{os.path.basename(file_path)} was written again, for example by a new export from KLayout.\n\n"
+            "Reload it? Changes made here and not saved are replaced by the file's settings.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            self.load_configuration_from_file(file_path, announce=False)
 
     def closeEvent(self, event):
         if self.confirm_unsaved_script():

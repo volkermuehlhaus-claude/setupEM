@@ -66,6 +66,7 @@ if __package__ in (None, ""):
     from palace_results import build_results_summary, find_output_dir, find_paraview_files
     from script_model import ScriptModel
     from config_update import LAYOUT_KEYS, layout_differences, port_differences
+    from instances import InstanceServer, hand_over
 else:
     from .setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
@@ -83,6 +84,7 @@ else:
     from .palace_results import build_results_summary, find_output_dir, find_paraview_files
     from .script_model import ScriptModel
     from .config_update import LAYOUT_KEYS, layout_differences, port_differences
+    from .instances import InstanceServer, hand_over
 
 
 '''
@@ -4007,8 +4009,14 @@ def main():
     simcfg  = args.simcfg
     elmer   = args.elmer
 
+    # a setupEM that has this config open reloads it (KLayout's EM Export after a new export)
+    if simcfg != '' and not (xmlfile or gdsfile or elmer) and hand_over(simcfg):
+        sys.exit(0)
+
     win = MainWindow()
     win.show()
+    instance_server = InstanceServer(win)
+    app.aboutToQuit.connect(instance_server.close)
 
     if simcfg != '':
         # read configuration first, before reading the other files
