@@ -79,6 +79,7 @@ class InstanceServer:
         self.name = f"setupEM_{getpass.getuser()}_{os.getpid()}"
         self.server = QLocalServer()
         QLocalServer.removeServer(self.name)
+        self.server.setSocketOptions(QLocalServer.UserAccessOption)      # only this user's processes connect
         if not self.server.listen(self.name):
             return
         self.server.newConnection.connect(self._connection)
