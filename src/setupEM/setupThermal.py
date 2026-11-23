@@ -66,7 +66,7 @@ if __package__ in (None, ""):
         device_temperatures, format_temperature_table, read_thermal_map, write_temperatures_csv
     from script_model import ScriptModel
     from cli_common import add_version_argument, start_file_errors
-    from script_writer import thermal_script_text
+    from script_writer import thermal_script_text, THERMAL_HEAT_FLUX_OUTPUT
 else:
     from .setup_common import (
         EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
@@ -82,7 +82,7 @@ else:
         device_temperatures, format_temperature_table, read_thermal_map, write_temperatures_csv
     from .script_model import ScriptModel
     from .cli_common import add_version_argument, start_file_errors
-    from .script_writer import thermal_script_text
+    from .script_writer import thermal_script_text, THERMAL_HEAT_FLUX_OUTPUT
 
 
 '''
@@ -752,6 +752,21 @@ class MeshTab(QWidget):
         self.solver_layout.addStretch()
         self.Elmer_layout.addLayout(self.solver_layout)
 
+        # settings['heat_flux_output']: only shown when the installed gds2palace knows it (0.13.0 and newer)
+        self.heat_flux_layout = QHBoxLayout()
+        self.heat_flux_label = QLabel("Result output")
+        self.heat_flux_label.setFixedWidth(label_width)
+        self.heat_flux_layout.addWidget(self.heat_flux_label)
+        self.heat_flux_checkbox = QCheckBox("Heat flux and temperature gradient")
+        self.heat_flux_checkbox.setToolTip(
+            "Also write the heat flux (W/m²) and the temperature gradient (K/m) to the result file, per body:\n"
+            "they keep their jumps at material interfaces. Costs a few seconds, the result file gets about 50 % larger.")
+        self.heat_flux_layout.addWidget(self.heat_flux_checkbox)
+        self.heat_flux_layout.addStretch()
+        self.Elmer_layout.addLayout(self.heat_flux_layout)
+        for widget in (self.heat_flux_label, self.heat_flux_checkbox):
+            widget.setVisible(THERMAL_HEAT_FLUX_OUTPUT)
+
         self.Elmer_group.setLayout(self.Elmer_layout)
         self.main_layout.addWidget(self.Elmer_group)
 
@@ -821,6 +836,11 @@ class MeshTab(QWidget):
 
         # iterative or direct solver for Elmer
         saved_values["iterative"] = "iterative" in self.solver_box.currentText()
+        # only when on, so other models keep their script unchanged
+        if THERMAL_HEAT_FLUX_OUTPUT and self.heat_flux_checkbox.isChecked():
+            saved_values["heat_flux_output"] = True
+        else:
+            saved_values.pop("heat_flux_output", None)
 
         # all saved
         return True
@@ -840,6 +860,7 @@ class MeshTab(QWidget):
             self.solver_box.setCurrentIndex(0)
         else:
             self.solver_box.setCurrentIndex(1)
+        self.heat_flux_checkbox.setChecked(bool(saved_values.get("heat_flux_output", False)))
 
 
     def _update_margin_override_button_label(self):
@@ -1719,6 +1740,7 @@ class MainWindow(MainWindowBase):
         "meshsize_max": ("mesh_tab", ["cells_maxsize_edit"]),
         "margin": ("mesh_tab", ["margins_edit", "margin_override_btn"]),
         "iterative": ("mesh_tab", ["solver_box"]),
+        "heat_flux_output": ("mesh_tab", ["heat_flux_checkbox"]),
     }
 
     def preserve_objects(self):

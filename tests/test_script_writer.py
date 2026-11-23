@@ -125,6 +125,30 @@ def test_script_writer_matches_golden(name, export):
     assert text == golden["text"]
 
 
+def test_thermal_heat_flux_output():
+    """settings['heat_flux_output'] is written when set, and left out for a gds2palace that doesn't know it."""
+    from setupEM import script_writer
+    with open(golden_path("thermal", False), encoding="utf-8") as f:
+        inputs = json.load(f)["inputs"]
+    objects = script_writer.thermal_objects_from_struct(inputs["thermal"])
+    values = dict(inputs["saved_values"], heat_flux_output=True)
+    line = "settings['heat_flux_output'] = True"
+    assert line in script_writer.thermal_script_text(values, objects, heat_flux_output_supported=True)
+    assert line not in script_writer.thermal_script_text(values, objects, heat_flux_output_supported=False)
+    assert "heat_flux_output" not in script_writer.thermal_script_text(inputs["saved_values"], objects)
+
+
+def test_setupthermal_keeps_heat_flux_output(monkeypatch, app):
+    """The checkbox in setupThermal shows the setting and writes it back."""
+    from setupEM import script_writer
+    if not script_writer.THERMAL_HEAT_FLUX_OUTPUT:
+        pytest.skip("the installed gds2palace has no settings['heat_flux_output'] (before 0.13.0)")
+    application, elmer_mode, values, objects = CASES["thermal"]
+    monkeypatch.setitem(CASES, "thermal_flux", (application, elmer_mode, dict(values, heat_flux_output=True), objects))
+    inputs, text = gui_script(monkeypatch, "thermal_flux", False)
+    assert "settings['heat_flux_output'] = True" in text
+
+
 def test_ports_from_struct_refuses_what_the_ports_tab_refuses():
     from setupEM import script_writer
     with pytest.raises(ValueError, match="Port 2 is incomplete"):

@@ -44,8 +44,9 @@ field-dump VTU output in the same um-scale coordinates as the input GDSII
 data array names (Palace: E_real/E_imag; Elmer EM: "electric field re"/
 "electric field im", with spaces - see _E_FIELD_COMPLEX_KEYS). Elmer thermal
 is the odd one out: its VTU is written in real SI meters, not um (see
-_POSITION_SCALE_TO_UM), and has no vector field arrays at all, only a scalar
-temperature one.
+_POSITION_SCALE_TO_UM). Its main array is the scalar temperature; with
+gds2palace's heat_flux_output it also has the vectors "temperature flux"
+(W/m²) and "temperature grad" (K/m).
 
 Keys (3D view focused): R/F/Home reset camera, I isometric, X/Y/Z axis views
 (Shift: negative side), +/- zoom, arrows pan, O parallel projection, M find
@@ -95,11 +96,13 @@ from pyvistaqt import QtInteractor
 # throughout setupEM.py/setup_common.py/result_viewer.py for sibling imports.
 if __package__ in (None, ""):
     from palace_results import find_paraview_files, is_amr_iteration_path
-    from thermal_results import find_thermal_paraview_file
+    from thermal_results import find_thermal_paraview_file, temperature_key, is_temperature_array, THERMAL_ARRAY_UNITS, \
+        read_body_names
     from cli_common import add_version_argument
 else:
     from .palace_results import find_paraview_files, is_amr_iteration_path
-    from .thermal_results import find_thermal_paraview_file
+    from .thermal_results import find_thermal_paraview_file, temperature_key, is_temperature_array, THERMAL_ARRAY_UNITS, \
+        read_body_names
     from .cli_common import add_version_argument
 
 
@@ -169,7 +172,7 @@ _POSITION_SCALE_TO_UM = {_PALACE: 1.0, _ELMER_EM: 1.0, _ELMER_THERMAL: 1e6}
 # frequency-domain phasor E-field: Palace names them "E_real"/"E_imag",
 # Elmer's field-dump instead uses "electric field re"/"electric field im"
 # (with spaces - confirmed against a real Elmer-EM field dump). Elmer thermal
-# has no vector field arrays at all, so it's absent from this dict.
+# has no E-field, so it's absent from this dict.
 _E_FIELD_COMPLEX_KEYS = {
     _PALACE: ("E_real", "E_imag"),
     _ELMER_EM: ("electric field re", "electric field im"),
@@ -180,8 +183,8 @@ _E_FIELD_COMPLEX_KEYS = {
 # above, just for the real-only part plus B-field and the Poynting vector.
 # "s" has no Elmer-EM entry: that field dump has no Poynting-vector array
 # (confirmed against a real Elmer-EM field dump - only E/B field re/im).
-# "temp" isn't here at all - Elmer thermal's temperature array has no fixed
-# name, resolved via the same substring match _pick_default_array() uses.
+# "temp" isn't here at all - Elmer thermal's temperature array is found by
+# thermal_results.temperature_key(), as in _pick_default_array().
 _FIELD_REAL_KEY = {
     "e": {_PALACE: "E_real", _ELMER_EM: "electric field re"},
     "b": {_PALACE: "B_real", _ELMER_EM: "magnetic flux density re"},
@@ -558,7 +561,7 @@ def _pick_default_array(mesh, source):
     if source in (_PALACE, _ELMER_EM) and "E_magnitude" in available:
         return "E_magnitude", "turbo", True
     if source == _ELMER_THERMAL:
-        temp_key = next((k for k in available if "temp" in k.lower()), None)
+        temp_key = temperature_key(available)
         if temp_key is not None:
             return temp_key, "coolwarm", False
     return (available[0], "viridis", False) if available else (None, "viridis", False)
@@ -575,7 +578,7 @@ def _resolve_field_shorthand(shorthand, mesh, source):
     so it's resolved via substring match instead of _FIELD_REAL_KEY.
     """
     if shorthand == "temp":
-        key = next((k for k in mesh.point_data.keys() if "temp" in k.lower()), None)
+        key = temperature_key(mesh.point_data.keys())
     else:
         key = _FIELD_REAL_KEY.get(shorthand, {}).get(source)
     return key if key is not None and key in mesh.point_data else None
@@ -620,6 +623,80 @@ def _db_range_to_clim(mesh, array_name, db_range):
         return None
     data_max = positive.max()
     return _db_floor(array_name, data_max, db_range), data_max
+
+
+def _array_unit(array_name, source):
+    """SI unit of a result array, or "" where it is not known. Only Elmer thermal results have known units
+    (the model is solved in meters): temperature in K, heat flux in W/m², temperature gradient in K/m."""
+    if source != _ELMER_THERMAL or not array_name:
+        return ""
+    if is_temperature_array(array_name):
+        return "K"
+    return THERMAL_ARRAY_UNITS.get(array_name.strip().lower(), "")
+
+
+def _with_unit(array_name, source):
+    """"temperature grad [K/m]", or the plain name where the unit is not known."""
+    unit = _array_unit(array_name, source)
+    return f"{array_name} [{unit}]" if unit else array_name
+
+
+# Volume cells of a result mesh: linear and quadratic tetrahedra (the mesh also holds boundary triangles, whose
+# GeometryIds are boundary numbers, not body numbers)
+_VOLUME_CELL_TYPES = (pv.CellType.TETRA, pv.CellType.QUADRATIC_TETRA)
+
+# "Bottom" / "Top" of a layer put the clip plane this fraction of the layer thickness inside it: exactly at the
+# boundary, the plane lies on mesh faces, and it is not clear which side's values are shown (with heat flux output,
+# there is one value per body there).
+_LAYER_CLIP_INSET = 0.01
+
+
+def _body_z_ranges(mesh, body_names):
+    """[(name, zmin, zmax)] in the mesh's own units, one per body of an Elmer result, from its volume cells (cell
+    data GeometryIds) and the body names of mesh.names. Sorted from the top down. [] without either."""
+    if mesh is None or not body_names or "GeometryIds" not in mesh.cell_data:
+        return []
+    volume = np.isin(np.asarray(mesh.celltypes), _VOLUME_CELL_TYPES)
+    if not volume.any():
+        return []
+    # newer pyvista (0.49 here) has cell_offsets and deprecates offset; older ones only have offset
+    offsets = np.asarray(mesh.cell_offsets if hasattr(mesh, "cell_offsets") else mesh.offset)
+    connectivity = np.asarray(mesh.cell_connectivity)
+    z = np.asarray(mesh.points)[connectivity, 2]
+    starts = offsets[:-1]
+    cell_zmin = np.minimum.reduceat(z, starts)[volume]
+    cell_zmax = np.maximum.reduceat(z, starts)[volume]
+    body = np.asarray(mesh.cell_data["GeometryIds"]).ravel()[volume]
+    ranges = []
+    for body_id in np.unique(body):
+        name = body_names.get(int(body_id))
+        if name is None:
+            continue
+        in_body = body == body_id
+        ranges.append((name, float(cell_zmin[in_body].min()), float(cell_zmax[in_body].max())))
+    return sorted(ranges, key=lambda r: (-r[2], -r[1]))
+
+
+class _ArrayCombo(QComboBox):
+    """The Field choice: shows each array with its unit ("temperature grad [K/m]"), but currentText() and
+    setCurrentText() work with the plain array name, which is what the rest of the viewer uses as the key."""
+
+    def __init__(self, source_getter, parent=None):
+        super().__init__(parent)
+        self._source_getter = source_getter
+
+    def addItems(self, names):
+        for name in names:
+            self.addItem(_with_unit(name, self._source_getter()), name)
+
+    def currentText(self):
+        name = self.currentData()
+        return name if name is not None else super().currentText()
+
+    def setCurrentText(self, name):
+        index = self.findData(name)
+        if index >= 0:
+            self.setCurrentIndex(index)
 
 
 # ------------------------------------------------------------------
@@ -919,6 +996,12 @@ class FieldViewerWindow(QDialog):
         self.clip_slider.sliderReleased.connect(self._schedule_redraw)
         clip_layout.addWidget(self.clip_slider)
 
+        # Z axis, Elmer thermal: right-click the slider for a menu of the layers (the bodies of the mesh, named after
+        # their stackup layers), see _layer_menu(). Without named bodies, there is no menu.
+        self._layer_ranges = []
+        self.clip_slider.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.clip_slider.customContextMenuRequested.connect(self._show_layer_menu)
+
         clip_layout.addStretch()
         clip_group.setLayout(clip_layout)
         controls_layout.addWidget(clip_group, 1)
@@ -1010,7 +1093,7 @@ class FieldViewerWindow(QDialog):
 
         field_group = QGroupBox("Field")
         field_layout = QVBoxLayout()
-        self.array_combo = QComboBox()
+        self.array_combo = _ArrayCombo(lambda: self.source)
         self.array_combo.currentTextChanged.connect(self._on_array_changed)
         # user selection only (not programmatic changes): remembered as the preferred field type
         self.array_combo.textActivated.connect(self._remember_field_choice)
@@ -1327,9 +1410,9 @@ class FieldViewerWindow(QDialog):
 
     def _is_temperature(self):
         """Elmer thermal's temperature array - written in kelvin (SI), the only
-        array here whose unit is known, so the only one with a K/°C/ΔT choice.
-        Same "temp" name match as _pick_default_array()."""
-        return self.source == _ELMER_THERMAL and "temp" in self.array_combo.currentText().lower()
+        array with a K/°C/ΔT choice. Not "temperature flux" / "temperature grad"
+        (gds2palace heat_flux_output) or "temperature loads": see temperature_key()."""
+        return self.source == _ELMER_THERMAL and is_temperature_array(self.array_combo.currentText())
 
     def _on_temp_unit_changed(self, _index=None):
         self._temp_unit = self.temp_unit_combo.currentData() or "K"
@@ -1348,11 +1431,11 @@ class FieldViewerWindow(QDialog):
         return self._model_min_cache[1]
 
     def _marker_unit(self):
-        """Unit of the marker readout: K / °C / K (ΔT) for temperature; the
-        field dumps carry no unit metadata for anything else, so none is shown."""
+        """Unit of the marker readout: K / °C / K (ΔT) for temperature, W/m² and K/m for Elmer thermal's heat
+        flux and temperature gradient; the field dumps carry no unit metadata for anything else, so none is shown."""
         if self._is_temperature():
             return "°C" if self._temp_unit == "C" else "K"
-        return ""
+        return _array_unit(self.array_combo.currentText(), self.source)
 
     def _display_value(self, value):
         """Marker value in the chosen readout (temperature: K, °C or ΔT), or None."""
@@ -1854,6 +1937,7 @@ class FieldViewerWindow(QDialog):
         self.warning_label.setText("")
 
         _attach_complex_e_magnitude(self._full_mesh, self.source)
+        self._refresh_layers()
 
         available = list(self._full_mesh.point_data.keys())
         # A cycle with no point-data at all is a legitimate, non-error case -
@@ -1964,6 +2048,78 @@ class FieldViewerWindow(QDialog):
         self.clip_slider.blockSignals(True)
         self.clip_slider.setValue(_SLIDER_STEPS // 2)
         self.clip_slider.blockSignals(False)
+        self._update_layer_hint()
+        self._schedule_redraw()
+
+    def _update_layer_hint(self):
+        """Tell about the layer menu where it exists: on the Z axis of a result with named bodies (Elmer thermal)."""
+        has_menu = bool(self._layer_ranges) and self._current_axis == "Z"
+        self.clip_slider.setToolTip("Right-click: clip at a layer" if has_menu else "")
+
+    def _refresh_layers(self):
+        """Layers of the loaded mesh for the layer menu: the bodies of an Elmer thermal result, named in its
+        mesh/mesh.names."""
+        ranges = []
+        if self.source == _ELMER_THERMAL and self._full_mesh is not None:
+            try:
+                ranges = _body_z_ranges(self._full_mesh, read_body_names(os.path.dirname(os.path.abspath(self.file_path))))
+            except Exception:
+                ranges = []     # the layer menu is a convenience: never block loading the result
+        self._layer_ranges = ranges
+        self._update_layer_hint()
+        self._update_clip_position_label()
+
+    def _layer_at(self, z):
+        """(index in _layer_ranges, percent of its thickness from the bottom) of the layer that contains the z
+        position (mesh units), or None. Layers inside others (a metal in the oxide) take precedence: the thinnest
+        layer at z wins."""
+        inside = [(zmax - zmin, index) for index, (_name, zmin, zmax) in enumerate(self._layer_ranges)
+                  if zmin <= z <= zmax]
+        if not inside:
+            return None
+        index = min(inside)[1]
+        _name, zmin, zmax = self._layer_ranges[index]
+        return index, 100.0 * (z - zmin) / (zmax - zmin) if zmax > zmin else 0.0
+
+    def _layer_menu(self):
+        """The slider's right-click menu on the Z axis, or None: top and bottom of the layer the plane is in, then
+        all layers from the top down with their z range (click: the middle of the layer), the current one ticked."""
+        if not self._layer_ranges or self._current_axis != "Z" or self._full_mesh is None:
+            return None
+        menu = QMenu(self)
+        current = self._layer_at(self._slider_value_to_position())
+        current_index = current[0] if current is not None else None
+        if current_index is not None:
+            name = self._layer_ranges[current_index][0]
+            for where in ("top", "bottom"):
+                action = menu.addAction(f"{where.capitalize()} of {name}")
+                action.triggered.connect(lambda _checked=False, i=current_index, w=where: self._move_slider_to_layer(i, w))
+            menu.addSeparator()
+        scale = _POSITION_SCALE_TO_UM.get(self.source, 1.0)
+        for index, (name, zmin, zmax) in enumerate(self._layer_ranges):
+            # after a tab: the right-aligned column (normally the shortcut), so the ranges line up
+            action = menu.addAction(f"{name}\t{zmin * scale:.3f} – {zmax * scale:.3f} µm")
+            action.setCheckable(True)
+            action.setChecked(index == current_index)
+            action.triggered.connect(lambda _checked=False, i=index: self._move_slider_to_layer(i, "middle"))
+        return menu
+
+    def _show_layer_menu(self, pos):
+        menu = self._layer_menu()
+        if menu is not None:
+            menu.exec(self.clip_slider.mapToGlobal(pos))
+
+    def _move_slider_to_layer(self, index, where):
+        """Move the Z clip plane to the bottom, middle or top of layer index of _layer_ranges and turn clipping on.
+        Bottom and top are _LAYER_CLIP_INSET of the layer thickness inside the layer, so the cut shows that layer."""
+        if self._full_mesh is None or not (0 <= index < len(self._layer_ranges)):
+            return
+        _name, zmin, zmax = self._layer_ranges[index]
+        inset = _LAYER_CLIP_INSET * (zmax - zmin)
+        z = {"bottom": zmin + inset, "middle": 0.5 * (zmin + zmax), "top": zmax - inset}[where]
+        self.clip_slider.setValue(self._position_native_to_slider_value("Z", z))
+        self._update_clip_position_label()
+        self.clip_enabled_cb.setChecked(True)
         self._schedule_redraw()
 
     def _slider_value_to_position(self):
@@ -1984,9 +2140,12 @@ class FieldViewerWindow(QDialog):
         way _move_slider_to_max() already clamps its own fraction, so an
         out-of-bounds position lands at the nearest edge instead of erroring.
         """
+        return self._position_native_to_slider_value(axis, position_um / _POSITION_SCALE_TO_UM.get(self.source, 1.0))
+
+    def _position_native_to_slider_value(self, axis, position_native):
+        """Slider step for a position in the mesh's own units (see _position_um_to_slider_value())."""
         if self._full_mesh is None:
             return _SLIDER_STEPS // 2
-        position_native = position_um / _POSITION_SCALE_TO_UM.get(self.source, 1.0)
         lo_idx, hi_idx = _AXIS_BOUNDS_INDEX[axis]
         lo, hi = self._full_mesh.bounds[lo_idx], self._full_mesh.bounds[hi_idx]
         fraction = (position_native - lo) / (hi - lo) if hi > lo else 0.5
@@ -2379,7 +2538,11 @@ class FieldViewerWindow(QDialog):
     def _update_clip_position_label(self):
         position = self._slider_value_to_position()
         position_um = position * _POSITION_SCALE_TO_UM.get(self.source, 1.0)
-        self.clip_position_label.setText(f"Position: {position_um:.4g} um ({self._current_axis})")
+        text = f"Position: {position_um:.3f} um ({self._current_axis})"
+        layer = self._layer_at(position) if self._current_axis == "Z" and self._layer_ranges else None
+        if layer is not None:
+            text += f" · in {self._layer_ranges[layer[0]][0]} ({layer[1]:.0f} %)"
+        self.clip_position_label.setText(text)
 
     def _schedule_redraw(self, *_args):
         """Coalesce any number of redraw-triggering signals that fire before
@@ -2592,7 +2755,7 @@ class FieldViewerWindow(QDialog):
                 show_edges=show_edges, edge_color=self._edge_color,
                 log_scale=use_log, clim=clim, opacity=opacity,
                 show_scalar_bar=self.show_legend_cb.isChecked(),
-                scalar_bar_args={"title": array_name, "color": self._legend_text_color},
+                scalar_bar_args={"title": _with_unit(array_name, self.source), "color": self._legend_text_color},
                 reset_camera=False,
             )
         else:

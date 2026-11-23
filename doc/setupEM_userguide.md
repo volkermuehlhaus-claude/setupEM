@@ -33,6 +33,7 @@ Document version: 2026-10-31
 &ensp;[Differences from setupEM](#differences-from-setupem)  
 &ensp;[Thermal Sources + Boundaries tab](#thermal-sources--boundaries-tab)  
 &ensp;[Mesh tab](#mesh-tab-setupthermal)  
+&ensp;[Heat flow per boundary](#heat-flow-per-boundary-setupthermal)  
 &ensp;[Temperature per device](#temperature-per-device-setupthermal)  
 [The Stackup Editor](#the-stackup-editor)  
 &ensp;[Launching the editor](#launching-the-editor)  
@@ -337,7 +338,7 @@ Once field-dump results are available, click **View fields (...)...** on the Cre
 
 <img src="./png/fieldviewer2.png" alt="3D field viewer" width="750">
 
-The built-in viewer clips the model along a single axis-aligned plane to reveal a cross-section. Find max. jumps the plane straight to the field's hotspot along the current axis, and the axis-view buttons snap the camera to standard CAD views. The Field panel picks which array to color by and lets you override the color range manually. With a log color scale, a Range dropdown (-10 to -70 dB below Max, default -70 dB) replaces the Min field. Switching to another result file or cycle keeps the selected field, and keeps the camera view, zoom and clip position if the new mesh has the same bounding box; otherwise they are reset. For a vector array, Show arrows overlays direction arrows, with the Arrow size slider controlling both their size and how densely they're packed in. With Scaled checked, arrow length and color follow the field value on the same color scale and range as the legend (arrows below the lower limit are hidden), and the arrow color swatch is not used.
+The built-in viewer clips the model along a single axis-aligned plane to reveal a cross-section. Find max. jumps the plane straight to the field's hotspot along the current axis, and the axis-view buttons snap the camera to standard CAD views. For Elmer thermal results on the Z axis, right-click the slider for the layers of the model (the bodies of the mesh, from the top down, with their z range). A layer moves the plane to its middle; the first two entries move it to the top or bottom of the layer the plane is in, 1 % of the layer thickness inside: exactly on the boundary, it would not be clear which layer's values the cut shows. The position line names the layer the plane is in, e.g. "241.500 um (Z) · in TopMetal1 (50 %)"; where a metal lies inside the oxide, the metal is named. The Field panel picks which array to color by and lets you override the color range manually. With a log color scale, a Range dropdown (-10 to -70 dB below Max, default -70 dB) replaces the Min field. Switching to another result file or cycle keeps the selected field, and keeps the camera view, zoom and clip position if the new mesh has the same bounding box; otherwise they are reset. For a vector array, Show arrows overlays direction arrows, with the Arrow size slider controlling both their size and how densely they're packed in. With Scaled checked, arrow length and color follow the field value on the same color scale and range as the legend (arrows below the lower limit are hidden), and the arrow color swatch is not used.
 
 **Value markers:** check Probe in the View box (key P) and click the model to place a numbered marker showing the field value at that point. This works from any angle, on the clipped solid, its cut face or the 2D plane; dragging still rotates. The Markers list beside the view shows the marker number, value and x / y / z in µm, with Remove, Clear and Copy (tab-separated, for spreadsheets). For Elmer thermal temperatures, a dropdown switches between K, °C and ΔT (rise above the lowest temperature of the model). Right-click the model for Jump to Maximum in Cut Plane (with the clip plane on), Jump to Maximum on Surface of Body N (the body you clicked, e.g. the chip), Add Marker Here, Remove Marker N and Clear Markers. Markers update when you change the field, result file or cycle.
 
@@ -486,6 +487,12 @@ Choose the value from the smallest heat source. An npn's heat areas are its emit
 **Advanced...** next to the dielectric oversize sets it for single sides: xmin, xmax, ymin and ymax. A blank entry uses the value from the tab.
 
 **Solver** chooses Elmer's direct or iterative solver. There is no adaptive mesh refinement: a steady-state thermal solve doesn't sweep frequency, so there's nothing to adapt against. Also, no air material around the stackup.
+
+**Result output: Heat flux and temperature gradient** also writes these two quantities to the result file (`settings['heat_flux_output']`, gds2palace 0.13.0 and newer; hidden with an older gds2palace). In the field viewer, choose `temperature flux` (W/m²) or `temperature grad` (K/m) in the Field panel; Show arrows draws their direction. They are computed per body: at an interface between two materials, the heat flux normal to the interface is continuous and the gradient jumps by the ratio of the thermal conductivities, and the result file keeps that jump. It costs a few seconds per run, and the result file gets about 50 % larger.
+
+### Heat flow per boundary (setupThermal)
+
+With gds2palace 0.13.0 and newer, the results summary in the log lists the heat that leaves the model through each constant-temperature boundary, in W and as a share of the input power. With one heat sink, it takes all the power. With several, the list shows where the heat goes; a negative value means that heat flows into the model there, e.g. at a sink that is hotter than its surroundings. The total always equals the input power, on any mesh, so it is no check of the mesh: for that, run the model again with a smaller mesh size and compare the temperatures.
 
 ### Temperature per device (setupThermal)
 

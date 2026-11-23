@@ -1,3 +1,13 @@
+# What's New - November 23, 2026 (setupEM 0.20.0)
+
+**setupThermal: heat flux and temperature gradient.** The Mesh tab has a new checkbox, Result output: Heat flux and temperature gradient (gds2palace 0.13.0 and newer; hidden with an older gds2palace). The result file then also holds `temperature flux` (W/m²) and `temperature grad` (K/m), which the field viewer shows as arrows. The field viewer's Field choice and colour legend show the unit of each Elmer thermal array, e.g. `temperature grad [K/m]`. They are computed per body, so they keep their jumps at material interfaces.
+
+**setupThermal: heat flow per boundary.** With gds2palace 0.13.0 and newer, the results summary lists the heat that leaves the model through each constant-temperature boundary, in W and as a share of the input power. The total always equals the input power, so it shows where the heat goes, not whether the mesh is fine enough.
+
+**Field viewer: clip at a layer.** For Elmer thermal results, right-click the Z clip slider for a menu of the layers: a layer clips in its middle, and the first two entries move to the top or bottom of the layer the plane is in. The layers come from the result mesh itself (its bodies, named after the stackup layers), so they match the model as it was meshed. The position line names the layer the plane is in, e.g. "in TopMetal1 (50 %)", and shows three decimals in µm, so thin layers can be told apart.
+
+**Fix: the temperature array of a thermal result.** The results summary, the temperature per device and the field viewer took the first array whose name contains "temp" as the temperature. With the heat flux output, that could be `temperature flux`. They now take the array named `temperature`.
+
 # What's New - November 22, 2026 (setupEM 0.19.1)
 
 Needs gds2palace 0.12.0 or newer (`pip install` updates it).

@@ -41,6 +41,9 @@ FILL_FACTOR_CORRECTION_SOLVERS = getattr(
 # the installed gds2palace understands - empty for an older gds2palace, which hardcodes them
 # and would silently ignore these keys, so the Mesh tab hides its linear solver rows then.
 PALACE_LINEAR_SOLVER_SETTINGS = tuple(getattr(simulation_setup, "PALACE_LINEAR_SOLVER_SETTINGS", ()))
+# settings['heat_flux_output'] (Elmer thermal: heat flux and temperature gradient in the result file) is understood
+# by gds2palace 0.13.0 and newer; an older one silently ignores it, so setupThermal hides its checkbox then.
+THERMAL_HEAT_FLUX_OUTPUT = bool(getattr(simulation_setup, "THERMAL_HEAT_FLUX_OUTPUT", False))
 
 # File > Export: the switch for running the exported script with no gmsh window, commented out (an import
 # reads no settings from comments). gds2palace 0.10.4 and newer turns it on by itself without a display.
@@ -303,9 +306,13 @@ def em_script_text(saved_values, simulation_ports, elmer_mode, for_export=False,
     return "\n".join(lines)
 
 
-def thermal_script_text(saved_values, thermal_objects, for_export=False, app_name="setupThermal"):
+def thermal_script_text(saved_values, thermal_objects, for_export=False, app_name="setupThermal",
+                        heat_flux_output_supported=None):
     """setupThermal's model script (Elmer thermal). for_export: the File > Export form, which also starts the solver.
-    thermal_objects: gds2palace's all_thermal_objects."""
+    thermal_objects: gds2palace's all_thermal_objects. heat_flux_output_supported defaults to what the installed
+    gds2palace supports."""
+    if heat_flux_output_supported is None:
+        heat_flux_output_supported = THERMAL_HEAT_FLUX_OUTPUT
     lines = []
     _header(lines, app_name, "Thermal model for IHP OpenPDK workflow", "elmer_model")
 
@@ -326,6 +333,8 @@ def thermal_script_text(saved_values, thermal_objects, for_export=False, app_nam
     ignore_list = ['model_basename', 'sim_path']
     if for_export:
         ignore_list.extend(['preview_only', 'no_preview'])
+    if not heat_flux_output_supported:
+        ignore_list.append('heat_flux_output')
     lines.extend(_setting_line(saved_values, key) for key in saved_values
                  if key not in special_keylist and key not in ignore_list)
     lines.append("settings['elmer_thermal'] = True # create all metals as volumes, enable Elmer thermal output")

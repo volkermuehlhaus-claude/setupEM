@@ -5295,6 +5295,8 @@ class MainWindowBase(QMainWindow):
                     "filled_metals": "filled_metals",
                     "fill_factor_correction": "fill_factor_correction",
                     "iterative": "iterative",
+                    # Elmer thermal: heat flux and temperature gradient in the result file
+                    "heat_flux_output": "heat_flux_output",
                     "complex_coarse_solve": "complex_coarse_solve",
                     "solver_maxits": "solver_maxits",
                     "solver_tol": "solver_tol",
@@ -6130,6 +6132,7 @@ class MainWindowBase(QMainWindow):
         "complex_coarse_solve": "Complex coarse solve", "iterative": "Solver",
         "boundary": "Boundary conditions", "margin": "Dielectric oversize",
         "air_around": "Air layer", "ELMER_MPI_THREADS": "Multithreading",
+        "heat_flux_output": "Heat flux output",
     }
 
     # look of a field the script sets: the app's own field styles (e.g. the light

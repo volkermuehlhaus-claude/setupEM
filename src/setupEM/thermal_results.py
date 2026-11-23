@@ -46,6 +46,29 @@ _VTU_DTYPE_MAP = {
 }
 _VTU_HEADER_FMT = {"UInt32": ("<I", 4), "UInt64": ("<Q", 8)}
 
+# Other arrays of an Elmer thermal result whose names also start with "temperature": the heat flux and the temperature
+# gradient (gds2palace settings['heat_flux_output']) and the nodal heat loads (gds2palace 0.13.0 and newer).
+_NOT_TEMPERATURE_WORDS = ("flux", "grad", "load")
+
+# Units of the Elmer thermal result arrays (SI: the model is solved in meters)
+THERMAL_ARRAY_UNITS = {"temperature flux": "W/m²", "temperature grad": "K/m", "temperature loads": "W"}
+
+
+def temperature_key(keys):
+    """The name of the temperature array among the array names of an Elmer thermal result, or None. Elmer writes it
+    as "temperature"; "temperature flux", "temperature grad" and "temperature loads" are other quantities."""
+    keys = list(keys)
+    exact = next((key for key in keys if key.strip().lower() == "temperature"), None)
+    if exact is not None:
+        return exact
+    return next((key for key in keys if "temp" in key.lower()
+                 and not any(word in key.lower() for word in _NOT_TEMPERATURE_WORDS)), None)
+
+
+def is_temperature_array(name):
+    """True for the name of Elmer thermal's temperature array (see temperature_key())."""
+    return temperature_key([name]) is not None
+
 
 def _read_raw_appended_vtu(path, with_cells=False):
     """Read points + point-data arrays from a VTK XML UnstructuredGrid (.vtu) file
@@ -197,10 +220,7 @@ def find_max_temperature_location(run_path):
             # this isn't a corrupt/half-written file). Fall back to a narrow raw-vtu
             # reader for exactly this case before giving up.
             points, point_data = _read_raw_appended_vtu(path)
-        temp_key = next(
-            (key for key in point_data if "temp" in key.lower()),
-            None,
-        )
+        temp_key = temperature_key(point_data)
         if temp_key is None:
             return None
         temperature = point_data[temp_key]
@@ -266,15 +286,66 @@ def build_thermal_summary(run_path, source_lines=None):
         f"Min temperature   : {t_min:.2f} K",
         f"Max temperature   : {t_max:.2f} K",
         location_line,
-        "=" * 40,
     ]
+    lines += format_heatflow(read_heatflow(run_path))
+    lines.append("=" * 40)
     return "\n".join(lines)
+
+
+# ---------- heat flow per constant-temperature boundary (gds2palace 0.13.0 and newer) ----------
+
+_HEATFLOW_COLUMN_PREFIX = "over bc heatflow_"
+
+
+def read_heatflow(run_path):
+    """[(boundary name, heat flow out of the model in W)] from thermal_heatflow.dat, one entry per
+    constant-temperature boundary (e.g. "constanttemp_202"), or None if the file is missing (still running, or a
+    model from gds2palace before 0.13.0). Elmer writes heat leaving the model as a negative number; here it is
+    positive."""
+    for d in _candidate_dirs(run_path):
+        path = os.path.join(d, "thermal_heatflow.dat")
+        if os.path.isfile(path):
+            break
+    else:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = [line.split() for line in f if line.strip()]
+        values = [float(v) for v in rows[-1]] if rows else []
+        names = []
+        with open(path + ".names", "r", encoding="utf-8") as f:
+            for line in f:
+                if _HEATFLOW_COLUMN_PREFIX in line:
+                    names.append(line.split(_HEATFLOW_COLUMN_PREFIX, 1)[1].split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    if not values or len(names) != len(values):
+        return None
+    return [(name, -value) for name, value in zip(names, values)]
+
+
+def format_heatflow(heatflow):
+    """Summary lines for read_heatflow()'s result (none for None). The shares are of the sum of all heat flows,
+    which is the input power."""
+    if not heatflow:
+        return []
+    total = sum(heat for _, heat in heatflow)
+    lines = ["Heat flow out of the model per constant-temperature boundary:"]
+    for name, heat in heatflow:
+        label = f"GDS layer {name[len(_CONSTTEMP_PREFIX):]}" if name.startswith(_CONSTTEMP_PREFIX) else name
+        share = f"  ({100 * heat / total:.1f} %)" if total else ""
+        lines.append(f"  {label:<16}: {heat:.4g} W{share}")
+    lines.append(f"  {'Total':<16}: {total:.4g} W (= input power)")
+    lines.append("  Negative: heat flows into the model. The total equals the input power on any mesh,")
+    lines.append("  so it shows where the heat goes, not how accurate the mesh is.")
+    return lines
 
 
 # ---------- temperature per heat source / device ----------
 
 _VTK_TETRAHEDRA = (10, 24)      # linear and quadratic tetrahedron; the volume comes from the 4 corner nodes
 _SOURCE_PREFIX = "source_"      # gds2palace names the body of a heat source source_<GDS layer>
+_CONSTTEMP_PREFIX = "constanttemp_"     # ... and a constant-temperature boundary constanttemp_<GDS layer>
 
 
 def read_body_names(run_path):
@@ -311,7 +382,9 @@ def _tetrahedra(path):
         tetra = np.isin(types, _VTK_TETRAHEDRA)
         corners = connectivity[starts[tetra][:, None] + np.arange(4)]
         body = cell_data["GeometryIds"][tetra]
-    temp_key = next(key for key in point_data if "temp" in key.lower())
+    temp_key = temperature_key(point_data)
+    if temp_key is None:
+        raise KeyError("no temperature array in " + path)
     return np.asarray(points), np.asarray(point_data[temp_key]).ravel(), corners, np.asarray(body)
 
 
