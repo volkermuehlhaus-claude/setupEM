@@ -248,7 +248,7 @@ _ARROW_LOG_DECADES = {"log2": 2, "log3": 3, "log4": 4}
 # also controls arrow count: smaller arrows need less spacing to stay
 # readable, so shrinking them packs more in; bigger arrows need more room to
 # avoid overlapping, so enlarging them thins them out. At 8% arrow size (the
-# default before 0.20.1, now 2%) this reproduces the original fixed 0.02
+# default before 0.21.0, now 2%) this reproduces the original fixed 0.02
 # tolerance exactly.
 _VECTOR_ARROW_DECIMATION_RATIO = 0.25
 

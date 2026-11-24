@@ -1,4 +1,4 @@
-# What's New - November 24, 2026 (setupEM 0.20.1)
+# What's New - November 24, 2026 (setupEM 0.21.0)
 
 **Field viewer: arrow length modes.** The Scaled checkbox next to Show arrows is now a dropdown with five choices: **Fixed** (all arrows the same length, direction only; the new default), **Scaled** (as before: length and color on the legend's color scale and range), and **Log 2 decades**, **Log 3 decades**, **Log 4 decades** (length on a log scale over that many decades below the largest displayed value; weaker arrows are hidden). The arrows without Scaled used to follow a log scale over up to 6 decades of the data; Log 4 decades is the closest choice now. The command line field viewer has a matching `--arrow-length fixed|scaled|log2|log3|log4`; `--arrows-scaled` still works. The default Arrow size is now 2 % of the model size (was 8 %): smaller arrows, and more of them, since their spacing follows their size.
 
