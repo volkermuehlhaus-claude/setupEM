@@ -212,7 +212,7 @@ _FIELD_AMPLITUDE_ARRAYS = {
 # bounding-box-relative scaling keeps arrows a sensible, consistent on-screen
 # size no matter which vector field or domain scale is loaded, and the slider
 # then lets the user scale that up or down to taste.
-_VECTOR_ARROW_TARGET_FRACTION_PERCENT_DEFAULT = 8
+_VECTOR_ARROW_TARGET_FRACTION_PERCENT_DEFAULT = 2
 # QSlider is integer-only, so a 0.2% step is represented as an integer count
 # of fifth-percent units internally (arrow_size_slider's range/value are in
 # these units) - see _on_arrow_size_changed()/_add_vector_glyphs() for the
@@ -222,12 +222,24 @@ _ARROW_SIZE_MIN_PERCENT = 0.2
 _ARROW_SIZE_MAX_PERCENT = 10
 # Shortest arrow (smallest-magnitude point actually glyphed) is still drawn at
 # this fraction of the longest arrow's length, rather than shrinking toward
-# zero - see _add_vector_glyphs() for why a raw linear magnitude->length
-# mapping doesn't work here (confirmed empirically: real Palace E-field data
-# spans ~8 orders of magnitude, same dynamic range that already forces
-# _pick_default_array() to use a log color scale - a linear-scaled arrow
-# length made every arrow but the single hottest point invisibly short).
+# zero - a raw linear magnitude->length mapping doesn't work here (confirmed
+# empirically: real Palace E-field data spans ~8 orders of magnitude, same
+# dynamic range that already forces _pick_default_array() to use a log color
+# scale - a linear-scaled arrow length made every arrow but the single
+# hottest point invisibly short).
 _VECTOR_ARROW_MIN_LENGTH_RATIO = 0.15
+# Arrow length modes (the dropdown next to "Show arrows", --arrow-length):
+# (key, label). Fixed: one length, direction only. Scaled: length and color
+# on the legend's scale and range. Log N: length on a log scale over the N
+# decades below the largest displayed value; weaker arrows are hidden.
+ARROW_LENGTH_MODES = (
+    ("fixed", "Fixed"),
+    ("scaled", "Scaled"),
+    ("log2", "Log 2 decades"),
+    ("log3", "Log 3 decades"),
+    ("log4", "Log 4 decades"),
+)
+_ARROW_LOG_DECADES = {"log2": 2, "log3": 3, "log4": 4}
 # Decimation tolerance (fraction of bounding box length) passed to
 # pv.DataSet.glyph() as a multiple of the current arrow size, not a fixed
 # value - without any decimation, a dense field-dump mesh (tens/hundreds of
@@ -235,9 +247,58 @@ _VECTOR_ARROW_MIN_LENGTH_RATIO = 0.15
 # render. Tying it to arrow size (rather than a constant) means "Arrow size"
 # also controls arrow count: smaller arrows need less spacing to stay
 # readable, so shrinking them packs more in; bigger arrows need more room to
-# avoid overlapping, so enlarging them thins them out. At the default 8%
-# arrow size this reproduces the original fixed 0.02 tolerance exactly.
+# avoid overlapping, so enlarging them thins them out. At 8% arrow size (the
+# default before 0.20.1, now 2%) this reproduces the original fixed 0.02
+# tolerance exactly.
 _VECTOR_ARROW_DECIMATION_RATIO = 0.25
+
+
+def arrow_lengths(magnitudes, mode, max_length, clim=None, use_log=False):
+    """Which points get an arrow, and how long, for one arrow length mode.
+    Qt-free, so it can be tested on its own.
+    Args:
+        magnitudes (numpy array): field magnitude per point
+        mode (string): a key of ARROW_LENGTH_MODES
+        max_length (float): length of the longest arrow
+        clim ((lo, hi) or None): "scaled" only - the legend's color range; None
+            uses the magnitudes' own range
+        use_log (bool): "scaled" only - the legend uses a log scale (ignored if lo <= 0)
+    Returns:
+        (keep, lengths): boolean mask of the points that get an arrow, and the
+        lengths of those points in the same order; (None, None) if no arrow
+        can be drawn (all-zero field, empty or inverted range)
+    """
+    magnitudes = np.asarray(magnitudes, dtype=float)
+    if magnitudes.size == 0:
+        return None, None
+    peak = float(magnitudes.max())
+    if mode == "fixed":
+        keep = magnitudes > 0                       # a zero vector has no direction
+        if not keep.any():
+            return None, None
+        return keep, np.full(int(keep.sum()), float(max_length))
+    if mode == "scaled":
+        lo, hi = clim if clim is not None else (float(magnitudes.min()), peak)
+        if hi <= lo:
+            return None, None
+        keep = magnitudes >= lo                      # below the legend range: no arrow
+        if not keep.any():
+            return None, None
+        kept = np.clip(magnitudes[keep], lo, hi)
+        if use_log and lo > 0:
+            normalized = np.log10(kept / lo) / np.log10(hi / lo)
+        else:
+            normalized = (kept - lo) / (hi - lo)
+    elif mode in _ARROW_LOG_DECADES:
+        if peak <= 0:
+            return None, None
+        decades = _ARROW_LOG_DECADES[mode]
+        keep = magnitudes >= peak * 10.0 ** (-decades)   # weaker than the span: no arrow
+        normalized = 1.0 + np.log10(magnitudes[keep] / peak) / decades
+    else:
+        raise ValueError(f"unknown arrow length mode {mode!r}")
+    return keep, max_length * (_VECTOR_ARROW_MIN_LENGTH_RATIO
+                               + (1.0 - _VECTOR_ARROW_MIN_LENGTH_RATIO) * normalized)
 
 
 def _load_full_mesh(file_path, cycle_index=None):
@@ -1067,15 +1128,18 @@ class FieldViewerWindow(QDialog):
         self.show_vectors_cb = QCheckBox("Show arrows")
         self.show_vectors_cb.setEnabled(False)
         self.show_vectors_cb.toggled.connect(self._on_redraw_needed)
-        # Arrow length and color follow the field value (same colormap, linear/
-        # log scale and Min/Max or dB Range as the surface and legend) - see
-        # _add_scaled_vector_glyphs(). Only usable while arrows are drawn.
-        self.scaled_arrows_cb = QCheckBox("Scaled")
-        self.scaled_arrows_cb.setEnabled(False)
-        self.scaled_arrows_cb.toggled.connect(self._on_redraw_needed)
-        self.show_vectors_cb.toggled.connect(lambda _checked: self._update_scaled_checkbox_state())
-        _swatch_row("_arrow_color", self._arrow_color, self.show_vectors_cb, self.scaled_arrows_cb)
-        self._update_scaled_checkbox_state()
+        # Arrow length mode (ARROW_LENGTH_MODES): Fixed, Scaled (length and
+        # color on the legend's scale and range) or a log scale over 2/3/4
+        # decades below the largest value - see arrow_lengths(). Only usable
+        # while arrows are drawn.
+        self.arrow_length_combo = QComboBox()
+        for key, label in ARROW_LENGTH_MODES:
+            self.arrow_length_combo.addItem(label, key)
+        self.arrow_length_combo.setEnabled(False)
+        self.arrow_length_combo.currentIndexChanged.connect(self._on_redraw_needed)
+        self.show_vectors_cb.toggled.connect(lambda _checked: self._update_arrow_length_state())
+        _swatch_row("_arrow_color", self._arrow_color, self.show_vectors_cb, self.arrow_length_combo)
+        self._update_arrow_length_state()
 
         self.show_edges_cb = QCheckBox("Overlay mesh")
         self.show_edges_cb.setChecked(False)
@@ -2326,17 +2390,20 @@ class FieldViewerWindow(QDialog):
         )
         self.arrow_size_label.setEnabled(is_vector)
         self.arrow_size_slider.setEnabled(is_vector)
-        self._update_scaled_checkbox_state()
+        self._update_arrow_length_state()
 
-    def _update_scaled_checkbox_state(self):
-        """Enable "Scaled" only while arrows can actually be drawn (vector
-        array selected and Show arrows checked). Its checked state is kept
-        while disabled, like Show arrows' own."""
+    def _update_arrow_length_state(self):
+        """Enable the arrow length dropdown only while arrows can actually be
+        drawn (vector array selected and Show arrows checked). Its selection is
+        kept while disabled, like Show arrows' own state."""
         active = self.show_vectors_cb.isEnabled() and self.show_vectors_cb.isChecked()
-        self.scaled_arrows_cb.setEnabled(active)
-        self.scaled_arrows_cb.setToolTip(
-            "Scale arrow length and color by field value, using the same color "
-            "scale and range as the legend; arrows below the range are hidden"
+        self.arrow_length_combo.setEnabled(active)
+        self.arrow_length_combo.setToolTip(
+            "Arrow length. Fixed: all the same length, direction only. "
+            "Scaled: length and color follow the field value on the legend's color "
+            "scale and range; arrows below the range are hidden. "
+            "Log 2/3/4 decades: length on a log scale over that many decades below "
+            "the largest value; weaker arrows are hidden"
             if active else "Only available while Show arrows is checked")
 
     def _reset_clim_range(self):
@@ -2422,116 +2489,70 @@ class FieldViewerWindow(QDialog):
 
     def _add_vector_glyphs(self, mesh, array_name):
         """Build and add an arrow-glyph actor oriented from mesh's array_name
-        vector array, auto-scaled so the longest arrow spans the "Arrow size"
-        slider's percentage of the mesh's own bounding-box diagonal -
-        regardless of the field's physical units/magnitude or the domain's
-        physical size (Palace um-scale vs. Elmer mm-scale), so the slider
-        means the same thing (a fraction of what's on screen) no matter which
-        vector field or domain is loaded - see arrow_size_slider's creation
-        in _build_ui().
+        vector array. The longest arrow spans the "Arrow size" slider's
+        percentage of the mesh's own bounding-box diagonal, regardless of the
+        field's physical units/magnitude or the domain's physical size (Palace
+        um-scale vs. Elmer mm-scale), so the slider means the same thing (a
+        fraction of what's on screen) for every field and domain - see
+        arrow_size_slider's creation in _build_ui().
 
-        Arrow length is mapped from log10(magnitude), not magnitude directly:
-        a linear mapping (length proportional to raw magnitude) leaves only
-        the single largest-magnitude point with a visible arrow when the
-        field spans many orders of magnitude - confirmed on real Palace
-        E-field data (0.07 to 1.1e7, ~8 decades), every other arrow rendered
-        at an indistinguishable-from-zero length. The log mapping is then
-        rescaled into [_VECTOR_ARROW_MIN_LENGTH_RATIO, 1.0] of the target
-        length so even the smallest-magnitude glyphed point stays visible,
-        while direction (not length) remains the primary signal for outliers.
+        Which points get an arrow and how long it is follows the arrow length
+        dropdown, see arrow_lengths(): Fixed, Scaled (on the legend's scale and
+        range, with the same fallback to the displayed data's own range when no
+        valid clim is set, see _apply_display_mesh()), or a log scale over 2/3/4
+        decades below the largest displayed value. A log or legend scale, not a
+        linear one from zero: real Palace E-field data spans ~8 decades, and a
+        linear length leaves every arrow but the hottest one invisibly short.
+        Points that get no arrow are dropped before decimation, so they don't
+        use up arrow slots. Scaled arrows are colored with the legend's
+        colormap and range; all others use the arrow color swatch.
 
         Arrow count follows arrow size too, via the decimation tolerance
-        passed to mesh.glyph() - see _VECTOR_ARROW_DECIMATION_RATIO's comment.
+        passed to glyph() - see _VECTOR_ARROW_DECIMATION_RATIO's comment.
         Smaller arrows pack in more densely, larger ones thin out to avoid
         overlapping, rather than count staying fixed while only size changes.
 
-        Returns None (no actor added) if the array is all-zero or glyphing
+        Returns None (no actor added) if no arrow can be drawn or glyphing
         fails, rather than raising - same graceful-degradation spirit as the
         rest of this viewer's redraw path.
         """
-        vectors = mesh.point_data[array_name]
+        vectors = np.asarray(mesh.point_data[array_name])
         magnitudes = np.linalg.norm(vectors, axis=1)
-        max_magnitude = magnitudes.max() if magnitudes.size else 0.0
-        if max_magnitude <= 0:
-            return None
         diagonal = mesh.length or 1.0
         target_fraction = (self.arrow_size_slider.value() * _ARROW_SIZE_STEP_PERCENT) / 100.0
         decimation = target_fraction * _VECTOR_ARROW_DECIMATION_RATIO
+        mode = self.arrow_length_combo.currentData() or "fixed"
 
-        if self.scaled_arrows_cb.isChecked() and self.scaled_arrows_cb.isEnabled():
-            return self._add_scaled_vector_glyphs(
-                mesh, array_name, vectors, magnitudes, diagonal * target_fraction, decimation)
-
-        floor = max_magnitude * 1e-6  # avoid log10(0) for exact-zero points
-        log_magnitude = np.log10(np.clip(magnitudes, floor, None))
-        lo, hi = log_magnitude.min(), log_magnitude.max()
-        normalized = (log_magnitude - lo) / (hi - lo) if hi > lo else np.ones_like(log_magnitude)
-        lengths = diagonal * target_fraction * (
-            _VECTOR_ARROW_MIN_LENGTH_RATIO + (1.0 - _VECTOR_ARROW_MIN_LENGTH_RATIO) * normalized
-        )
-
-        scale_key = "_glyph_arrow_length"
-        mesh.point_data[scale_key] = lengths
-        try:
-            glyphs = mesh.glyph(orient=array_name, scale=scale_key, factor=1.0,
-                                 tolerance=decimation)
-        except Exception as exc:
-            self.warning_label.setText(f"Vector arrows failed: {exc}")
+        clim, use_log = None, False
+        if mode == "scaled":
+            clim = self._get_clim()
+            lo = clim[0] if clim is not None else float(magnitudes.min()) if magnitudes.size else 0.0
+            use_log = bool(self.log_scale_cb.isChecked() and lo > 0)
+        keep, lengths = arrow_lengths(magnitudes, mode, diagonal * target_fraction, clim, use_log)
+        if keep is None:
+            if mode == "scaled" and magnitudes.size and magnitudes.max() > 0:
+                self.warning_label.setText("Scaled arrows: no values inside the color range")
             return None
-        finally:
-            # Internal-only helper array - don't leave it in the mesh's array
-            # list (would otherwise show up in the Field dropdown's arrays).
-            del mesh.point_data[scale_key]
-        return self.plotter.add_mesh(glyphs, color=self._arrow_color, reset_camera=False)
-
-    def _add_scaled_vector_glyphs(self, mesh, array_name, vectors, magnitudes,
-                                   max_length, decimation):
-        """"Scaled" arrows: length and color both follow the field magnitude on
-        the same scale as the surface and legend - same colormap, same
-        linear/log choice, same Min/Max (or log dB Range below Max), including
-        the same fallback to the displayed data's own range when no valid clim
-        is set (see _apply_display_mesh()). Length runs from
-        _VECTOR_ARROW_MIN_LENGTH_RATIO to 1.0 of max_length across that range;
-        points below the lower limit get no arrow (excluded before decimation,
-        so they don't use up arrow slots); points above Max are drawn at full
-        length in the top color."""
-        clim = self._get_clim()
-        if clim is None:
-            lo, hi = float(magnitudes.min()), float(magnitudes.max())
-        else:
-            lo, hi = clim
-        use_log = bool(self.log_scale_cb.isChecked() and lo > 0)
-        if hi <= lo:
-            return None
-
-        keep = magnitudes >= lo
-        if not keep.any():
-            self.warning_label.setText("Scaled arrows: no values inside the color range")
-            return None
-        kept_mag = magnitudes[keep]
-        if use_log:
-            normalized = np.log10(np.clip(kept_mag, lo, hi) / lo) / np.log10(hi / lo)
-        else:
-            normalized = (np.clip(kept_mag, lo, hi) - lo) / (hi - lo)
-        lengths = max_length * (
-            _VECTOR_ARROW_MIN_LENGTH_RATIO + (1.0 - _VECTOR_ARROW_MIN_LENGTH_RATIO) * normalized
-        )
 
         # Separate point cloud rather than helper arrays on the display mesh:
-        # holds only the arrows that will be drawn.
+        # holds only the arrows that will be drawn, and nothing leaks into the
+        # mesh's array list (the Field dropdown).
         points = pv.PolyData(np.asarray(mesh.points)[keep])
-        points.point_data["vec"] = np.asarray(vectors)[keep]
+        points.point_data["vec"] = vectors[keep]
         points.point_data["length"] = lengths
-        points.point_data["value"] = kept_mag
+        points.point_data["value"] = magnitudes[keep]
         try:
             glyphs = points.glyph(orient="vec", scale="length", factor=1.0,
                                    tolerance=decimation)
         except Exception as exc:
             self.warning_label.setText(f"Vector arrows failed: {exc}")
             return None
-        return self.plotter.add_mesh(
-            glyphs, scalars="value", cmap=self._current_cmap, clim=(lo, hi),
-            log_scale=use_log, show_scalar_bar=False, reset_camera=False)
+        if mode == "scaled":
+            lo, hi = clim if clim is not None else (float(magnitudes.min()), float(magnitudes.max()))
+            return self.plotter.add_mesh(
+                glyphs, scalars="value", cmap=self._current_cmap, clim=(lo, hi),
+                log_scale=use_log, show_scalar_bar=False, reset_camera=False)
+        return self.plotter.add_mesh(glyphs, color=self._arrow_color, reset_camera=False)
 
     # ---------- Redraw ----------
 
@@ -2845,9 +2866,14 @@ def main():
     parser.add_argument("--arrows", action="store_true",
                          help="overlay vector-field direction arrows (only takes effect "
                               "when the selected array is a vector)")
+    parser.add_argument("--arrow-length", choices=[key for key, _ in ARROW_LENGTH_MODES],
+                         help="with --arrows: arrow length mode (default fixed). fixed: all "
+                              "the same length; scaled: length and color follow the field "
+                              "value on the legend's color scale and range; log2/log3/log4: "
+                              "length on a log scale over 2/3/4 decades below the largest "
+                              "value, weaker arrows hidden")
     parser.add_argument("--arrows-scaled", action="store_true",
-                         help="with --arrows: scale arrow length and color by field value, "
-                              "using the same color scale and range as the legend")
+                         help="same as --arrow-length scaled (kept for older scripts)")
     parser.add_argument("--arrow-size", type=float,
                          help=f"arrow size as a percent of the mesh's bounding-box diagonal "
                               f"({_ARROW_SIZE_MIN_PERCENT}-{_ARROW_SIZE_MAX_PERCENT}, default "
@@ -2876,6 +2902,9 @@ def main():
         parser.error("--clip-position and --clip-max are mutually exclusive")
     if args.opacity is not None and not (0 <= args.opacity <= 100):
         parser.error("--opacity must be between 0 and 100")
+    if args.arrow_length and args.arrows_scaled and args.arrow_length != "scaled":
+        parser.error("--arrows-scaled is --arrow-length scaled; it can't be combined with "
+                     f"--arrow-length {args.arrow_length}")
     if args.arrow_size is not None and not (_ARROW_SIZE_MIN_PERCENT <= args.arrow_size <= _ARROW_SIZE_MAX_PERCENT):
         parser.error(f"--arrow-size must be between {_ARROW_SIZE_MIN_PERCENT} and {_ARROW_SIZE_MAX_PERCENT}")
     if args.log_range_db is not None and args.log_range_db <= 0:
@@ -2987,11 +3016,12 @@ def main():
         if not window.show_vectors_cb.isEnabled():
             print("Warning: --arrows requested but the selected array is not a vector "
                   "field; no arrows will be drawn.", file=sys.stderr)
-    if args.arrows_scaled:
-        window.scaled_arrows_cb.setChecked(True)
-        if not window.scaled_arrows_cb.isEnabled():
-            print("Warning: --arrows-scaled requires --arrows on a vector field; "
-                  "arrows will not be scaled.", file=sys.stderr)
+    arrow_length = args.arrow_length or ("scaled" if args.arrows_scaled else None)
+    if arrow_length:
+        window.arrow_length_combo.setCurrentIndex(window.arrow_length_combo.findData(arrow_length))
+        if not window.arrow_length_combo.isEnabled():
+            print("Warning: --arrow-length/--arrows-scaled requires --arrows on a vector field; "
+                  "it has no effect.", file=sys.stderr)
     if args.arrow_size is not None:
         window.arrow_size_slider.setValue(round(args.arrow_size / _ARROW_SIZE_STEP_PERCENT))
 

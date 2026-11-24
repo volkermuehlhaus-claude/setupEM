@@ -1,3 +1,9 @@
+# What's New - November 24, 2026 (setupEM 0.20.1)
+
+**Field viewer: arrow length modes.** The Scaled checkbox next to Show arrows is now a dropdown with five choices: **Fixed** (all arrows the same length, direction only; the new default), **Scaled** (as before: length and color on the legend's color scale and range), and **Log 2 decades**, **Log 3 decades**, **Log 4 decades** (length on a log scale over that many decades below the largest displayed value; weaker arrows are hidden). The arrows without Scaled used to follow a log scale over up to 6 decades of the data; Log 4 decades is the closest choice now. The command line field viewer has a matching `--arrow-length fixed|scaled|log2|log3|log4`; `--arrows-scaled` still works. The default Arrow size is now 2 % of the model size (was 8 %): smaller arrows, and more of them, since their spacing follows their size.
+
+**Fix: setupThermal stackup preview.** Metals and vias with a temperature-dependent thermal conductivity table (e.g. Activ) are labelled κ=table, like dielectrics, instead of κ=0.0.
+
 # What's New - November 23, 2026 (setupEM 0.20.0)
 
 **setupThermal: heat flux and temperature gradient.** The Mesh tab has a new checkbox, Result output: Heat flux and temperature gradient (gds2palace 0.13.0 and newer; hidden with an older gds2palace). The result file then also holds `temperature flux` (W/m²) and `temperature grad` (K/m), which the field viewer shows as arrows. The field viewer's Field choice and colour legend show the unit of each Elmer thermal array, e.g. `temperature grad [K/m]`. They are computed per body, so they keep their jumps at material interfaces.
