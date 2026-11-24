@@ -54,6 +54,21 @@ def test_clip_just_beside_an_interface_shows_only_the_cut_face():
     assert np.isclose(area, 4.0)
 
 
+def test_boundary_elements_cut_no_hole():
+    """Elmer writes boundary elements too: a triangle on the outer face must not pair with that face."""
+    block = pv.ImageData(dimensions=(3, 3, 3), spacing=(1.0, 1.0, 1.0)).cast_to_unstructured_grid().triangulate()
+    block.cell_data["GeometryIds"] = np.full(block.n_cells, 1)
+    bottom = _outer_surface(block).triangulate()
+    bottom = bottom.extract_cells(np.flatnonzero(np.isclose(bottom.cell_centers().points[:, 2], 0.0)))
+    bottom.cell_data["GeometryIds"] = np.full(bottom.n_cells, 101)
+    mesh = pv.merge([block, bottom], merge_points=False)
+    visible = _visible_surface(mesh)
+    assert visible.n_cells == _outer_surface(block).triangulate().n_cells
+    floor = np.isclose(visible.cell_centers().points[:, 2], 0.0)
+    assert np.isclose(visible.extract_cells(np.flatnonzero(floor)).compute_cell_sizes()["Area"].sum(), 4.0)
+    assert set(np.unique(visible.cell_data["GeometryIds"])) == {1}
+
+
 def test_single_body_and_slices_are_unchanged():
     block = pv.ImageData(dimensions=(3, 3, 3)).cast_to_unstructured_grid().triangulate()
     assert _visible_surface(block).n_cells == _outer_surface(block).triangulate().n_cells

@@ -82,6 +82,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QEvent, QPoint
 from PySide6.QtGui import QShortcut, QKeySequence, QColor
+from vtkmodules.vtkCommonDataModel import vtkCellTypes
 from vtkmodules.vtkRenderingCore import (
     vtkActor2D, vtkCellPicker, vtkCoordinate, vtkPolyDataMapper2D,
 )
@@ -565,9 +566,18 @@ def _visible_surface(mesh):
     corner points all coincide with those of another face is such a pair and is
     dropped, both copies. Point and cell data (GeometryIds) are kept, so color,
     probe and markers work on it as before. A 2D slice (PolyData) is returned
-    unchanged."""
+    unchanged.
+
+    Only the volume cells are used: Elmer also writes the boundary elements of
+    its boundary conditions (triangles, e.g. a constant temperature on the
+    backside), and a triangle on the model's outer face would pair with that
+    face and cut a hole into it."""
     if not isinstance(mesh, pv.UnstructuredGrid) or mesh.n_cells == 0:
         return mesh
+    types = np.unique(mesh.celltypes)
+    solid = [t for t in types if vtkCellTypes.GetDimension(int(t)) == 3]
+    if solid and len(solid) < len(types):
+        mesh = mesh.extract_cells(np.flatnonzero(np.isin(mesh.celltypes, solid)))
     surface = _outer_surface(mesh).triangulate()
     if surface.n_cells == 0:
         return surface
