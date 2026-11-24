@@ -15,8 +15,8 @@ keywords:
   - GDSII
   - Palace
   - IHP SG13G2
-version: 0.20.0
-date-released: 2026-11-23
+version: 0.20.1
+date-released: 2026-11-24
 doi: 10.5281/zenodo.23766714
 references:
   - type: software
