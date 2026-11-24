@@ -553,6 +553,49 @@ def _outer_surface(mesh):
         return mesh.extract_surface()
 
 
+def _visible_surface(mesh):
+    """What is drawn of a 3D mesh: its outer surface without the faces between
+    two bodies. A result written body by body (Elmer's Discontinuous Bodies,
+    which keeps the jumps of flux/gradient at material interfaces) has its own
+    copy of the nodes per body, so every interface between two bodies is a pair
+    of coincident surface faces inside the model. Hidden at full opacity
+    otherwise, they fight with the clip's cut face when the plane lies within a
+    rounding error of an interface (e.g. just above a thin metal), and show as
+    triangular shards there; below full opacity they show through. A face whose
+    corner points all coincide with those of another face is such a pair and is
+    dropped, both copies. Point and cell data (GeometryIds) are kept, so color,
+    probe and markers work on it as before. A 2D slice (PolyData) is returned
+    unchanged."""
+    if not isinstance(mesh, pv.UnstructuredGrid) or mesh.n_cells == 0:
+        return mesh
+    surface = _outer_surface(mesh).triangulate()
+    if surface.n_cells == 0:
+        return surface
+    faces = surface.regular_faces
+    # One 64-bit key per position (the copies of a node have identical
+    # coordinates), then one per face from its three corner keys, so the
+    # duplicate search is a single 1-D sort - a Palace dump has a node copy per
+    # element and millions of surface faces, where a row-wise np.unique on the
+    # coordinates took ~20 s. A hash collision could only hide a face from the
+    # drawing, never change data.
+    points = np.asarray(surface.points, dtype=np.float64)
+    scale = max(float(np.ptp(points, axis=0).max()), 1e-30) * 1e-9
+    grid = np.round((points - points.min(axis=0)) / scale).astype(np.uint64)
+    with np.errstate(over="ignore"):
+        point_key = (grid[:, 0] * np.uint64(0x9E3779B97F4A7C15)
+                     ^ grid[:, 1] * np.uint64(0xC2B2AE3D27D4EB4F)
+                     ^ grid[:, 2] * np.uint64(0x165667B19E3779F9))
+        corners = np.sort(point_key[faces], axis=1)
+        face_key = (corners[:, 0] * np.uint64(0x9E3779B97F4A7C15)
+                    ^ corners[:, 1] * np.uint64(0xC2B2AE3D27D4EB4F)
+                    ^ corners[:, 2] * np.uint64(0x27D4EB2F165667C5))
+    _, first, counts = np.unique(face_key, return_inverse=True, return_counts=True)
+    single = counts[first] == 1
+    if single.all():
+        return surface
+    return _outer_surface(surface.extract_cells(np.flatnonzero(single)))
+
+
 class _ClipWorker(QThread):
     """Runs _exact_clip_by_axis() on a background thread - see that function's
     docstring for why this can't just run inline in _redraw(). Always given a
@@ -800,6 +843,8 @@ class FieldViewerWindow(QDialog):
 
         self._full_mesh = None
         self._mesh_actor = None
+        # (displayed mesh, its visible surface) - see _apply_display_mesh()
+        self._render_surface_cache = (None, None)
         self._vector_actor = None
         self._current_axis = "Z"
         self._load_error = None
@@ -2758,6 +2803,13 @@ class FieldViewerWindow(QDialog):
             self.plotter.remove_actor(self._mesh_actor, render=False)
             self._mesh_actor = None
 
+        # Drawn: the visible surface only (see _visible_surface()), computed
+        # once per displayed mesh; the legend range and arrows still use the
+        # whole display_mesh below.
+        if self._render_surface_cache[0] is not display_mesh:
+            self._render_surface_cache = (display_mesh, _visible_surface(display_mesh))
+        render_mesh = self._render_surface_cache[1]
+
         if array_name and array_name in display_mesh.point_data:
             magnitudes = _array_magnitudes(display_mesh[array_name])
             clim = self._get_clim()
@@ -2772,7 +2824,7 @@ class FieldViewerWindow(QDialog):
             opacity = self.opacity_slider.value() / 100.0
             show_edges = self.show_edges_cb.isChecked()
             self._mesh_actor = self.plotter.add_mesh(
-                display_mesh, scalars=array_name, cmap=self._current_cmap,
+                render_mesh, scalars=array_name, cmap=self._current_cmap,
                 show_edges=show_edges, edge_color=self._edge_color,
                 log_scale=use_log, clim=clim, opacity=opacity,
                 show_scalar_bar=self.show_legend_cb.isChecked(),
@@ -2783,7 +2835,7 @@ class FieldViewerWindow(QDialog):
             opacity = self.opacity_slider.value() / 100.0
             show_edges = self.show_edges_cb.isChecked()
             self._mesh_actor = self.plotter.add_mesh(
-                display_mesh, color="lightgrey", opacity=opacity, show_edges=show_edges,
+                render_mesh, color="lightgrey", opacity=opacity, show_edges=show_edges,
                 edge_color=self._edge_color, reset_camera=False)
 
         if self._vector_actor is not None:
