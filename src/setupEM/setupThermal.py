@@ -1533,6 +1533,17 @@ def _thermal_conductivity_for_color(material):
     return material.thermalcond
 
 
+def _thermal_conductivity_label(material):
+    """Stackup preview label: 'κ=table' for a temperature-dependent table
+    (thermaltablename set, for dielectrics, metals and vias alike), else
+    the scalar thermalcond."""
+    if material is None:
+        return ""
+    if material.thermaltablename:
+        return "κ=table"
+    return f'κ={material.thermalcond:.1f}'
+
+
 class ThermalConductivityLegend(QWidget):
     """Compact colorbar + tick labels for the stackup preview's conductivity
     color scale, shown next to it (setupThermal only - see
@@ -1801,24 +1812,16 @@ class MainWindow(MainWindowBase):
         return ThermalConductivityLegend()
 
     def stackup_dielectric_label(self, dielectric, material):
-        if material.thermaltablename == "":
-            material_string  = f'κ={material.thermalcond:.1f}'
-        else:
-            material_string = "κ=table"
-        return material_string
+        return _thermal_conductivity_label(material)
 
     def stackup_metal_label(self, metal, material, is_sheet):
         if is_sheet:
             return ""
         else:
-            return f'κ={material.thermalcond:.1f}'
+            return _thermal_conductivity_label(material)
 
     def stackup_via_label_suffix(self, metal, material):
-        if material is not None:
-            kappa_string = f'κ={material.thermalcond:.1f}'
-        else:
-            kappa_string = ""
-        return "   " + kappa_string
+        return "   " + _thermal_conductivity_label(material)
 
 
 def parse_python_thermal_definitions (file_path):
