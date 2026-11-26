@@ -298,16 +298,50 @@ def stamp_variables_format_comment(root, min_reader_version):
   root.insert(insert_index, ET.Comment(f" {VARIABLES_FORMAT_COMMENT_PREFIX} {min_reader_version} or newer "))
 
 
+# The stamp of a file that needs schemaVersion "3.2": it names the 3.2 features the file uses, e.g.
+# "Stackup format 3.2 features used (Priority, allowed values of Variables) require gds2palace
+# util_stackup_reader.py version 1.11.0 or newer". The second text is an earlier wording, written for any
+# 3.2 feature; it is replaced by the first one on the next save.
+FORMAT_32_COMMENT_PREFIX = "Stackup format 3.2 features used"
 DIRECTIONAL_FORMAT_COMMENT_PREFIX = "Direction-dependent thermal conductivity (.xy/.z) and Priority require gds2palace util_stackup_reader.py version"
+FORMAT_32_MIN_READER_VERSION = "1.11.0"   # the reader that introduced schemaVersion "3.2"
 
 
-def stamp_directional_format_comment(root, min_reader_version):
-  """Insert or update a comment noting the minimum gds2palace reader version needed to read this file's
-     direction-dependent material attributes (ThermalConductivity.xy etc.). Same shape and placement as
-     stamp_variables_format_comment()."""
+def format_32_features_used(root):
+  """The schemaVersion "3.2" features this stackup uses, as short names for the stamp comment."""
+  features = []
+  if _uses_directional_attributes(root):
+    features.append("thermal conductivity per direction")
+  if _uses_priority(root):
+    features.append("Priority")
+  if _uses_variable_limits(root):
+    features.append("allowed values of Variables")
+  if _uses_datatype(root):
+    features.append("Datatype")
+  return features
+
+
+def _is_format_32_comment(child):
+  text = (child.text or "").strip() if child.tag is ET.Comment else ""
+  return text.startswith(FORMAT_32_COMMENT_PREFIX) or text.startswith(DIRECTIONAL_FORMAT_COMMENT_PREFIX)
+
+
+def has_format_32_comment(root):
+  """True if the file has the 3.2 stamp comment, in today's or the earlier wording."""
+  return any(_is_format_32_comment(child) for child in root)
+
+
+def stamp_format_32_comment(root):
+  """Insert or update the comment that names the schemaVersion "3.2" features this file uses and the reader
+     version they need. Same placement as stamp_variables_format_comment(). Replaces an earlier stamp, also
+     one in the earlier wording, which named thermal conductivity per direction and Priority whatever the
+     file used. Without any 3.2 feature in use, the stamp is removed and none is written."""
   for child in list(root):
-    if child.tag is ET.Comment and (child.text or "").strip().startswith(DIRECTIONAL_FORMAT_COMMENT_PREFIX):
+    if _is_format_32_comment(child):
       root.remove(child)
+  features = format_32_features_used(root)
+  if not features:
+    return
 
   insert_index = 0
   for child in root:
@@ -315,7 +349,9 @@ def stamp_directional_format_comment(root, min_reader_version):
       insert_index += 1
     else:
       break
-  root.insert(insert_index, ET.Comment(f" {DIRECTIONAL_FORMAT_COMMENT_PREFIX} {min_reader_version} or newer "))
+  root.insert(insert_index, ET.Comment(
+      f" {FORMAT_32_COMMENT_PREFIX} ({', '.join(features)}) require gds2palace util_stackup_reader.py "
+      f"version {FORMAT_32_MIN_READER_VERSION} or newer "))
 
 
 def directional_attribute_names():
@@ -440,11 +476,11 @@ def _sort_layers_by_resulting_zmin (root):
      current order untouched if the data can't be fully resolved right now (e.g. a
      mid-edit invalid state) - sort order isn't worth blocking a save over.
 
-     Any comment in <Layers> is moved to the very beginning of the section (ahead of the
-     optional <Substrate Offset=".../">, ahead of every <Layer>) rather than left in its
-     original slot: sorting means whichever <Layer> a comment used to introduce may no
-     longer sit next to it, so leaving it in place would misleadingly suggest it still
-     describes whatever ended up there instead.
+     A comment in <Layers> belongs to the <Layer> that follows it and moves with that
+     layer, so it still introduces the same layer after sorting. Comments in front of the
+     optional <Substrate Offset=".../"> stay with it at the beginning, comments after the
+     last <Layer> stay at the end. The sort is stable: layers with the same Zmin keep
+     their order.
   """
   layers_el = get_layers_element(root)
   if layers_el is None:
@@ -459,12 +495,25 @@ def _sort_layers_by_resulting_zmin (root):
     return
 
   zmin_by_name = {metal.name: metal.zmin for metal in metals_list.metals}
-  sorted_layers = sorted(layer_elements, key=lambda el: zmin_by_name.get(el.get("Name"), float("-inf")), reverse=True)
 
   children = list(layers_el)
-  comments = [child for child in children if child.tag is ET.Comment]
-  substrate_el = layers_el.find("Substrate")
-  new_children = comments + ([substrate_el] if substrate_el is not None else []) + sorted_layers
+  head = []       # the <Substrate> with the comments in front of it
+  groups = []     # one list per <Layer>: its comments, then the layer
+  pending = []    # comments not yet given to an element
+  others = []     # anything else: kept, after the layers
+  for child in children:
+    if child.tag is ET.Comment:
+      pending.append(child)
+    elif child.tag == "Substrate":
+      head.extend(pending + [child])
+      pending = []
+    elif child.tag == "Layer":
+      groups.append(pending + [child])
+      pending = []
+    else:
+      others.append(child)
+  groups.sort(key=lambda group: zmin_by_name.get(group[-1].get("Name"), float("-inf")), reverse=True)
+  new_children = head + [child for group in groups for child in group] + others + pending
 
   for child in children:
     layers_el.remove(child)
@@ -537,7 +586,8 @@ def save_stackup_tree(tree, filename):
   Note: this re-serializes the whole document, so exact original whitespace and
   attribute order may change (any Reference-using Layer/Dielectric has its attribute
   order deliberately normalized - see _reorder_attributes()), <Layer> entries are
-  reordered by resulting Zmin, descending - see _sort_layers_by_resulting_zmin() - and
+  reordered by resulting Zmin, descending, each with the comments in front of it - see
+  _sort_layers_by_resulting_zmin() - and
   each <Table>'s <Point> entries are reordered by resolved Temperature, ascending - see
   _sort_table_points_by_temperature(). Comments and all element content are preserved.
 
@@ -558,10 +608,12 @@ def save_stackup_tree(tree, filename):
   needed = required_schema_version(root)
   current = stackup_reader._parse_schema_version(root.get("schemaVersion"))
   if current is not None and current >= stackup_reader._parse_schema_version(needed):
-    pass  # never lowered: a newer file stays newer
+    # never lowered: a newer file stays newer. A 3.2 stamp it has is kept in step with the features used
+    if has_format_32_comment(root):
+      stamp_format_32_comment(root)
   elif needed == "3.2":
     root.set("schemaVersion", "3.2")
-    stamp_directional_format_comment(root, stackup_reader.__version__)
+    stamp_format_32_comment(root)
   elif needed == "3.1":
     root.set("schemaVersion", "3.1")
     stamp_variables_format_comment(root, stackup_reader.__version__)
@@ -590,6 +642,7 @@ def save_stackup_tree(tree, filename):
   _sort_table_points_by_temperature(root)
 
   ET.indent(tree, space="  ")
+  root.tail = "\n"   # the file ends with a newline
   tree.write(filename, xml_declaration=True, encoding="UTF-8")
 
 

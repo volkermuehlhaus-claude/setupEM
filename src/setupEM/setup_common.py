@@ -1465,7 +1465,7 @@ def default_stackup_metal_label(metal, material, is_sheet):
 
 # ---------- POP UP WINDOW TO SHOW STACKUP ------------------
 
-def _build_dielectric_tooltip(dielectric, overlap_partner_names=None):
+def _build_dielectric_tooltip(dielectric, overlap_partner_names=None, priority_notes=None):
     tooltip = (
         f"{dielectric.name}\n"
         f"Type: Dielectric\n"
@@ -1482,6 +1482,9 @@ def _build_dielectric_tooltip(dielectric, overlap_partner_names=None):
         # always-on red dashed outline - names exactly what this slab conflicts with,
         # so clicking the highlighted shape immediately explains why it's highlighted
         tooltip += "\n⚠ Overlaps: " + ", ".join(overlap_partner_names)
+    for note in priority_notes or []:
+        # an overlap with another dielectric of different Priority: which one keeps the overlap
+        tooltip += "\n" + note
     return tooltip
 
 
@@ -1693,6 +1696,49 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
         overlap_partners_by_name.setdefault(a.name, []).append(b.name)
         overlap_partners_by_name.setdefault(b.name, []).append(a.name)
 
+    # dielectrics that overlap with a different Priority (an intended overlap, the higher one keeps it, e.g. a
+    # die inside mold compound): both show their Priority in the label, and the tooltip names the winner
+    priority_notes_by_name = {}
+    find_priority_pairs = getattr(dielectrics_list, "find_priority_overlap_pairs", None)
+    for winner, loser in (find_priority_pairs() if find_priority_pairs is not None else []):
+        priority_notes_by_name.setdefault(winner.name, []).append(
+            f"Overlaps {loser.name}: {winner.name} keeps the overlap (higher Priority)")
+        priority_notes_by_name.setdefault(loser.name, []).append(
+            f"Overlaps {winner.name}: {winner.name} keeps the overlap (higher Priority)")
+
+    # A layer whose zmin is in the z range of two overlapping dielectrics is registered in both
+    # (register_metals_inside()). It is drawn once: in the dielectric its Reference chain starts from, else in
+    # the one with the highest Priority. With equal Priority (an overlap marked as a problem) it stays in both.
+    def _reference_root(metal):
+        seen = set()
+        name = getattr(metal, "reference", None)
+        while name and name not in seen:
+            seen.add(name)
+            layer = metals_list.getbylayername(name)
+            if layer is None:
+                return name   # a Dielectric's name
+            name = getattr(layer, "reference", None)
+        return None
+
+    holders_by_metal = {}
+    for dielectric in dielectrics_source:
+        for metal in dielectric.metals_inside:
+            holders_by_metal.setdefault(id(metal), []).append(dielectric)
+
+    def planar_metals_shown(dielectric):
+        shown = []
+        for metal in dielectric.get_planar_metals_inside():
+            holders = holders_by_metal.get(id(metal), [dielectric])
+            if len(holders) > 1:
+                root = _reference_root(metal)
+                if any(holder.name == root for holder in holders):
+                    if dielectric.name != root:
+                        continue
+                elif getattr(dielectric, "priority", 0) < max(getattr(h, "priority", 0) for h in holders):
+                    continue
+            shown.append(metal)
+        return shown
+
     # utility: flip y to have y=0 at bottom
     def flipy(y):
         return height - y
@@ -1799,11 +1845,13 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
     # sits in the file - so reordering it there (e.g. Move Up/Down in the Dielectric
     # Stack tab) must not change where it's drawn here, even though it does change
     # dielectrics_list.dielectrics' own array order
-    dielectrics_bottom_up = sorted(dielectrics_source, key=lambda d: d.zmin)
+    # dielectrics that start at the same height (overlapping ones, e.g. a die inside mold compound): the one
+    # that reaches higher is drawn above, as it lies around and above the other
+    dielectrics_bottom_up = sorted(dielectrics_source, key=lambda d: (d.zmin, d.zmax))
     for dielectric in dielectrics_bottom_up:  # bottom up
         setPen(penBlack)
 
-        metals_inside = dielectric.get_planar_metals_inside()
+        metals_inside = planar_metals_shown(dielectric)
         # get number of unique zmin values in that list
         zmin_list = []
         for metal in metals_inside:
@@ -1861,6 +1909,8 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
 
         if material is not None:
             material_string = dielectric_label_fn(dielectric, material)
+            if dielectric.name in priority_notes_by_name:
+                material_string += f'\nPriority {getattr(dielectric, "priority", 0)}'
         else:
             material_string = 'INVALID MATERIAL REFERENCE: ' + dielectric.material
 
@@ -1894,7 +1944,8 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
             "key": dielectric.name,
             "rect": QRectF(xmin, flipy(y), w, -h).normalized(),
             "ref": dielectric,
-            "tooltip": _build_dielectric_tooltip(dielectric, overlap_partners_by_name.get(dielectric.name)),
+            "tooltip": _build_dielectric_tooltip(dielectric, overlap_partners_by_name.get(dielectric.name),
+                                                 priority_notes_by_name.get(dielectric.name)),
             "chiplet_id": entry_chiplet_id(dielectric),
             "has_overlap": dielectric.name in overlap_partners_by_name,
         })
@@ -1906,7 +1957,7 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
             stored_y = np.append(stored_y, y + h)
 
         # get metals inside this dielectric
-        metals_inside = dielectric.get_planar_metals_inside()
+        metals_inside = planar_metals_shown(dielectric)
         # height for one dielectric segment including one metal is part_height
         if len(metals_inside) > 0:
 

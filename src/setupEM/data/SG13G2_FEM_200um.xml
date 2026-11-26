@@ -1,16 +1,15 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <Stackup schemaVersion="3.2">
-  <!-- Created/modified using the XML Stackup Editor in setupEM -->
+  <!-- Created/modified using the XML Stackup Editor in Stackup Editor -->
   <!-- ============================================================ -->
   <!-- SG13G2 parameterized stackup for gds2palace, EM+thermal, includes resistors, full height SiO2+Passivation over TopMetal2. Parameters: air_thickness and total_thickness. -->
   <!-- ============================================================ -->
   <!-- Requires gds2palace 0.5.0 or newer. -->
-  <!-- Direction-dependent thermal conductivity (.xy/.z) and Priority require gds2palace util_stackup_reader.py version 1.11.0 or newer -->
+  <!-- Stackup format 3.2 features used (allowed values of Variables) require gds2palace util_stackup_reader.py version 1.11.0 or newer -->
   <Variables>
     <Variable Name="air_thickness" Value="200.0000" />
-    <Variable Name="total_thickness" Value="200" Min="25" />
+    <Variable Name="total_thickness" Value="200.0000" Min="25" />
     <Variable Name="bulk_thickness" Value="=total_thickness-19.88" />
-    <!-- selects which <Table> below Substrate's ThermalConductivityTable resolves to -->
   </Variables>
   <Materials>
     <Material Name="Activ" Type="Conductor" Conductivity="357141.0" ThermalConductivityTable="Si_vs_T_IHP" Color="00ff00" />
@@ -52,8 +51,6 @@
     </Dielectrics>
     <Layers>
       <!-- SG13G2 resistors created from derived layers defined in DerivedLayers section below-->
-      <!-- Heat source targets for thermal models: z range and material of a heat source. Nothing is drawn on
-           these GDS layers, so they add no geometry to EM models. -->
       <Layer Name="TopMetal2" Type="conductor" Reference="TopVia2" ReferenceEdge="Top" Material="TopMetal2" Layer="134" Zmin="0.0000" Zmax="3.0000" />
       <Layer Name="TopVia2" Type="via" Reference="TopMetal1" ReferenceEdge="Top" Material="TopVia2" Layer="133" Zmin="0.0000" Zmax="2.8000" />
       <Layer Name="TopMetal1" Type="conductor" Reference="TopVia1" ReferenceEdge="Top" Material="TopMetal1" Layer="126" Zmin="0.0000" Zmax="2.0000" />
@@ -74,6 +71,8 @@
       <Layer Name="RPPD" Type="sheet" Reference="Activ" ReferenceEdge="Top" Material="RPPD" Layer="313" Zmin="0.0000" Zmax="0.0000" />
       <Layer Name="RSIL" Type="sheet" Reference="Activ" ReferenceEdge="Top" Material="RSIL" Layer="314" Zmin="0.0000" Zmax="0.0000" />
       <Layer Name="REF_FOR_TRANSISTOR" Type="sheet" Reference="SiO2" ReferenceEdge="Bottom" Material="PEC" Layer="300" Zmin="0.4" Zmax="0.4" />
+      <!-- Heat source targets for thermal models: z range and material of a heat source. Nothing is drawn on
+           these GDS layers, so they add no geometry to EM models. -->
       <Layer Name="HEAT_RESISTOR" Type="conductor" Reference="Activ" ReferenceEdge="Top" Material="PolyRes" Layer="321" Zmin="0.0000" Zmax="0.1600" />
       <Layer Name="HEAT_TRANSISTOR" Type="conductor" Reference="Activ" ReferenceEdge="Top" Material="Activ" Layer="320" Zmin="-0.0400" Zmax="0.0000" />
       <Layer Name="Activ" Type="conductor" Reference="SiO2" ReferenceEdge="Bottom" Material="Activ" Layer="1" Zmin="0.0000" Zmax="0.4000" />

@@ -90,3 +90,73 @@ def test_preview_tooltips_show_priority():
     assert "Priority: -1" in setup_common._build_dielectric_tooltip(dielectrics.get_by_name("Mold"))
     assert "Priority" not in setup_common._build_dielectric_tooltip(dielectrics.get_by_name("Die"))
     assert "Priority: 2" in setup_common._build_layer_tooltip(metals.getbylayername("M1"))
+
+OVERLAP_STACKUP = '''<?xml version="1.0" encoding="UTF-8"?>
+<Stackup schemaVersion="3.2">
+  <Materials>
+    <Material Name="Mold" Type="Dielectric" Permittivity="3.8" />
+    <Material Name="Si" Type="Semiconductor" Permittivity="11.9" Conductivity="2" />
+    <Material Name="Cu" Type="Conductor" Conductivity="5.8e7" />
+  </Materials>
+  <ELayers LengthUnit="um">
+    <Dielectrics>
+      <Dielectric Name="Mold" Material="Mold" Zmin="0" Zmax="50" {mold} />
+      <Dielectric Name="Die" Material="Si" Zmin="0" Zmax="20" Boundary="302" />
+    </Dielectrics>
+    <Layers>
+      <Layer Name="Hot" Type="conductor" Material="Si" Layer="10" Reference="{hot_reference}" ReferenceEdge="Top" {hot_z} />
+      <Layer Name="Wire" Type="conductor" Material="Cu" Layer="11" Zmin="10" Zmax="11" />
+      <Layer Name="Lid" Type="conductor" Material="Cu" Layer="12" Zmin="40" Zmax="41" />
+    </Layers>
+  </ELayers>
+</Stackup>'''
+
+
+def overlap_preview(mold='Priority="-1"', hot_reference="Die", hot_z='Zmin="-5" Zmax="0"'):
+    """The preview of a die inside mold compound: the bands bottom-up with their label and layers, the tooltips."""
+    from gds2palace import stackup_reader
+    from setupEM import setup_common as engine
+    root = ET.fromstring(OVERLAP_STACKUP.format(mold=mold, hot_reference=hot_reference, hot_z=hot_z))
+    materials, dielectrics, metals = stackup_reader.parse_substrate(root)
+    calls, entries = engine.compute_stackup_layout(
+        materials, dielectrics, metals, 700, 900,
+        dielectric_color_fn=lambda m: engine.epsilon_to_color(m.eps, 95),
+        dielectric_label_fn=engine.default_stackup_dielectric_label,
+        metal_label_fn=engine.default_stackup_metal_label,
+        via_label_suffix_fn=lambda metal, material: "", metal_color_fn=lambda m: None)
+    bands = {e["key"]: e["rect"] for e in entries if e["kind"] == "dielectric"}
+    layers = {}
+    for e in entries:
+        if e["kind"] == "layer":
+            center = e["rect"].center()
+            layers.setdefault(e["key"], []).extend(name for name, rect in bands.items() if rect.contains(center))
+    order = sorted(bands, key=lambda name: -bands[name].center().y())      # bottom-up on the screen
+    texts = [args[-1] for name, args in calls if name == "drawText" and isinstance(args[-1], str)]
+    tooltips = {e["key"]: e["tooltip"] for e in entries if e["kind"] == "dielectric"}
+    return order, layers, texts, tooltips
+
+
+def test_preview_of_a_die_inside_mold():
+    order, layers, texts, tooltips = overlap_preview()
+    assert order == ["Die", "Mold"]                       # the mold lies around and above the die: drawn above
+    assert layers["Hot"] == ["Die"]                       # Reference chain from the Die: drawn once, in the die
+    assert layers["Wire"] == ["Die"]                      # no Reference: in the one that keeps the overlap
+    assert layers["Lid"] == ["Mold"]                      # above the die: only the mold is there
+    assert any(text.endswith("Priority -1") for text in texts) and any(text.endswith("Priority 0") for text in texts)
+    assert "Overlaps Die: Die keeps the overlap (higher Priority)" in tooltips["Mold"]
+    assert "Overlaps Mold: Die keeps the overlap (higher Priority)" in tooltips["Die"]
+
+
+def test_preview_layer_follows_its_reference():
+    # the layer hangs off the mold's top (z 10..15, where mold and die overlap): drawn in the mold
+    _, layers, _, _ = overlap_preview(hot_reference="Mold", hot_z='Zmin="-40" Zmax="-35"')
+    assert layers["Hot"] == ["Mold"]
+
+
+def test_preview_without_priority_is_unchanged():
+    # equal Priority is an overlap without a winner: marked as before, no Priority in the labels,
+    # a layer in the overlap stays in both
+    order, layers, texts, tooltips = overlap_preview(mold="")
+    assert not any("Priority" in text for text in texts)
+    assert sorted(layers["Wire"]) == ["Die", "Mold"]
+    assert "Overlaps: Die" in tooltips["Mold"] and "keeps the overlap" not in tooltips["Mold"]

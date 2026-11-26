@@ -25,12 +25,17 @@ Needs gds2palace 0.13.0 or newer.
 
 **Stackup Editor: datatype per layer.** New optional Datatype column on the Layers tab: the GDS datatype a layer is read from, so that two layers can share one GDS layer number. The Input Files tab says which layers take their datatype from the stackup.
 
+**Stackup preview: overlapping materials.** Two dielectrics that overlap with different Priority, e.g. mold compound over a die, now show their Priority in the preview, and their tooltips say which one keeps the overlap. The one that reaches higher is drawn above, and a layer in the overlap is drawn once instead of in both.
+
 **Field viewer: arrow length.** The Scaled checkbox next to Show arrows is now a dropdown: **Fixed** (all arrows the same length, direction only; the new default), **Scaled** (length follows the field strength, as before) and **Log 2 / 3 / 4 decades** (log scale; weaker arrows are hidden). By default the arrows are smaller, and there are more of them. Command line: `--arrow-length fixed|scaled|log2|log3|log4`.
 
 ## Fixes
 
 - Field viewer: with the clip plane right next to a thin layer, the cut face showed triangular artefacts. A constant-temperature boundary on the backside could show as a hole in the model's bottom face.
 - Saving a stackup no longer sets its format version back to an older one.
+- Saving a stackup: a comment in the Layers section stays in front of its layer when the layers are sorted. Before, all comments moved to the top of the section.
+- Saving a stackup: the comment about format 3.2 names the features the file uses, e.g. only the limits of variables. Before, it always named thermal conductivity per direction and Priority. The file now ends with a newline.
+- Bundled SG13G2 stackups: the same files as in gds2palace again (`total_thickness` has a minimum of 25 µm).
 - setupThermal stackup preview: metals and vias with a temperature-dependent thermal conductivity table (e.g. Activ) are labelled κ=table, like dielectrics, instead of κ=0.0.
 
 # What's New - November 23, 2026 (setupEM 0.20.0)

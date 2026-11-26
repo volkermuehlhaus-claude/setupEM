@@ -74,7 +74,7 @@ def test_save_raises_schema_to_3_2(tmp_path):
     stackup_writer.save_stackup_tree(ET.ElementTree(root), path)
     text = open(path, encoding="utf-8").read()
     assert 'schemaVersion="3.2"' in text
-    assert stackup_writer.DIRECTIONAL_FORMAT_COMMENT_PREFIX in text
+    assert stackup_writer.FORMAT_32_COMMENT_PREFIX + " (thermal conductivity per direction)" in text
 
 
 def test_save_never_lowers_the_schema(tmp_path):
