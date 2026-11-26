@@ -3283,9 +3283,12 @@ class CreateModelTab(CreateModelTabBase):
             # it afterwards - it's sticky on the QProcess instance. If that leftover
             # directory no longer exists, Windows' CreateProcess refuses to launch
             # ANY process, even python_exe given by absolute path here, and QProcess
-            # reports it as the generic FailedToStart. Reset it so this launch never
+            # reports it as the generic FailedToStart. Set it explicitly so this launch never
             # depends on what a previous, unrelated action last pointed it at.
-            self.process.setWorkingDirectory("")
+            # Run it in the script's own folder: GdsFile / SubstrateFile in the script
+            # are relative to it. Otherwise Python inherits setupEM's cwd, which is
+            # unrelated when setupEM was launched from the KLayout plug-in.
+            self.process.setWorkingDirectory(os.path.dirname(os.path.abspath(pymodel_filename)))
             self.process.start(python_exe, self.model_launch_args(pymodel_filename))
 
 
