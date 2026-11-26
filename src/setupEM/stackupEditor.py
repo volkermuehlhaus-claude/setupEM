@@ -49,13 +49,15 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QComboBox, QLineEdit, QPlainTextEdit, QLabel, QFileDialog, QMessageBox,
     QColorDialog, QMenuBar, QInputDialog, QCompleter, QStyledItemDelegate, QStyleFactory,
-    QFrame,
+    QFrame, QGridLayout, QButtonGroup, QDialogButtonBox, QStyle, QToolButton,
+    QStyleOptionButton, QStyleOptionViewItem,
 )
 from PySide6.QtGui import (
     QColor, QFontMetrics, QKeySequence, QAction, QFontDatabase,
     QSyntaxHighlighter, QTextCharFormat, QFont, QShortcut,
+    QPalette, QPixmap, QPainter, QPen, QPolygonF, QIcon,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QStringListModel, QSettings
+from PySide6.QtCore import Qt, QTimer, Signal, QStringListModel, QSettings, QEvent, QRect, QPointF, QRectF
 
 from gds2palace import stackup_reader
 
@@ -112,6 +114,8 @@ VARIABLE_COLUMNS = [
     ("Value", "Value", "text"),
     ("Type", "Type", "variabletype"),
     ("ResolvedValue", "Resolved Value", "computed"),
+    ("AllowedValues", "Allowed values (optional)", "text"),     # not an attribute: summary of Min/Max/Step/List, edited in a dialog
+    ("Description", "Description (optional)", "text"),
 ]
 
 MATERIAL_COLUMNS = [
@@ -138,11 +142,14 @@ DIELECTRIC_COLUMNS = [
     ("ResultZmin", "Zmin (resulting)", "computed"),
     ("ResultZmax", "Zmax (resulting)", "computed"),
     ("Boundary", "Optional Boundary (GDS layer #)", "text"),
+    ("BoundaryDatatype", "Boundary datatype (optional)", "text"),
+    ("Priority", "Priority (optional)", "text"),
 ]
 
 LAYER_COLUMNS = [
     ("Name", "Name", "text"),
     ("Layer", "GDSII Layer #", "text"),
+    ("Datatype", "Datatype (optional)", "text"),
     ("Type", "Type", "layertype"),
     ("Material", "Material", "materialref"),
     ("Reference", "Reference (optional)", "layerref_or_dielectricref"),
@@ -152,7 +159,16 @@ LAYER_COLUMNS = [
     ("Thickness", "Thickness (resulting)", "computed"),
     ("ResultZmin", "Zmin (resulting)", "computed"),
     ("ResultZmax", "Zmax (resulting)", "computed"),
+    ("Priority", "Priority (optional)", "text"),
 ]
+
+def _layer_gray_fn(element, attr):
+    """Layers tab: Priority has no effect on a sheet layer, gray it (still editable)."""
+    return attr == "Priority" and (element.get("Type") or "").lower() == "sheet"
+
+
+# tooltip of the Priority columns (Dielectric Stack and Layers tabs)
+PRIORITY_TOOLTIP = ("Where volumes overlap, the higher Priority keeps the overlap. A whole number, negative allowed, empty = 0. Orders dielectrics among themselves and conductors/vias among themselves; conductors and vias always win over dielectrics.")
 
 TABLE_COLUMNS = [
     ("Name", "Table name", "text"),
@@ -186,7 +202,7 @@ def _build_variables_list(variable_elements):
     return variables
 
 
-_INT_EXPRESSION_ATTRS = {"Layer", "Boundary"}
+_INT_EXPRESSION_ATTRS = {"Layer", "Boundary", "Datatype", "BoundaryDatatype"}
 
 
 def _resolve_all_expressions(root, variables):
@@ -384,7 +400,7 @@ DERIVED_LAYER_COLUMNS = [
     ("Layer", "Target Layer #", "text"),
     ("Operation", "Operation", "operationtype"),
     ("Oversize", "Oversize", "text"),
-    ("Operands", "Operands (GDSII layer numbers)", "operands"),
+    ("Operands", "Operands (GDSII layers, e.g. 28 or 66/20)", "operands"),
 ]
 
 
@@ -402,7 +418,8 @@ _MATERIAL_NOT_APPLICABLE_ATTRS = {
     "DIELECTRIC": {"Rs","Conductivity"},
     "SEMICONDUCTOR": {"Rs"},
     "RESISTOR": {"Permittivity", "DielectricLossTangent", "Conductivity",
-                 "Density", "ThermalConductivity", "ThermalConductivityTable"},
+                 "Density", "ThermalConductivity", "ThermalConductivityTable",
+                 *stackup_writer.directional_attribute_names()},
 }
 
 
@@ -602,6 +619,458 @@ class _VariableCompletionDelegate(QStyledItemDelegate):
         return editor
 
 
+# one character: three dots are clipped in a button this narrow
+DIALOG_BUTTON_TEXT = "\u2026"
+
+
+class _DialogButtonDelegate(_VariableCompletionDelegate):
+    """Like _VariableCompletionDelegate, plus a small "..." button drawn at the right end of the cell, for a
+       column whose value can also be edited in a dialog (Materials' Thermal Cond.: direction-dependent values,
+       see DirectionalValueDialog). The cell text stays editable inline as before; a click on the button calls
+       clicked_fn(row). has_button_fn(row) -> bool: rows without a button (e.g. a Resistor material) are drawn
+       and edited as a plain cell.
+    """
+
+    BUTTON_WIDTH = 22
+
+    def __init__(self, variable_names_fn, has_button_fn, clicked_fn, parent=None):
+        super().__init__(variable_names_fn, parent)
+        self.has_button_fn = has_button_fn
+        self.clicked_fn = clicked_fn
+
+    def _button_rect(self, rect):
+        return QRect(rect.right() - self.BUTTON_WIDTH + 1, rect.top() + 1, self.BUTTON_WIDTH - 1, rect.height() - 2)
+
+    def paint(self, painter, option, index):
+        if not self.has_button_fn(index.row()):
+            super().paint(painter, option, index)
+            return
+        text_option = QStyleOptionViewItem(option)
+        text_option.rect = option.rect.adjusted(0, 0, -self.BUTTON_WIDTH, 0)
+        super().paint(painter, text_option, index)
+        button = QStyleOptionButton()
+        button.rect = self._button_rect(option.rect)
+        button.text = DIALOG_BUTTON_TEXT
+        button.state = QStyle.State_Enabled | QStyle.State_Raised
+        style = option.widget.style() if option.widget is not None else QApplication.style()
+        style.drawControl(QStyle.CE_PushButton, button, painter, option.widget)
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        if self.has_button_fn(index.row()):
+            size.setWidth(size.width() + self.BUTTON_WIDTH)
+        return size
+
+    def updateEditorGeometry(self, editor, option, index):
+        super().updateEditorGeometry(editor, option, index)
+        if self.has_button_fn(index.row()):
+            editor.setGeometry(option.rect.adjusted(0, 0, -self.BUTTON_WIDTH, 0))
+
+    def editorEvent(self, event, model, option, index):
+        if (self.has_button_fn(index.row())
+                and event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick)
+                and self._button_rect(option.rect).contains(event.position().toPoint())):
+            if event.type() == QEvent.MouseButtonRelease:
+                # deferred: the dialog's changes reload the table this event is still being delivered to
+                row = index.row()
+                QTimer.singleShot(0, lambda: self.clicked_fn(row))
+            return True    # the button takes the click: no cell editing starts
+        return super().editorEvent(event, model, option, index)
+
+
+class DirectionalValueDialog(QDialog):
+    """Edits a Material property that can differ between the lateral directions (x and y, the layout plane)
+       and the vertical direction (z, normal to the wafer): "<value_attr>" is the value for all directions,
+       "<value_attr>.xy" and "<value_attr>.z" override it. See XML_stackup_format.md in gds2palace.
+
+       Each direction has one field, for a constant or a table (with table_attr, e.g.
+       ThermalConductivityTable): a number or "="-expression is a constant, a name from the field's list (or
+       any other text that isn't a number) a table, and an "=" expression of a text Variable
+       (is_table_expression_fn) a table too. An empty field shows the value it inherits as placeholder text.
+       Written for any such property; so far only thermal conductivity can be direction-dependent.
+    """
+
+    LATERAL_COLOR = QColor("#1f6fd1")
+    VERTICAL_COLOR = QColor("#d1501f")
+    _SAME, _DIRECTIONAL = 0, 1
+
+    def __init__(self, parent, title, element, value_attr, table_attr=None, unit="",
+                 table_names=(), variable_names=(), is_table_expression_fn=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.value_attr = value_attr
+        self.table_attr = table_attr
+        self.table_names = list(table_names) if table_attr else []
+        self.is_table_expression_fn = is_table_expression_fn
+        self.fields = {}      # suffix ("xy", "z", "" = all directions) -> editable combo box
+        # secondary text: the palette's placeholder colour, with its transparency (#AARRGGBB), so it is grey
+        # on a light and on a dark palette
+        self.secondary = self.palette().color(QPalette.PlaceholderText).name(QColor.HexArgb)
+        secondary = self.secondary
+        self.unit = unit
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        # mode: a two-part toggle
+        toggle = QHBoxLayout()
+        toggle.setSpacing(0)
+        self.mode_group = QButtonGroup(self)
+        self.same_button = QToolButton()
+        self.directional_button = QToolButton()
+        for mode, button, text, corners in (
+                (self._SAME, self.same_button, "Same in all directions",
+                 "border-top-left-radius: 4px; border-bottom-left-radius: 4px;"),
+                (self._DIRECTIONAL, self.directional_button, "Lateral and vertical",
+                 "border-top-right-radius: 4px; border-bottom-right-radius: 4px; border-left: none;")):
+            button.setText(text)
+            button.setCheckable(True)
+            # explicit text colours too: an inherited dark-mode palette would give light text on light background
+            button.setStyleSheet(
+                "QToolButton { padding: 4px 12px; border: 1px solid #a0a0a0; background: #f4f4f4; color: #202020;"
+                + corners + " } QToolButton:checked { background: #1f6fd1; color: white; border-color: #1f6fd1; }")
+            self.mode_group.addButton(button, mode)
+            toggle.addWidget(button)
+        toggle.addStretch()
+        layout.addLayout(toggle)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        self.picture = QLabel()
+        self.picture.setToolTip("z is normal to the wafer, x and y are the layout axes")
+        body.addWidget(self.picture, 0, Qt.AlignTop)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+
+        completions = list(self.table_names) + ["=" + name for name in variable_names]
+        what = 'A number, an "=" expression, or a table from the list' if table_attr else \
+               'A number or an "=" expression'
+        self.row_labels = {}
+        self.unit_labels = {}
+        rows = (("xy", "Lateral (x, y)", self.LATERAL_COLOR), ("z", "Vertical (z)", self.VERTICAL_COLOR),
+                ("", "All directions", None))
+        for row, (suffix, text, color) in enumerate(rows):
+            if suffix == "":
+                self.separator = QFrame()
+                self.separator.setFrameShape(QFrame.HLine)
+                self.separator.setStyleSheet("color: #d0d0d0;")
+                grid.addWidget(self.separator, row, 0, 1, 3)
+                row += 1
+            label = QLabel(text)
+            if color is not None:
+                label.setStyleSheet(f"color: {color.name()}; font-weight: bold;")
+            field = NoScrollComboBox()
+            field.setEditable(True)
+            for name in self.table_names:
+                field.addItem(_table_icon(), name)
+            field.setCurrentIndex(-1)
+            field.setEditText(self._initial_text(element, suffix))
+            completer = QCompleter(completions, field)
+            completer.setCaseSensitivity(Qt.CaseSensitive)
+            completer.setFilterMode(Qt.MatchStartsWith)
+            field.setCompleter(completer)
+            field.setMinimumWidth(170)
+            field.setToolTip(what)
+            field.editTextChanged.connect(lambda _text: self._refresh())
+            unit_label = QLabel(unit)
+            unit_label.setStyleSheet(f"color: {secondary};")
+            grid.addWidget(label, row, 0)
+            grid.addWidget(field, row, 1)
+            grid.addWidget(unit_label, row, 2)
+            self.row_labels[suffix] = label
+            self.fields[suffix] = field
+            self.unit_labels[suffix] = unit_label
+        self.note = QLabel("optional: for empty fields and older gds2palace")
+        self.note.setStyleSheet(f"color: {secondary}; font-size: 8pt;")
+        grid.addWidget(self.note, len(rows) + 1, 1, 1, 2)
+        grid.setRowStretch(len(rows) + 2, 1)
+        body.addLayout(grid)
+        layout.addLayout(body)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        directional = any(self._text(suffix) for suffix in stackup_reader.DIRECTION_SUFFIXES)
+        (self.directional_button if directional else self.same_button).setChecked(True)
+        self._mode = self.mode_group.checkedId()
+        self.mode_group.idClicked.connect(self._on_mode_clicked)
+        self._refresh()
+
+    def _initial_text(self, element, suffix):
+        attr = f".{suffix}" if suffix else ""
+        if self.table_attr and element.get(self.table_attr + attr):
+            return element.get(self.table_attr + attr)
+        return element.get(self.value_attr + attr, "")
+
+    def _text(self, suffix):
+        return self.fields[suffix].currentText().strip()
+
+    def is_table(self, text):
+        """Whether a field's text names a table: a listed table, an "=" expression of a text Variable, or any
+           other text that is no number (an unknown table name, reported by validation)."""
+        if not self.table_attr or text == "":
+            return False
+        if text in self.table_names:
+            return True
+        if text.startswith("="):
+            return bool(self.is_table_expression_fn and self.is_table_expression_fn(text))
+        return not stackup_writer._is_float(text)
+
+    def _on_mode_clicked(self, mode):
+        if mode == self._SAME and self._mode == self._DIRECTIONAL:
+            filled = [self.row_labels[suffix].text() for suffix in stackup_reader.DIRECTION_SUFFIXES
+                      if self._text(suffix)]
+            if filled:
+                reply = QMessageBox.question(
+                    self, "Same in all directions",
+                    f"Discard the values for {' and '.join(filled)}? Only the \"All directions\" value is kept.",
+                    QMessageBox.Yes | QMessageBox.No)
+                if reply != QMessageBox.Yes:
+                    self.directional_button.setChecked(True)
+                    return
+                for suffix in stackup_reader.DIRECTION_SUFFIXES:
+                    self.fields[suffix].setEditText("")
+        self._mode = mode
+        self._refresh()
+
+    def _refresh(self):
+        directional = self._mode == self._DIRECTIONAL
+        all_directions = self._text("")
+        for suffix, field in self.fields.items():
+            visible = directional or suffix == ""
+            for widget in (self.row_labels[suffix], field, self.unit_labels[suffix]):
+                widget.setVisible(visible)
+            # a table in blue, a constant in the normal text colour; an empty field shows what it inherits
+            field.lineEdit().setStyleSheet(
+                f"color: {self.LATERAL_COLOR.name()};" if self.is_table(self._text(suffix)) else "")
+            if suffix:
+                field.lineEdit().setPlaceholderText(all_directions or "not set")
+        all_label = self.row_labels[""]
+        if directional:
+            all_label.setStyleSheet(f"color: {self.secondary};")
+        else:
+            all_label.setStyleSheet("font-weight: bold;")
+        # with lateral and vertical values, the "All directions" row has an info mark instead of the unit
+        info = "Used for an empty field above, and by gds2palace before 0.13.0" if directional else ""
+        all_unit = self.unit_labels[""]
+        all_unit.setText("\u24d8" if directional else self.unit)
+        all_unit.setStyleSheet(f"color: {self.secondary};" + (" font-size: 11pt;" if directional else ""))
+        for widget in (all_label, all_unit):
+            widget.setToolTip(info)
+        self.separator.setVisible(directional)
+        self.note.setVisible(directional)
+        self.picture.setPixmap(_direction_picture(
+            self.LATERAL_COLOR, self.VERTICAL_COLOR if directional else self.LATERAL_COLOR,
+            self.devicePixelRatioF()))
+        self.adjustSize()
+
+    def changes(self):
+        """{attribute: value} for every attribute this dialog controls; "" means remove the attribute."""
+        result = {}
+        directional = self._mode == self._DIRECTIONAL
+        for suffix in ("xy", "z", ""):
+            text = self._text(suffix) if (directional or suffix == "") else ""
+            dotted = f".{suffix}" if suffix else ""
+            table = self.is_table(text)
+            result[self.value_attr + dotted] = "" if table else text
+            if self.table_attr:
+                result[self.table_attr + dotted] = text if table else ""
+        return result
+
+    def apply(self, element):
+        """Writes the dialog's values into element. Returns True if anything changed."""
+        changed = False
+        for attr, value in self.changes().items():
+            if value == "":
+                if attr in element.attrib:
+                    del element.attrib[attr]
+                    changed = True
+            elif element.get(attr) != value:
+                element.set(attr, value)
+                changed = True
+        return changed
+
+
+def _arrow(painter, start, end, color):
+    """A line from start to end with a filled arrow head at end."""
+    painter.setPen(QPen(color, 2.0))
+    painter.drawLine(start, end)
+    d = end - start
+    length = (d.x() ** 2 + d.y() ** 2) ** 0.5
+    along = QPointF(d.x() / length, d.y() / length)
+    across = QPointF(-along.y(), along.x())
+    painter.setBrush(color)
+    painter.setPen(Qt.NoPen)
+    painter.drawPolygon(QPolygonF([end, end - along * 7 + across * 3.5, end - along * 7 - across * 3.5]))
+
+
+def _direction_picture(lateral_color, vertical_color, scale=1.0):
+    """Small cross-section of a layer with the lateral (x, y) and vertical (z) directions as arrows."""
+    width, height = 120, 92
+    pixmap = QPixmap(int(width * scale * 2), int(height * scale * 2))
+    pixmap.setDevicePixelRatio(scale * 2)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    slab = QRectF(8, 30, 104, 34)
+    painter.setPen(QPen(QColor("#b08040"), 1))
+    painter.setBrush(QColor("#f6dfb8"))
+    painter.drawRect(slab)
+    center = slab.center().y()
+    _arrow(painter, QPointF(60, center), QPointF(16, center), lateral_color)
+    _arrow(painter, QPointF(60, center), QPointF(104, center), lateral_color)
+    _arrow(painter, QPointF(60, center), QPointF(60, 8), vertical_color)
+    _arrow(painter, QPointF(60, center), QPointF(60, 86), vertical_color)
+    font = QFont()
+    font.setPointSize(8)
+    font.setBold(True)
+    painter.setFont(font)
+    painter.setPen(lateral_color)
+    painter.drawText(QRectF(8, 64, 50, 18), Qt.AlignLeft | Qt.AlignVCenter, "x, y")
+    painter.setPen(vertical_color)
+    painter.drawText(QRectF(66, 6, 30, 18), Qt.AlignLeft | Qt.AlignVCenter, "z")
+    painter.end()
+    return pixmap
+
+
+def _table_icon():
+    """Small curve icon for a table in a value field's list."""
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(DirectionalValueDialog.LATERAL_COLOR, 3))
+    painter.drawPolyline(QPolygonF([QPointF(3, 26), QPointF(12, 14), QPointF(20, 18), QPointF(29, 6)]))
+    painter.end()
+    return QIcon(pixmap)
+
+def _segmented_toggle(labels):
+    """A two- or three-part toggle (as in DirectionalValueDialog): (layout, button group, buttons). The button ids
+       are the label indices."""
+    layout = QHBoxLayout()
+    layout.setSpacing(0)
+    group = QButtonGroup()
+    buttons = []
+    for i, text in enumerate(labels):
+        button = QToolButton()
+        button.setText(text)
+        button.setCheckable(True)
+        corners = ("border-top-left-radius: 4px; border-bottom-left-radius: 4px;" if i == 0 else "") + \
+                  ("border-top-right-radius: 4px; border-bottom-right-radius: 4px;" if i == len(labels) - 1 else "") + \
+                  ("border-left: none;" if i > 0 else "")
+        # explicit text colours too: an inherited dark-mode palette would give light text on light background
+        button.setStyleSheet(
+            "QToolButton { padding: 4px 12px; border: 1px solid #a0a0a0; background: #f4f4f4; color: #202020;"
+            + corners + " } QToolButton:checked { background: #1f6fd1; color: white; border-color: #1f6fd1; }")
+        group.addButton(button, i)
+        layout.addWidget(button)
+        buttons.append(button)
+    layout.addStretch()
+    return layout, group, buttons
+
+
+class AllowedValuesDialog(QDialog):
+    """Allowed values of a <Variable>: any value, a range (Min, Max, Step) or a list (List, "a;b;c"). Min and
+       Max may be "=" expressions of other variables. A value or an override outside them stops the model setup
+       with an error; Step is only used for spin boxes and sweeps. See XML_stackup_format.md in gds2palace."""
+
+    ANY, RANGE, LIST = 0, 1, 2
+
+    def __init__(self, parent, element, variable_names=()):
+        super().__init__(parent)
+        self.setWindowTitle(f'Allowed values: variable "{element.get("Name", "")}"')
+        secondary = self.palette().color(QPalette.PlaceholderText).name(QColor.HexArgb)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        toggle, self.mode_group, (self.any_button, self.range_button, self.list_button) = \
+            _segmented_toggle(["Any value", "Range", "List"])
+        self.mode_group.setParent(self)
+        layout.addLayout(toggle)
+
+        completions = ["=" + name for name in variable_names if name != element.get("Name")]
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        self.fields = {}
+        rows = (("Min", "Min", "optional: lowest allowed value, or an \"=\" expression"),
+                ("Max", "Max", "optional: highest allowed value, or an \"=\" expression"),
+                ("Step", "Step", "optional: for spin boxes and sweeps, not checked"),
+                ("List", "Values", "the allowed values, separated by ;  e.g. 200; 300; 750"))
+        self.row_widgets = {}
+        for row, (attr, label_text, hint_text) in enumerate(rows):
+            label = QLabel(label_text)
+            edit = QLineEdit(element.get(attr, ""))
+            edit.setMinimumWidth(220)
+            completer = QCompleter(completions, edit)
+            completer.setCaseSensitivity(Qt.CaseSensitive)
+            completer.setFilterMode(Qt.MatchStartsWith)
+            edit.setCompleter(completer)
+            hint = QLabel(hint_text)
+            hint.setStyleSheet(f"color: {secondary};")
+            grid.addWidget(label, row, 0)
+            grid.addWidget(edit, row, 1)
+            grid.addWidget(hint, row, 2)
+            self.fields[attr] = edit
+            self.row_widgets[attr] = (label, edit, hint)
+        layout.addLayout(grid)
+
+        self.note = QLabel("All optional. A value from the file or an override outside these stops the model setup.")
+        self.note.setStyleSheet(f"color: {secondary};")
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        if element.get("List"):
+            mode = self.LIST
+        elif any(element.get(a) for a in ("Min", "Max", "Step")):
+            mode = self.RANGE
+        else:
+            mode = self.ANY
+        self.mode_group.button(mode).setChecked(True)
+        self.mode_group.idClicked.connect(lambda _id: self._refresh())
+        self._refresh()
+
+    def mode(self):
+        return self.mode_group.checkedId()
+
+    def _refresh(self):
+        visible = {"Min": self.mode() == self.RANGE, "Max": self.mode() == self.RANGE,
+                   "Step": self.mode() == self.RANGE, "List": self.mode() == self.LIST}
+        for attr, widgets in self.row_widgets.items():
+            for widget in widgets:
+                widget.setVisible(visible[attr])
+        self.note.setVisible(self.mode() != self.ANY)
+        self.adjustSize()
+
+    def changes(self):
+        """{attribute: value} for Min/Max/Step/List; "" means remove the attribute."""
+        result = {attr: "" for attr in ("Min", "Max", "Step", "List")}
+        if self.mode() == self.RANGE:
+            for attr in ("Min", "Max", "Step"):
+                result[attr] = self.fields[attr].text().strip()
+        elif self.mode() == self.LIST:
+            options = [o.strip() for o in self.fields["List"].text().split(";") if o.strip()]
+            result["List"] = ";".join(options)
+        return result
+
+    def apply(self, element):
+        """Writes the dialog's values into element. Returns True if anything changed."""
+        changed = False
+        for attr, value in self.changes().items():
+            if value == "":
+                if attr in element.attrib:
+                    del element.attrib[attr]
+                    changed = True
+            elif element.get(attr) != value:
+                element.set(attr, value)
+                changed = True
+        return changed
+
+
 # ------------------------------------------------------------------
 # Generic table editor for one XML element type (Material / Dielectric / Layer)
 # ------------------------------------------------------------------
@@ -623,7 +1092,8 @@ class ElementTableEditor(QWidget):
                  pre_set_attr_fn=None, reference_choices_fn=None,
                  header_tooltips=None, operand_lookup_fn=None, variable_names_fn=None,
                  invalid_fn=None, table_choices_fn=None, reorder_fn=None,
-                 descending_attrs=frozenset()):
+                 descending_attrs=frozenset(), directional_columns=frozenset(),
+                 directional_summary_fn=None, directional_dialog_fn=None):
         """container_fn(root) -> list[Element]: fetches the current rows to display,
            re-called by reload() so the editor can refresh itself after any structural
            change (add/remove/move) without the caller having to re-fetch and hand
@@ -692,6 +1162,13 @@ class ElementTableEditor(QWidget):
              topmost layer lands at the top of the list) - every other numeric
              column sorts smallest-first. A row whose value can't be parsed as a
              number always sorts last, regardless of direction.
+           directional_columns: attributes of "text"/"tableref" columns that get a
+             "..." button opening directional_dialog_fn(element) - a dialog for values
+             that can differ by direction (Materials: thermal conductivity, see
+             DirectionalValueDialog). directional_summary_fn(element, attr) -> None for
+             a row with the same value in all directions (the cell works as before),
+             else (summary text, tooltip): the cell then shows that summary, read-only,
+             and is edited in the dialog (button or double-click).
         """
         super().__init__()
         self.columns = columns
@@ -716,6 +1193,9 @@ class ElementTableEditor(QWidget):
         self.pre_set_attr_fn = pre_set_attr_fn
         self.reorder_fn = reorder_fn
         self.descending_attrs = descending_attrs
+        self.directional_columns = directional_columns
+        self.directional_summary_fn = directional_summary_fn
+        self.directional_dialog_fn = directional_dialog_fn
 
         self.root = None
         self.row_elements = []
@@ -764,9 +1244,18 @@ class ElementTableEditor(QWidget):
             # kept as an attribute (not just a local) so the delegate - which the table only
             # holds a Qt-level reference to - isn't garbage-collected on the Python side
             self._completion_delegate = _VariableCompletionDelegate(variable_names_fn, self.table)
-            for col, (_attr, _header, kind) in enumerate(columns):
-                if kind == "text":
+            self._button_delegates = []
+            for col, (attr, _header, kind) in enumerate(columns):
+                if kind == "text" and attr in directional_columns:
+                    delegate = _DialogButtonDelegate(
+                        variable_names_fn, lambda row, a=attr: self._has_dialog_button(row, a),
+                        self._open_directional_dialog, self.table)
+                    self._button_delegates.append(delegate)
+                    self.table.setItemDelegateForColumn(col, delegate)
+                elif kind == "text":
                     self.table.setItemDelegateForColumn(col, self._completion_delegate)
+        if directional_columns:
+            self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
         layout.addWidget(self.table)
 
@@ -822,6 +1311,15 @@ class ElementTableEditor(QWidget):
                 not_applicable = bool(self.not_applicable_fn and self.not_applicable_fn(element, attr))
                 blank = not_applicable or bool(self.blank_if_default_fn and self.blank_if_default_fn(element, attr, value))
                 item = QTableWidgetItem("" if blank else value)
+                summary = None if not_applicable else self._directional_summary(element, attr)
+                if summary is not None:
+                    # direction-dependent: a summary, edited in the dialog
+                    item = QTableWidgetItem(summary[0])
+                    item.setToolTip(summary[1])
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    font = item.font()
+                    font.setItalic(True)
+                    item.setFont(font)
                 if not_applicable:
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     item.setBackground(self._GRAY)
@@ -857,10 +1355,15 @@ class ElementTableEditor(QWidget):
                                        value_out_fn=lambda text: "" if text == REFERENCE_NONE_LABEL else text)
             elif kind == "tableref":
                 not_applicable = bool(self.not_applicable_fn and self.not_applicable_fn(element, attr))
+                summary = None if not_applicable else self._directional_summary(element, attr)
+                if summary is not None:
+                    self._make_summary_cell(row, col, element, summary)
+                    continue
                 choices = [REFERENCE_NONE_LABEL] + (self.table_choices_fn() if self.table_choices_fn else [])
                 self._make_combo_cell(row, col, element, attr, value or REFERENCE_NONE_LABEL, choices, editable=True,
                                        value_out_fn=lambda text: "" if text == REFERENCE_NONE_LABEL else text,
-                                       enabled=not not_applicable)
+                                       enabled=not not_applicable,
+                                       dialog_button=attr in self.directional_columns and not not_applicable)
             elif kind == "operands":
                 operand_numbers = stackup_writer.get_operand_layers(element)
                 item = QTableWidgetItem(", ".join(operand_numbers))
@@ -869,7 +1372,8 @@ class ElementTableEditor(QWidget):
                     item.setToolTip(", ".join(lookup.get(num, num) for num in operand_numbers))
                 self.table.setItem(row, col, item)
 
-    def _make_combo_cell(self, row, col, element, attr, value, choices, editable, value_out_fn=None, enabled=True):
+    def _make_combo_cell(self, row, col, element, attr, value, choices, editable, value_out_fn=None, enabled=True,
+                         dialog_button=False):
         combo = NoScrollComboBox()
         combo.setEditable(editable)
         combo.setEnabled(enabled)
@@ -884,7 +1388,61 @@ class ElementTableEditor(QWidget):
             self._set_attr(el, a, value_out_fn(text) if value_out_fn else text)
 
         combo.currentTextChanged.connect(_emit)
-        self.table.setCellWidget(row, col, combo)
+        if dialog_button:
+            self.table.setCellWidget(row, col, self._with_dialog_button(combo, element))
+        else:
+            self.table.setCellWidget(row, col, combo)
+
+    # ---------- direction-dependent values (directional_columns) ----------
+
+    def _directional_summary(self, element, attr):
+        if attr not in self.directional_columns or self.directional_summary_fn is None:
+            return None
+        return self.directional_summary_fn(element, attr)
+
+    def _has_dialog_button(self, row, attr):
+        if row >= len(self.row_elements):
+            return False
+        element = self.row_elements[row]
+        return not (self.not_applicable_fn and self.not_applicable_fn(element, attr))
+
+    def _with_dialog_button(self, widget, element):
+        """widget with a "..." button on its right that opens the direction dialog for element."""
+        cell = QWidget()
+        cell_layout = QHBoxLayout(cell)
+        cell_layout.setContentsMargins(0, 0, 0, 0)
+        cell_layout.setSpacing(1)
+        cell_layout.addWidget(widget, 1)
+        button = QPushButton(DIALOG_BUTTON_TEXT)
+        button.setAutoDefault(False)
+        button.setFixedWidth(_DialogButtonDelegate.BUTTON_WIDTH)
+        button.setToolTip("Values per direction: lateral (x, y) and vertical (z)")
+        button.clicked.connect(lambda _checked=False, el=element: self._open_directional_dialog_for(el))
+        cell_layout.addWidget(button)
+        return cell
+
+    def _make_summary_cell(self, row, col, element, summary):
+        label = QLabel(summary[0])
+        label.setToolTip(summary[1])
+        font = label.font()
+        font.setItalic(True)
+        label.setFont(font)
+        label.setContentsMargins(3, 0, 0, 0)
+        self.table.setCellWidget(row, col, self._with_dialog_button(label, element))
+
+    def _open_directional_dialog(self, row):
+        if row < len(self.row_elements):
+            self._open_directional_dialog_for(self.row_elements[row])
+
+    def _open_directional_dialog_for(self, element):
+        if self.directional_dialog_fn is not None and not self._loading:
+            self.directional_dialog_fn(element)
+
+    def _on_cell_double_clicked(self, row, col):
+        # a direction-dependent cell is read-only: a double-click opens the dialog instead
+        attr = self.columns[col][0]
+        if row < len(self.row_elements) and self._directional_summary(self.row_elements[row], attr) is not None:
+            self._open_directional_dialog(row)
 
     def _make_color_cell(self, row, col, element, attr, value):
         button = QPushButton(("#" + value) if value else "(choose)")
@@ -1285,6 +1843,14 @@ class StackupEditorWindow(QDialog):
             reload_on_attr_change={"Value", "Type"},
             variable_names_fn=self._variable_names,
             invalid_fn=self._is_invalid_field,
+            header_tooltips={
+                "AllowedValues": "Min/Max (with Step) or a list of values. A value or an override outside them stops "
+                                 "the model setup. Double-click or \u2026 to edit.",
+                "Description": "Help text, e.g. the unit; shown in setupEM's override table",
+            },
+            directional_columns=frozenset({"AllowedValues"}),
+            directional_summary_fn=self._allowed_values_summary,
+            directional_dialog_fn=self._edit_allowed_values,
         )
 
         variables_tab = QWidget()
@@ -1317,6 +1883,9 @@ class StackupEditorWindow(QDialog):
             table_choices_fn=self._table_names,
             variable_names_fn=self._variable_names,
             invalid_fn=self._is_invalid_field,
+            directional_columns=frozenset({"ThermalConductivity", "ThermalConductivityTable"}),
+            directional_summary_fn=self._thermal_direction_summary,
+            directional_dialog_fn=self._edit_thermal_directions,
         )
 
         self.dielectrics_editor = ElementTableEditor(
@@ -1339,6 +1908,8 @@ class StackupEditorWindow(QDialog):
                 "Zmin": "Absolute position, or offset from Reference if set - or \"=expression\" referencing a Variable",
                 "Zmax": "Absolute position, or offset from Reference if set - or \"=expression\" referencing a Variable",
                 "Thickness": "Numeric value, or \"=expression\" referencing a Variable",
+                "Priority": PRIORITY_TOOLTIP,
+                "BoundaryDatatype": "GDS datatype of the Boundary layer. Empty: the datatypes set for the model.",
             },
             variable_names_fn=self._variable_names,
             invalid_fn=self._is_invalid_field,
@@ -1360,9 +1931,14 @@ class StackupEditorWindow(QDialog):
             # Thickness/ResultZmin/ResultZmax are derived from these - must live-refresh
             reload_on_attr_change={"Zmin", "Zmax", "Reference", "ReferenceEdge"},
             pre_set_attr_fn=self._handle_layer_name_change,
+            gray_fn=_layer_gray_fn,
             header_tooltips={
                 "Zmin": "Absolute position, or offset from Reference if set - or \"=expression\" referencing a Variable",
                 "Zmax": "Absolute position, or offset from Reference if set - or \"=expression\" referencing a Variable",
+                "Priority": PRIORITY_TOOLTIP + " No effect on a sheet (gray).",
+                "Datatype": "GDS datatype this layer is read from. Empty: the datatypes set for the model "
+                            "(Purpose on the Input Files tab, normally 0). With a Datatype, two layers can "
+                            "use the same GDSII layer number.",
             },
             variable_names_fn=self._variable_names,
             invalid_fn=self._is_invalid_field,
@@ -1996,6 +2572,69 @@ class StackupEditorWindow(QDialog):
         if self.tree is None:
             return []
         return [t.get("Name") for t in self._tables_container(self.tree.getroot()) if t.get("Name")]
+
+    def _thermal_direction_summary(self, element, attr):
+        """Materials tab, Thermal Cond. / Thermal Table cell of a material whose thermal conductivity can differ
+           by direction (any ThermalConductivity.xy/.z or ThermalConductivityTable.xy/.z): (summary, tooltip),
+           e.g. ("0.9 \u00b7 z 0.3", ...). None for a material without them - its cells work as before."""
+        if not any(element.get(a) for a in stackup_writer.directional_attribute_names()):
+            return None
+        parts = [element.get(attr)] if element.get(attr) else []
+        parts += [f"{suffix} {element.get(f'{attr}.{suffix}')}" for suffix in stackup_reader.DIRECTION_SUFFIXES
+                  if element.get(f"{attr}.{suffix}")]
+        summary = " \u00b7 ".join(parts)
+        if not summary and attr == "ThermalConductivity":
+            summary = "(table)"
+        try:
+            variables = _build_variables_list(self._variables_container(self.tree.getroot()))
+            x, _, z = stackup_reader.resolve_thermal_conductivity_xyz(element, element.get("Name"), variables)
+            resulting = f"Lateral (x, y): {x}, vertical (z): {z} W/m/K"
+        except (Exception, SystemExit):
+            resulting = "Direction-dependent thermal conductivity (not valid at the moment)"
+        return summary, resulting + f"\nDouble-click or {DIALOG_BUTTON_TEXT} to edit"
+
+    def _allowed_values_summary(self, element, attr):
+        """Variables tab, Allowed values cell: (summary, tooltip), e.g. "25 .. 750, step 5" or "one of 200, 300"."""
+        if element.get("List"):
+            summary = "one of " + ", ".join(o.strip() for o in element.get("List").split(";") if o.strip())
+        elif element.get("Min") and element.get("Max"):
+            summary = f'{element.get("Min")} .. {element.get("Max")}'
+        elif element.get("Min"):
+            summary = f'min {element.get("Min")}'
+        elif element.get("Max"):
+            summary = f'max {element.get("Max")}'
+        else:
+            summary = ""
+        if element.get("Step"):
+            summary += (", " if summary else "") + f'step {element.get("Step")}'
+        return summary, (summary or "any value") + f"\nDouble-click or {DIALOG_BUTTON_TEXT} to edit"
+
+    def _edit_allowed_values(self, element):
+        dialog = AllowedValuesDialog(self, element, variable_names=self._variable_names())
+        if dialog.exec() == QDialog.Accepted and dialog.apply(element):
+            self.variables_editor.reload()
+            self._on_variables_changed()
+
+    def _text_variable_names(self):
+        """Names of the Variables whose value is text, e.g. a table name - empty while the Variables are
+           not valid."""
+        try:
+            variables = _build_variables_list(self._variables_container(self.tree.getroot()))
+        except (Exception, SystemExit):
+            return set()
+        return {name for name, value in variables.as_dict().items() if isinstance(value, str)}
+
+    def _edit_thermal_directions(self, element):
+        text_variables = self._text_variable_names()
+        dialog = DirectionalValueDialog(
+            self, f'Thermal conductivity: material "{element.get("Name", "")}"', element,
+            "ThermalConductivity", "ThermalConductivityTable", unit="W/m/K",
+            table_names=self._table_names(), variable_names=self._variable_names(),
+            # a text Variable can only stand alone in an expression ("=name"), and then names a table
+            is_table_expression_fn=lambda text: text[1:].strip() in text_variables)
+        if dialog.exec() == QDialog.Accepted and dialog.apply(element):
+            self.materials_editor.reload()
+            self._on_materials_changed()
 
     def _layer_name_by_number(self):
         # for the Derived Layers tab's Operands tooltip: a GDSII layer number used as an
@@ -2811,7 +3450,7 @@ class StackupEditorWindow(QDialog):
             "give a derived layer its Z-position (its Layer number was never real GDSII "
             "geometry) - schemaVersion \"2.0\" predates derived layers too.\n"
             "- Thermal data is removed: the Tables section, and Density/ThermalConductivity/"
-            "ThermalConductivityTable on every Material.\n\n"
+            "ThermalConductivityTable (also per direction) on every Material.\n\n"
             "Resulting absolute positions stay exactly the same.")
 
         reply = QMessageBox.question(self, "Convert to legacy format", message,
@@ -2934,7 +3573,8 @@ class StackupEditorWindow(QDialog):
             root.remove(tables_el)
 
         for material_el in self._materials_container(root):
-            for attr in ("Density", "ThermalConductivity", "ThermalConductivityTable"):
+            for attr in ("Density", "ThermalConductivity", "ThermalConductivityTable",
+                         *stackup_writer.directional_attribute_names()):
                 if attr in material_el.attrib:
                     del material_el.attrib[attr]
 

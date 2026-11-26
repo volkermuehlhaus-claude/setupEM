@@ -215,6 +215,28 @@ def _read_substrate_variables(filename):
         return None
 
 
+def _layer_text(layernum):
+    """A stackup layer's GDS layer for display: "126", or "68/20" for a layer with a Datatype (gds2palace 0.13.0)."""
+    return stackup_reader.layer_text(layernum) if hasattr(stackup_reader, "layer_text") else str(layernum)
+
+
+def stackup_gds_layer_numbers(metals_list):
+    """GDS layer numbers used by the stackup layers (without the datatype of a layer with a Datatype)."""
+    if not metals_list:
+        return set()
+    if hasattr(stackup_reader, "split_layer_id"):
+        return {stackup_reader.split_layer_id(n)[0] for n in metals_list.getlayernumbers()}
+    return set(metals_list.getlayernumbers())
+
+
+class _OverrideChoiceCombo(QComboBox):
+    """Choice of an override value from a Variable's List; ignores the mouse wheel, so scrolling the table
+       doesn't change it (as stackupEditor's NoScrollComboBox)."""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 def _format_resolved_variable_value(value):
     """Format a resolved Variable value (float or str) as plain text - a whole-number
        float (e.g. 200.0) is shown without a trailing ".0", matching how such values are
@@ -873,8 +895,8 @@ class FileInputTab(QWidget):
         self.variable_overrides_label = QLabel("Override stackup Variables:")
         self.variable_overrides_layout.addWidget(self.variable_overrides_label)
         self.variable_overrides_table = QTableWidget()
-        self.variable_overrides_table.setColumnCount(3)
-        self.variable_overrides_table.setHorizontalHeaderLabels(["Variable", "XML value", "Override value"])
+        self.variable_overrides_table.setColumnCount(4)
+        self.variable_overrides_table.setHorizontalHeaderLabels(["Variable", "XML value", "Override value", "Allowed values"])
         self.variable_overrides_table.horizontalHeaderItem(2).setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.variable_overrides_table.verticalHeader().setVisible(False)
         self.variable_overrides_table.setEditTriggers(
@@ -884,6 +906,7 @@ class FileInputTab(QWidget):
         variable_overrides_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         variable_overrides_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         variable_overrides_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        variable_overrides_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         _variable_row_height = QFontMetrics(self.variable_overrides_table.font()).lineSpacing() + 10
         self.variable_overrides_table.setFixedHeight(_variable_row_height * 6)  # header + ~5 rows, then scroll
         self.variable_overrides_table.itemChanged.connect(self._on_variable_override_item_changed)
@@ -1031,6 +1054,23 @@ class FileInputTab(QWidget):
         new_height = max(min_height, min(measuring_doc.size().height() + 6, max_height))
         self.XML_description_label.setFixedHeight(int(new_height))
 
+    def update_purpose_hint(self, metals_list):
+        """Next to the datatype field: which stackup layers have their own Datatype (gds2palace 0.13.0) and are
+           read from it, whatever the field says."""
+        default = " (comma-separated, default 0)"
+        own = []
+        if metals_list is not None and hasattr(metals_list, "get_layer_datatypes"):
+            own = [f"{name} {number}/{datatype}" for name, (number, datatype) in metals_list.get_layer_datatypes().items()
+                   if datatype is not None]
+        if not own:
+            self.purpose_label2.setText(default)
+            self.purpose_label2.setToolTip("")
+            return
+        shown = ", ".join(own[:3]) + (", ..." if len(own) > 3 else "")
+        self.purpose_label2.setText(f"{default}; the stackup sets the datatype of {len(own)} layer(s): {shown}")
+        self.purpose_label2.setToolTip("These stackup layers have a Datatype and are read from it:" + chr(10)
+                                       + chr(10).join(own))
+
     def update_variable_overrides_grid(self, filename):
         # re-populates from scratch every time - no attempt to preserve in-progress,
         # not-yet-saved edits across a file switch, matching how the description label
@@ -1049,6 +1089,14 @@ class FileInputTab(QWidget):
             return
 
         persisted_overrides = self.MainWindow.saved_values.get("variable_overrides") or {}
+        # allowed values (gds2palace 0.13.0 and newer): resolve Min/Max expressions with the file's values;
+        # a value outside them is reported by read_XML(), so the check's own exit is ignored here
+        if hasattr(variables, "check_allowed_values"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    variables.check_allowed_values()
+                except SystemExit:
+                    pass
         # populating the table below fires itemChanged for every cell just like a real user
         # edit would - block it here so the live-update handler doesn't re-enter read_XML()
         # (and its own call back into this same method) while this method is still running.
@@ -1066,10 +1114,28 @@ class FileInputTab(QWidget):
                 xml_item = QTableWidgetItem(xml_value_text)
                 xml_item.setFlags(xml_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 override_item = QTableWidgetItem(override_text)
+                allowed_text = var.allowed_values_text() if hasattr(var, "allowed_values_text") else ""
+                allowed_item = QTableWidgetItem(allowed_text)
+                allowed_item.setFlags(allowed_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                description = getattr(var, "description", "")
+                for item in (name_item, xml_item, override_item, allowed_item):
+                    if description or allowed_text:
+                        item.setToolTip("\n".join(t for t in (description, f"Allowed: {allowed_text}" if allowed_text else "") if t))
 
                 self.variable_overrides_table.setItem(row, 0, name_item)
                 self.variable_overrides_table.setItem(row, 1, xml_item)
                 self.variable_overrides_table.setItem(row, 2, override_item)
+                self.variable_overrides_table.setItem(row, 3, allowed_item)
+                options = getattr(var, "list_values", [])
+                if options:
+                    # a list of allowed values: pick one; the choice is written into the override item underneath,
+                    # which keeps the usual change handling (itemChanged) and get_variable_overrides()
+                    combo = _OverrideChoiceCombo()
+                    combo.addItems(options if override_text in options else [override_text] + options)
+                    combo.setCurrentText(override_text)
+                    combo.setToolTip(override_item.toolTip())
+                    combo.currentTextChanged.connect(lambda text, item=override_item: item.setText(text))
+                    self.variable_overrides_table.setCellWidget(row, 2, combo)
         finally:
             self.variable_overrides_table.blockSignals(False)
         self.variable_overrides_container.setVisible(True)
@@ -1408,6 +1474,9 @@ def _build_dielectric_tooltip(dielectric, overlap_partner_names=None):
         f"Zmax: {dielectric.zmax:.4f} µm\n"
         f"Thickness: {dielectric.thickness:.4f} µm"
     )
+    if getattr(dielectric, "priority", 0):
+        # where dielectrics overlap, the higher Priority wins (gds2palace stackup reader 1.11.0)
+        tooltip += f"\nPriority: {dielectric.priority}"
     if overlap_partner_names:
         # see dielectric_layers_list.find_z_overlap_pairs() / InteractiveRegionItem's
         # always-on red dashed outline - names exactly what this slab conflicts with,
@@ -1418,7 +1487,7 @@ def _build_dielectric_tooltip(dielectric, overlap_partner_names=None):
 
 def _build_layer_tooltip(metal):
     lines = [
-        f"{metal.name} (GDSII layer {metal.layernum})",
+        f"{metal.name} (GDSII layer {_layer_text(metal.layernum)})",
         f"Type: {metal.type.capitalize()}",
         f"Material: {metal.material}",
         f"Zmin: {metal.zmin:.4f} µm",
@@ -1426,6 +1495,9 @@ def _build_layer_tooltip(metal):
     ]
     if not metal.is_sheet:
         lines.append(f"Thickness: {metal.thickness:.4f} µm")
+        if getattr(metal, "priority", 0):
+            # where volumes overlap, the higher Priority wins (gds2palace stackup reader 1.11.0)
+            lines.append(f"Priority: {metal.priority}")
     return "\n".join(lines)
 
 
@@ -2034,7 +2106,7 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
                                fill_layer.name)
                     same_range_entries.append((same_x, same_w, interactive_entries[-1]))
 
-                name_string = f"{metal.name} ({metal.layernum})"
+                name_string = f"{metal.name} ({_layer_text(metal.layernum)})"
                 if crowded:
                     # narrow slot: give up detail until the text fits - the material
                     # label first, then the layer number, then shorten the name itself.
@@ -2056,7 +2128,7 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
                                 member_label = 'PEC (ideal conductor)'
                             else:
                                 member_label = 'INVALID MATERIAL REFERENCE: ' + member.material
-                            member_name = f"{member.name} ({member.layernum})"
+                            member_name = f"{member.name} ({_layer_text(member.layernum)})"
                             if _text_width(member_name) > available:
                                 level = 2
                             elif _text_width(member_name) + _text_width(member_label) > available:
@@ -2588,7 +2660,7 @@ def compute_stackup_layout(materials_list, dielectrics_list, metals_list, width,
                 # label near the via's upper end (baseline one text height below the top
                 # edge); a box too short for that keeps it near the lower end, as before
                 drawTextAt(xvia + 5, flipy(y1 + max(h - VIA_LABEL_TOP_OFFSET, 5)),
-                           f"{metal.name} ({metal.layernum})" + label_suffix)
+                           f"{metal.name} ({_layer_text(metal.layernum)})" + label_suffix)
 
     return draw_calls, interactive_entries
 
@@ -6756,6 +6828,7 @@ class MainWindowBase(QMainWindow):
             self.update_target_layer_choices(self.metals_list)
             self.file_tab.update_XML_description(filename)
             self.file_tab.update_variable_overrides_grid(filename)
+            self.file_tab.update_purpose_hint(metals_list)
             # keep an open Stackup Preview popup in sync - it otherwise reads
             # this data only once at construction and would silently go stale
             # if the stackup is reloaded (e.g. a different model/settings file

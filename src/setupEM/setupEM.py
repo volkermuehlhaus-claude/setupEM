@@ -50,7 +50,7 @@ from gds2palace import *
 # rather than imported as part of the setupEM package, so relative import fails.
 if __package__ in (None, ""):
     from setup_common import (
-        EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        stackup_gds_layer_numbers, EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
         SECONDARY_BUTTON_WIDTH,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase, RefinedCellsizeOverrideDialog,
@@ -70,7 +70,7 @@ if __package__ in (None, ""):
     from script_writer import em_script_text
 else:
     from .setup_common import (
-        EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        stackup_gds_layer_numbers, EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
         SECONDARY_BUTTON_WIDTH,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase, RefinedCellsizeOverrideDialog,
@@ -849,7 +849,7 @@ class PortsTab(QWidget):
         """
         layer_min, layer_max = self._port_layer_range()
         gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
-        xml_layers = set(self.MainWindow.metals_list.getlayernumbers()) if self.MainWindow.metals_list else set()
+        xml_layers = stackup_gds_layer_numbers(self.MainWindow.metals_list)
         excluded = xml_layers | self._used_source_layers()
         return next_available_source_layer(gds_layers, excluded, start=layer_min)
 

@@ -169,7 +169,7 @@ Note that stackup XML files for Palace/Elmer FEM simulation differ in some detai
 
 If the chosen XML file has a `<!-- File description: ... -->` comment, it's shown as italic text right below the file path - a quick way to see what a stackup file is for without opening it.
 
-If the file also declares `<Variable>`s with plain (non-computed) values - e.g. `total_thickness`, `air_thickness` - an editable **Override stackup Variables** grid appears right below the description, listing each Variable's name, its value as declared in the XML, and an editable Override value column. Change a value there to override it for this model, without hand-editing the XML file. Variables computed from other variables (`="=expression"` values, e.g. a `bulk_thickness` derived from `total_thickness`) are not listed, since they're meant to follow whatever they're computed from, not be pinned directly.
+If the file also declares `<Variable>`s with plain (non-computed) values - e.g. `total_thickness`, `air_thickness` - an editable **Override stackup Variables** grid appears right below the description, listing each Variable's name, its value as declared in the XML, and an editable Override value column. Change a value there to override it for this model, without hand-editing the XML file. Variables computed from other variables (`="=expression"` values, e.g. a `bulk_thickness` derived from `total_thickness`) are not listed, since they're meant to follow whatever they're computed from, not be pinned directly. If a Variable declares allowed values (gds2palace 0.13.0 and newer), the **Allowed values** column shows them, e.g. `25 .. 750, step 5`, and a list of values becomes a dropdown; its description appears as tooltip. An override outside the allowed values is reported right away, with the error message of the stackup reader.
 
 Overridden values flow into the generated model script as a `variable_overrides` dict passed to `stackup_reader.read_substrate()` - see the [XML stackup format doc](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/XML_stackup_format/XML_stackup_format.md) for the underlying `<Variables>` mechanism. The grid (and the description above it) stays hidden entirely for a file that doesn't declare any Variables.
 
@@ -530,21 +530,31 @@ The first tab, appearing before Materials. A `<Variable>` has a **Name**, a **Va
 
 Typing `=` into any numeric-capable cell on the other tabs brings up an autocomplete list of declared Variables. This is the mechanism behind the Input Files tab's "Override stackup Variables" grid described earlier: a value like `total_thickness` used as `Thickness="=total_thickness"` elsewhere in the file can be overridden from the GUI without touching the XML, and every expression that depends on it follows automatically.
 
+Two more columns are optional. **Allowed values (optional)** limits the values a Variable accepts (gds2palace 0.13.0 and newer): its **…** button opens a dialog with **Any value**, a **Range** (Min, Max and Step; Min and Max can be `=` expressions, e.g. a mold at least as thick as the die) or a **List** of values. A value in the file or an override outside them stops the model setup with an error that names the allowed values. **Description (optional)** holds a help text, e.g. the unit, shown as tooltip in the Override stackup Variables grid. See "Allowed values" in [`XML_stackup_format.md`](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/XML_stackup_format/XML_stackup_format.md#allowed-values).
+
 ### Materials tab
 
 Defines every material used by the stackup: name, type (conductor/dielectric/semiconductor/resistor), electrical properties (conductivity, permittivity, loss tangent), color (used by the cross-section preview and by `gds_viewer`), and - for thermal simulation - either a constant **Thermal Conductivity** or a **Thermal Table** reference (see "[Thermal Tables tab](#thermal-tables-tab)" below). Neither thermal setting is used by EM-only simulation.
 
 <img src="./png/materials1.png" alt="materials" width="750">
 
+Some materials conduct heat better along the wafer than through it, e.g. mold compound, laminates or a bump layer filled with underfill. The **…** button in the Thermal Conductivity and Thermal Table cells opens a dialog for values per direction: switch to **Lateral and vertical**, then give **Lateral (x, y)** and **Vertical (z)** a value each. A field takes a number, an `=` expression, or a table picked from its list (shown in blue). An empty field uses the **All directions** value, shown in grey in the field; that value is also the only one older gds2palace versions read. Such a material shows a summary in the Materials tab, e.g. `0.9 · z 0.3`; double-click it or use **…** to edit it. This needs gds2palace 0.13.0 or newer, and the file is saved with `schemaVersion="3.2"`. In setupThermal's stackup preview, such a layer is labelled with both values and coloured by its vertical value.
+
+<img src="./png/thermal_directions_dialog.png" alt="thermal conductivity per direction" width="400">
+
 ### Dielectric Stack tab
 
 Defines the vertical dielectric layer stack. Either the legacy stacking order (each dielectric's Thickness stacks it on the previous one) or Reference-relative positioning (a Dielectric names another Dielectric's top/bottom edge to sit against, with an offset) - see "[Converting between position formats](#converting-between-position-formats)". Read-only "(resulting)" columns show the resolved absolute Zmin/Zmax either way.
+
+The **Priority** column (here and on the Layers tab) decides which volume fills an overlap: the higher one, empty means 0, negative values are allowed. With it, dielectrics may overlap, e.g. mold compound around a die (give the mold a lower Priority than the die). It compares dielectrics among themselves and conductors and vias among themselves; conductors and vias always win over dielectrics. It has no effect on a sheet layer (gray there). This needs gds2palace 0.13.0 or newer; see "Priority: overlapping volumes" in [`XML_stackup_format.md`](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/XML_stackup_format/XML_stackup_format.md).
 
 <img src="./png/dielectrics1.png" alt="dielectrics" width="750">
 
 ### Layers tab
 
 Defines the drawn metal/via layers: GDSII layer number, material, and Zmin/Zmax (absolute, or Reference-relative the same way Dielectrics can be). This is what gives every layer its 3D position and material for meshing.
+
+The optional **Datatype** column names the GDS datatype a layer is read from (gds2palace 0.13.0 and newer). Leave it empty for technologies with one layer number per layer, such as IHP SG13G2: the layer is then read from the datatype set on the Input Files tab, normally 0. With a Datatype, two layers can share one GDSII layer number, e.g. a metal and its keepout. The Input Files tab then says which layers take their datatype from the stackup.
 
 <img src="./png/layers1.png" alt="layers" width="750">
 

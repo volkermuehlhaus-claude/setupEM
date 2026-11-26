@@ -1,13 +1,14 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<Stackup schemaVersion="3.1">
-  <!-- Created/modified using the XML Stackup Editor in Stackup Editor -->
+<Stackup schemaVersion="3.2">
+  <!-- Created/modified using the XML Stackup Editor in setupEM -->
   <!-- ============================================================ -->
   <!-- SG13G2 parameterized stackup for gds2palace, EM+thermal, includes resistors, conformal SiO2/Passivation arround TopMetal2. Parameters: air_thickness and total_thickness. -->
   <!-- ============================================================ -->
   <!-- Requires gds2palace 0.5.0 or newer. -->
+  <!-- Direction-dependent thermal conductivity (.xy/.z) and Priority require gds2palace util_stackup_reader.py version 1.11.0 or newer -->
   <Variables>
     <Variable Name="air_thickness" Value="200.0000" />
-    <Variable Name="total_thickness" Value="200.0000" />
+    <Variable Name="total_thickness" Value="200.0000" Min="25" />
     <Variable Name="bulk_thickness" Value="=total_thickness-19.88" />
   </Variables>
   <Materials>
@@ -49,6 +50,8 @@
       <Dielectric Name="Substrate" Material="Substrate" Thickness="=bulk_thickness" />
     </Dielectrics>
     <Layers>
+      <!-- Heat source targets for thermal models: z range and material of a heat source. Nothing is drawn on
+           these GDS layers, so they add no geometry to EM models. -->
       <Layer Name="SiO2_above_TM2" Type="dielectric" Reference="TopMetal2" Material="SiO2" Layer="900" Zmin="0" Zmax="=1.5+0.4" />
       <Layer Name="SiO2_sides_TM2" Type="dielectric" Reference="TopMetal2" ReferenceEdge="Bottom" Material="SiO2" Layer="901" Zmin="0" Zmax="3" />
       <Layer Name="TopMetal2" Type="conductor" Reference="TopVia2" ReferenceEdge="Top" Material="TopMetal2" Layer="134" Zmin="0" Zmax="3" />
@@ -71,11 +74,9 @@
       <Layer Name="RPPD" Type="sheet" Reference="Activ" ReferenceEdge="Top" Material="RPPD" Layer="313" Zmin="0" Zmax="0" />
       <Layer Name="RSIL" Type="sheet" Reference="Activ" ReferenceEdge="Top" Material="RSIL" Layer="314" Zmin="0" Zmax="0" />
       <Layer Name="REF_FOR_TRANSISTOR" Type="sheet" Reference="SiO2" ReferenceEdge="Bottom" Material="PEC" Layer="300" Zmin="0.4" Zmax="0.4" />
-      <Layer Name="Activ" Type="conductor" Reference="SiO2" ReferenceEdge="Bottom" Material="Activ" Layer="1" Zmin="0" Zmax="0.4" />
-      <!-- Heat source targets for thermal models: z range and material of a heat source. Nothing is drawn on
-           these GDS layers, so they add no geometry to EM models. -->
-      <Layer Name="HEAT_TRANSISTOR" Type="conductor" Reference="Activ" ReferenceEdge="Top" Material="Activ" Layer="320" Zmin="-0.04" Zmax="0" />
       <Layer Name="HEAT_RESISTOR" Type="conductor" Reference="Activ" ReferenceEdge="Top" Material="PolyRes" Layer="321" Zmin="0" Zmax="0.16" />
+      <Layer Name="HEAT_TRANSISTOR" Type="conductor" Reference="Activ" ReferenceEdge="Top" Material="Activ" Layer="320" Zmin="-0.04" Zmax="0" />
+      <Layer Name="Activ" Type="conductor" Reference="SiO2" ReferenceEdge="Bottom" Material="Activ" Layer="1" Zmin="0" Zmax="0.4" />
       <Layer Name="SUBGND" Type="sheet" Reference="EPI" ReferenceEdge="Top" Material="PEC" Layer="250" Zmin="0" Zmax="0" />
       <Layer Name="LBE" Type="dielectric" Reference="Substrate" ReferenceEdge="Bottom" Material="AIR" Layer="157" Zmin="0" Zmax="=bulk_thickness + 3.7500" />
       <Layer Name="BACKSIDEGND" Type="sheet" Reference="Substrate" ReferenceEdge="Bottom" Material="PEC" Layer="251" Zmin="0" Zmax="0" />

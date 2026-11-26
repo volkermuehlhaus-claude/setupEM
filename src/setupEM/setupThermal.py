@@ -53,7 +53,7 @@ except ImportError:     # an older gds2palace
 # rather than imported as part of the setupEM package, so relative import fails.
 if __package__ in (None, ""):
     from setup_common import (
-        EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        stackup_gds_layer_numbers, EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase, RefinedCellsizeOverrideDialog,
         MarginSidesDialog, margin_from_saved, margin_to_saved,
@@ -69,7 +69,7 @@ if __package__ in (None, ""):
     from script_writer import thermal_script_text, THERMAL_HEAT_FLUX_OUTPUT
 else:
     from .setup_common import (
-        EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
+        stackup_gds_layer_numbers, EDIT_STYLE_OPTIONAL, EDIT_STYLE_REQUIRED, COMBO_STYLE_REQUIRED, COMBO_STYLE_OPTIONAL,
         FileDropLineEdit, FileInputTab, PythonHighlighter, CodeEditor,
         VectorWidget, PopUpWindow, CreateModelTabBase, MainWindowBase, RefinedCellsizeOverrideDialog,
         MarginSidesDialog, margin_from_saved, margin_to_saved,
@@ -450,7 +450,7 @@ class PortsTab(QWidget):
         """
         layer_min, layer_max = self._port_layer_range()
         gds_layers = self.MainWindow.get_gds_layers_in_range(layer_min, layer_max)
-        xml_layers = set(self.MainWindow.metals_list.getlayernumbers()) if self.MainWindow.metals_list else set()
+        xml_layers = stackup_gds_layer_numbers(self.MainWindow.metals_list)
         excluded = xml_layers | self._used_source_layers()
         return next_available_source_layer(gds_layers, excluded, start=layer_min)
 
@@ -1513,14 +1513,40 @@ def thermal_conductivity_to_color(thermalcond, alpha=DIELECTRIC_ALPHA):
 # Kelvin, that one a conductivity ceiling in W/(m*K).
 THERMAL_TABLE_REFERENCE_TEMPERATURE_K = 300.0
 
+def _directional_thermal(material):
+    """(lateral, vertical) thermal_conductivity_spec of a material whose thermal conductivity differs by
+    direction (ThermalConductivity.xy/.z in the stackup), else None."""
+    specs = getattr(material, "thermal_xyz", None)
+    if specs is None or not material.thermal_is_directional():
+        return None
+    return specs[0], specs[2]
+
+
+def _table_value_at_reference(table):
+    points = sorted(table.points)
+    if len(points) == 1:
+        return points[0][1]
+    temps = [p[0] for p in points]
+    values = [p[1] for p in points]
+    interp = interp1d(temps, values, bounds_error=False, fill_value=(values[0], values[-1]))
+    return float(interp(THERMAL_TABLE_REFERENCE_TEMPERATURE_K))
+
+
 def _thermal_conductivity_for_color(material):
     """The effective thermalcond (W/(m*K)) to color `material` by: its own
     scalar value, or - for a temperature-dependent table
     (thermaltablename set) - the table's value at/near room temperature,
     linearly interpolated and clamped to the table's own range (never
-    extrapolated beyond the measured points)."""
+    extrapolated beyond the measured points). A material whose conductivity
+    differs by direction is colored by its vertical (z) value."""
     if material is None:
         return None
+    directional = _directional_thermal(material)
+    if directional is not None:
+        vertical = directional[1]
+        if vertical.is_table():
+            return _table_value_at_reference(vertical.table) if vertical.table is not None and vertical.table.points else None
+        return vertical.value
     if material.thermaltablename and material.thermaltable is not None and material.thermaltable.points:
         points = sorted(material.thermaltable.points)
         if len(points) == 1:
@@ -1539,6 +1565,10 @@ def _thermal_conductivity_label(material):
     the scalar thermalcond."""
     if material is None:
         return ""
+    directional = _directional_thermal(material)
+    if directional is not None:
+        lateral, vertical = (("table" if spec.is_table() else f"{spec.value:.1f}") for spec in directional)
+        return f"κ xy={lateral}, z={vertical}"
     if material.thermaltablename:
         return "κ=table"
     return f'κ={material.thermalcond:.1f}'

@@ -34,6 +34,8 @@ stackup files, never edits/writes them.
 __version__ = "1.6.0"
 
 import ast
+import contextlib
+import io
 import xml.etree.ElementTree as ET
 
 from gds2palace import stackup_reader
@@ -296,6 +298,77 @@ def stamp_variables_format_comment(root, min_reader_version):
   root.insert(insert_index, ET.Comment(f" {VARIABLES_FORMAT_COMMENT_PREFIX} {min_reader_version} or newer "))
 
 
+DIRECTIONAL_FORMAT_COMMENT_PREFIX = "Direction-dependent thermal conductivity (.xy/.z) and Priority require gds2palace util_stackup_reader.py version"
+
+
+def stamp_directional_format_comment(root, min_reader_version):
+  """Insert or update a comment noting the minimum gds2palace reader version needed to read this file's
+     direction-dependent material attributes (ThermalConductivity.xy etc.). Same shape and placement as
+     stamp_variables_format_comment()."""
+  for child in list(root):
+    if child.tag is ET.Comment and (child.text or "").strip().startswith(DIRECTIONAL_FORMAT_COMMENT_PREFIX):
+      root.remove(child)
+
+  insert_index = 0
+  for child in root:
+    if child.tag is ET.Comment:
+      insert_index += 1
+    else:
+      break
+  root.insert(insert_index, ET.Comment(f" {DIRECTIONAL_FORMAT_COMMENT_PREFIX} {min_reader_version} or newer "))
+
+
+def directional_attribute_names():
+  """Every direction-dependent Material attribute the reader supports, e.g. "ThermalConductivity.z"."""
+  return [f"{base}.{suffix}" for base in stackup_reader.DIRECTIONAL_MATERIAL_ATTRIBUTES
+          for suffix in stackup_reader.DIRECTION_SUFFIXES]
+
+
+def _uses_directional_attributes(root):
+  """True if any Material has a direction-dependent attribute (any "<Property>.<suffix>" attribute, also an
+     unsupported one: validation reports that, and such a file is newer than "3.1" in any case)."""
+  materials_el = get_materials_element(root)
+  if materials_el is None:
+    return False
+  return any("." in attr for el in materials_el.findall("Material") for attr in el.attrib)
+
+
+VARIABLE_LIMIT_ATTRIBUTES = ("Min", "Max", "Step", "List", "Description")
+
+
+def _uses_variable_limits(root):
+  """True if any Variable has allowed values or a description (Min/Max/Step/List/Description)."""
+  return any(el.get(attr) not in (None, "") for el in root.iter("Variable") for attr in VARIABLE_LIMIT_ATTRIBUTES)
+
+
+def _allowed_values_problem(variables_el):
+  """The reader's own check of the Variables' allowed values (Min/Max/Step/List): its error message, or
+     None. Run only once the Variables are otherwise valid."""
+  printed = io.StringIO()
+  try:
+    with contextlib.redirect_stdout(printed):
+      variables = stackup_reader.variables_list()
+      for element in variables_el.findall("Variable"):
+        variables.append(stackup_reader.variable(element))
+      variables.resolve_all()
+      variables.check_allowed_values()
+  except SystemExit:
+    text = printed.getvalue().strip().splitlines()
+    return text[-1].replace("ERROR: ", "", 1) if text else "invalid allowed values of a Variable"
+  return None
+
+
+def _uses_datatype(root):
+  """True if any Layer or derived layer Operand has a Datatype, or a Dielectric a BoundaryDatatype."""
+  return (any(el.get("Datatype") not in (None, "") for tag in ("Layer", "Operand") for el in root.iter(tag))
+          or any(el.get("BoundaryDatatype") not in (None, "") for el in root.iter("Dielectric")))
+
+
+def _uses_priority(root):
+  """True if any Dielectric or Layer has a Priority (where volumes overlap, the higher one wins)."""
+  return any(el.get("Priority") not in (None, "") for tag in ("Dielectric", "Layer") for el in root.iter(tag))
+
+
 def _uses_variables_or_expressions(root):
   """True if this stackup's current content actually needs <Variables>/"="-expression
      support: any <Variable> declared, or any attribute value anywhere in the tree starting
@@ -344,8 +417,12 @@ def required_schema_version(root):
   Args:
       root (xml.etree.ElementTree.Element): the <Stackup> root element
   Returns:
-      string: "2.0", "3.0", or "3.1"
+      string: "2.0", "3.0", "3.1" or "3.2" ("3.2": direction-dependent material attributes, Priority,
+      allowed values of Variables)
   """
+  if (_uses_directional_attributes(root) or _uses_priority(root) or _uses_variable_limits(root)
+      or _uses_datatype(root)):
+    return "3.2"
   if _uses_variables_or_expressions(root):
     return "3.1"
   if _uses_reference_positioning(root) or _uses_derived_layers(root):
@@ -464,7 +541,7 @@ def save_stackup_tree(tree, filename):
   each <Table>'s <Point> entries are reordered by resolved Temperature, ascending - see
   _sort_table_points_by_temperature(). Comments and all element content are preserved.
 
-  Also self-corrects schemaVersion="2.0"/"3.0" up to "3.0"/"3.1" if the content now needs it
+  Also self-corrects schemaVersion up to "3.0"/"3.1"/"3.2" if the content now needs it
   (see required_schema_version()) - every write goes through here, so this is the one place
   that reliably catches it regardless of which code path added the Reference attribute or
   the first <Variable>/"="-expression. Deliberately one-directional: never downgrades a
@@ -479,10 +556,16 @@ def save_stackup_tree(tree, filename):
   root = tree.getroot()
 
   needed = required_schema_version(root)
-  if needed == "3.1" and root.get("schemaVersion") != "3.1":
+  current = stackup_reader._parse_schema_version(root.get("schemaVersion"))
+  if current is not None and current >= stackup_reader._parse_schema_version(needed):
+    pass  # never lowered: a newer file stays newer
+  elif needed == "3.2":
+    root.set("schemaVersion", "3.2")
+    stamp_directional_format_comment(root, stackup_reader.__version__)
+  elif needed == "3.1":
     root.set("schemaVersion", "3.1")
     stamp_variables_format_comment(root, stackup_reader.__version__)
-  elif needed == "3.0" and root.get("schemaVersion") != "3.0":
+  elif needed == "3.0":
     root.set("schemaVersion", "3.0")
     # Reference and DerivedLayers are independent reasons "3.0" might be needed - stamp
     # whichever one(s) are actually in use, not just one or the other
@@ -728,20 +811,28 @@ def remove_variable(root, element):
 
 
 def get_operand_layers(element):
-  """Layer numbers (as strings, in document order) of a DerivedLayer's <Operand> children."""
-  return [operand.get("Layer") for operand in element.findall("Operand")]
+  """Layers (as strings, in document order) of a DerivedLayer's <Operand> children: the layer number, or
+     "number/datatype" for an operand with a Datatype (e.g. "66/20")."""
+  return [operand.get("Layer") if not operand.get("Datatype") else f'{operand.get("Layer")}/{operand.get("Datatype")}'
+          for operand in element.findall("Operand")]
 
 
 def set_operands(element, layer_numbers):
   """Replace a DerivedLayer element's <Operand> children with one per given layer
   number, in order - order matters for Operation="NOT" (first operand minus the rest).
   Args:
-      layer_numbers (list of str/int): GDSII or other-DerivedLayer layer numbers
+      layer_numbers (list of str/int): GDSII or other-DerivedLayer layer numbers; "number/datatype" for
+        an operand that is read from one GDS datatype
   """
   for existing in element.findall("Operand"):
     element.remove(existing)
   for layernum in layer_numbers:
-    ET.SubElement(element, "Operand", {"Layer": str(layernum)})
+    # "66/20": layer 66, datatype 20
+    number, _, datatype = str(layernum).partition("/")
+    attributes = {"Layer": number.strip()}
+    if datatype.strip():
+      attributes["Datatype"] = datatype.strip()
+    ET.SubElement(element, "Operand", attributes)
 
 
 # -------------------- Table / Point --------------------
@@ -966,6 +1057,12 @@ def validate_stackup(root):
   if remaining_variable_deps:
     errors.append(f"Circular Variable reference detected among: {sorted(remaining_variable_deps.keys())}")
 
+  # allowed values of the Variables (Min/Max/Step/List), checked by the reader itself
+  if not errors and variables_el is not None and _uses_variable_limits(root):
+    problem = _allowed_values_problem(variables_el)
+    if problem:
+      errors.append(problem)
+
   # Tables are validated before Materials, and their names collected into table_names, since
   # a Material's ThermalConductivityTable cross-references a Table by name (see below)
   tables_el = get_tables_element(root)
@@ -1034,9 +1131,31 @@ def validate_stackup(root):
           if problem:
             errors.append(f"Material '{label}' has invalid {attr}='{value}' ({problem})")
 
-      table_ref = el.get("ThermalConductivityTable")
-      if table_ref and not _is_expression(table_ref) and table_ref not in table_names:
-        errors.append(f"Material '{label}' references undefined ThermalConductivityTable '{table_ref}'")
+      for table_attr in ["ThermalConductivityTable"] + [f"ThermalConductivityTable.{suffix}"
+                                                         for suffix in stackup_reader.DIRECTION_SUFFIXES]:
+        table_ref = el.get(table_attr)
+        if table_ref and not _is_expression(table_ref) and table_ref not in table_names:
+          errors.append(f"Material '{label}' references undefined {table_attr} '{table_ref}'")
+
+      # direction-dependent values: only .xy/.z, only on thermal conductivity, a constant or a table per direction
+      for attr in el.attrib:
+        if "." not in attr:
+          continue
+        base, suffix = attr.rsplit(".", 1)
+        if base not in stackup_reader.DIRECTIONAL_MATERIAL_ATTRIBUTES:
+          errors.append(f"Material '{label}' has unsupported attribute {attr} (direction-dependent values exist "
+                        f"only for {' and '.join(stackup_reader.DIRECTIONAL_MATERIAL_ATTRIBUTES)})")
+        elif suffix not in stackup_reader.DIRECTION_SUFFIXES:
+          errors.append(f"Material '{label}' has unsupported attribute {attr} (use {base}.xy or {base}.z)")
+      for suffix in stackup_reader.DIRECTION_SUFFIXES:
+        value = el.get(f"ThermalConductivity.{suffix}")
+        if value is not None and value != "":
+          problem = _numeric_problem(value, known_variable_names)
+          if problem:
+            errors.append(f"Material '{label}' has invalid ThermalConductivity.{suffix}='{value}' ({problem})")
+          if el.get(f"ThermalConductivityTable.{suffix}"):
+            errors.append(f"Material '{label}' has both ThermalConductivity.{suffix} and "
+                          f"ThermalConductivityTable.{suffix} (a constant or a table per direction)")
 
   dielectrics_el = get_dielectrics_element(root)
   dielectric_names = []
@@ -1126,6 +1245,20 @@ def validate_stackup(root):
         if problem:
           errors.append(f"Dielectric '{label}' has invalid Boundary='{boundary}' ({problem})")
 
+      priority = el.get("Priority")
+      if priority is not None and priority != "":
+        problem = _int_problem(priority, known_variable_names)
+        if problem:
+          errors.append(f"Dielectric '{label}' has invalid Priority='{priority}' ({problem})")
+
+      boundary_datatype = el.get("BoundaryDatatype")
+      if boundary_datatype is not None and boundary_datatype != "":
+        problem = _int_problem(boundary_datatype, known_variable_names)
+        if problem:
+          errors.append(f"Dielectric '{label}' has invalid BoundaryDatatype='{boundary_datatype}' ({problem})")
+        elif not boundary:
+          errors.append(f"Dielectric '{label}' has a BoundaryDatatype but no Boundary layer")
+
     # circular Dielectric -> Dielectric Reference check (Reference only ever targets another
     # Dielectric, so - unlike Layer's Reference - there's no ambiguous-namespace case here)
     dielectric_reference_target = {}
@@ -1214,6 +1347,21 @@ def validate_stackup(root):
         problem = _int_problem(layernum, known_variable_names)
         if problem:
           errors.append(f"Layer '{label}' has invalid Layer='{layernum}' ({problem})")
+
+      priority = el.get("Priority")
+      if priority is not None and priority != "":
+        problem = _int_problem(priority, known_variable_names)
+        if problem:
+          errors.append(f"Layer '{label}' has invalid Priority='{priority}' ({problem})")
+
+      datatype = el.get("Datatype")
+      if datatype is not None and datatype != "":
+        problem = _int_problem(datatype, known_variable_names)
+        if problem:
+          errors.append(f"Layer '{label}' has invalid Datatype='{datatype}' ({problem})")
+        elif layernum in {d.get("Layer") for d in root.iter("DerivedLayer")}:
+          errors.append(f"Layer '{label}' has a Datatype, but its layer {layernum} is a derived layer "
+                        "(computed, nothing is read from the layout for it)")
 
       # sheet-thickness check only applies when Zmin/Zmax are both concrete literals - an
       # expression-based Zmin/Zmax can't be compared without resolving it (see
@@ -1355,6 +1503,15 @@ def validate_stackup(root):
           problem = _int_problem(operand_layer, known_variable_names)
           if problem:
             errors.append(f"DerivedLayer '{label}' has invalid Operand Layer='{operand_layer}' ({problem})")
+      for operand in el.findall("Operand"):
+        operand_datatype = operand.get("Datatype")
+        if operand_datatype is not None and operand_datatype != "":
+          problem = _int_problem(operand_datatype, known_variable_names)
+          if problem:
+            errors.append(f"DerivedLayer '{label}' has invalid Operand Datatype='{operand_datatype}' ({problem})")
+          elif operand.get("Layer") in {d.get("Layer") for d in all_derived_elements}:
+            errors.append(f"DerivedLayer '{label}': the Operand with Layer='{operand.get('Layer')}' is a derived "
+                          "layer and can have no Datatype")
 
       if op_upper == "SIZE":
         if len(operands) != 1:

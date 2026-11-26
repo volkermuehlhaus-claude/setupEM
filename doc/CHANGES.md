@@ -1,144 +1,200 @@
+# Highlights
+
+The main new features of the last months, with the version that brought them:
+
+- **Stackup Editor: overlapping materials (Priority), thermal conductivity lateral and vertical, limits for stackup variables, datatype per layer** (0.21.0)
+- **setupThermal: heat flux, temperature gradient and heat flow per boundary** (0.20.0)
+- **Port walls**: calibrated ports at the layout edge (0.18.0)
+- **Split regions**: a large layout simulated in pieces and joined (0.18.0)
+- **setupThermal with the KLayout plug-in's thermal export**: powers by instance name, temperature per device (0.17.0)
+- **Edit \*.py model in place**: edit any gds2palace model script in the GUI (October 29)
+
+Each dated section below lists the new features first, then changed behaviour, then fixes.
+
 # What's New - November 24, 2026 (setupEM 0.21.0)
 
-**Field viewer: arrow length modes.** The Scaled checkbox next to Show arrows is now a dropdown with five choices: **Fixed** (all arrows the same length, direction only; the new default), **Scaled** (as before: length and color on the legend's color scale and range), and **Log 2 decades**, **Log 3 decades**, **Log 4 decades** (length on a log scale over that many decades below the largest displayed value; weaker arrows are hidden). The arrows without Scaled used to follow a log scale over up to 6 decades of the data; Log 4 decades is the closest choice now. The command line field viewer has a matching `--arrow-length fixed|scaled|log2|log3|log4`; `--arrows-scaled` still works. The default Arrow size is now 2 % of the model size (was 8 %): smaller arrows, and more of them, since their spacing follows their size.
+Needs gds2palace 0.13.0 or newer.
 
-**Fix: field viewer shards on a clipped face.** A result written body by body (Elmer thermal) or element by element (Palace) keeps its own copy of the nodes there, so each interface inside the model was drawn as two coincident faces. Hidden at full opacity otherwise, they fought with the clip's cut face when the plane lay just beside such a face, e.g. 0.4 nm above a thin metal, and the cut face showed triangular shards there. The viewer now draws only the outer surface and the cut face, which also makes redraws faster on large Palace results. It takes that surface from the volume cells only: an Elmer result also holds the boundary elements of its boundary conditions, and drawn with them, a constant-temperature boundary on the backside showed as a hole in the model's bottom face.
+## New
 
-**Fix: setupThermal stackup preview.** Metals and vias with a temperature-dependent thermal conductivity table (e.g. Activ) are labelled κ=table, like dielectrics, instead of κ=0.0.
+**Stackup Editor: overlapping materials.** New optional Priority column on the Dielectric Stack and Layers tabs: where materials overlap, the higher Priority wins.
+
+**Stackup Editor: different thermal conductivity lateral and vertical.** The **…** button in the Thermal Conductivity cell opens a dialog for a lateral and a vertical value. setupThermal's stackup preview shows both.
+
+**Limits for stackup variables.** On the Variables tab, a variable can get a minimum and maximum or a list of allowed values, and a description. The override grid on the Input Files tab shows these limits, and offers a list as a dropdown.
+
+**Stackup Editor: datatype per layer.** New optional Datatype column on the Layers tab: the GDS datatype a layer is read from, so that two layers can share one GDS layer number. The Input Files tab says which layers take their datatype from the stackup.
+
+**Field viewer: arrow length.** The Scaled checkbox next to Show arrows is now a dropdown: **Fixed** (all arrows the same length, direction only; the new default), **Scaled** (length follows the field strength, as before) and **Log 2 / 3 / 4 decades** (log scale; weaker arrows are hidden). By default the arrows are smaller, and there are more of them. Command line: `--arrow-length fixed|scaled|log2|log3|log4`.
+
+## Fixes
+
+- Field viewer: with the clip plane right next to a thin layer, the cut face showed triangular artefacts. A constant-temperature boundary on the backside could show as a hole in the model's bottom face.
+- Saving a stackup no longer sets its format version back to an older one.
+- setupThermal stackup preview: metals and vias with a temperature-dependent thermal conductivity table (e.g. Activ) are labelled κ=table, like dielectrics, instead of κ=0.0.
 
 # What's New - November 23, 2026 (setupEM 0.20.0)
 
-**setupThermal: heat flux and temperature gradient.** The Mesh tab has a new checkbox, Result output: Heat flux and temperature gradient (gds2palace 0.13.0 and newer; hidden with an older gds2palace). The result file then also holds `temperature flux` (W/m²) and `temperature grad` (K/m), which the field viewer shows as arrows. The field viewer's Field choice and colour legend show the unit of each Elmer thermal array, e.g. `temperature grad [K/m]`. They are computed per body, so they keep their jumps at material interfaces.
+## New
 
-**setupThermal: heat flow per boundary.** With gds2palace 0.13.0 and newer, the results summary lists the heat that leaves the model through each constant-temperature boundary, in W and as a share of the input power. The total always equals the input power, so it shows where the heat goes, not whether the mesh is fine enough.
+**setupThermal: heat flux and temperature gradient.** New checkbox on the Mesh tab, Result output: Heat flux and temperature gradient (needs gds2palace 0.13.0). The field viewer then shows `temperature flux` (W/m²) and `temperature grad` (K/m) as arrows, with their units in the legend.
 
-**Field viewer: clip at a layer.** For Elmer thermal results, right-click the Z clip slider for a menu of the layers: a layer clips in its middle, and the first two entries move to the top or bottom of the layer the plane is in. The layers come from the result mesh itself (its bodies, named after the stackup layers), so they match the model as it was meshed. The position line names the layer the plane is in, e.g. "in TopMetal1 (50 %)", and shows three decimals in µm, so thin layers can be told apart.
+**setupThermal: heat flow per boundary.** The results summary lists the heat that leaves the model through each constant-temperature boundary, in W and as a share of the input power (needs gds2palace 0.13.0). It shows where the heat goes, not whether the mesh is fine enough.
 
-**Fix: the temperature array of a thermal result.** The results summary, the temperature per device and the field viewer took the first array whose name contains "temp" as the temperature. With the heat flux output, that could be `temperature flux`. They now take the array named `temperature`.
+**Field viewer: clip at a layer.** For thermal results, right-click the Z clip slider for a list of the model's layers and pick the one to cut through. The position line names the layer the plane is in, e.g. "in TopMetal1 (50 %)".
+
+## Fixes
+
+- Thermal results: with the heat flux output on, the results summary and the field viewer could take `temperature flux` for the temperature.
 
 # What's New - November 22, 2026 (setupEM 0.19.1)
 
 Needs gds2palace 0.12.0 or newer (`pip install` updates it).
 
-**Tube ports in the layout preview.** gds2palace 0.12.0 builds a via port shape drawn with an area (short side more than 10 % of the long side) as a tube port: the four side walls of the shape's bounding box, as one port. This is meant for a port that stands for a real conductor, e.g. a copper pillar between two chips that are simulated as two separate models (example `more_examples/chiplet_split_at_pillars` in the gds2palace repository). The layout preview draws such a port as its four walls. Via ports drawn as lines are shown as one sheet, as before.
+## New
 
-**Status line with Palace 0.19.** Palace 0.19 writes the progress of the adaptive frequency sweep in a new form, and the status line stayed at "Port: n/a | Freq: ROM build" for the whole sweep. It now shows port and frequency progress with Palace 0.19 as with older versions, and a model with one excitation shows "Port 1/1". After a run with adaptive mesh refinement, the AMR iteration no longer drops back by one at the end (e.g. from 2/2 to 1/2).
+**Tube ports in the layout preview.** In gds2palace 0.12.0, a via port drawn as a box instead of a line is a tube port: the four side walls of the box as one port, for a port that stands for a real conductor such as a copper pillar. The layout preview draws it as four walls.
+
+## Fixes
+
+- Status line with Palace 0.19: it shows port and frequency progress again. With Palace 0.19 it stayed at "Port: n/a | Freq: ROM build" for the whole sweep.
 
 # What's New - November 19, 2026 (setupEM 0.19.0)
 
-Needs gds2palace 0.11 and gds_prepare_for_EM 1.8 or newer (`pip install` updates them). setupEM, gds2palace and gds_prepare_for_EM read layouts with gdstk now instead of gdspy, which is no longer maintained (its polygon fracturing could hang); gdspy is no longer installed with setupEM.
+Needs gds2palace 0.11 and gds_prepare_for_EM 1.8 or newer (`pip install` updates them).
 
-**The cell read when the Cellname box says "(default)".** gds2palace 0.11 reads the design cell then: the top-level cell with the largest bounding box, never KLayout's `$$$CONTEXT_INFO$$$`. Before, it read the first top-level cell, which depends on the order in the file (for some KLayout files `$$$CONTEXT_INFO$$$`). The box now names that cell, e.g. "(default: T582_BEOL_D1_300u)", so you see which cell the model and the layout preview use; it is still saved as an empty cell name. Tools > Simplify GDS takes the same cell (gds_prepare_for_EM 1.8).
+## Changed behaviour
 
-**Tools > Simplify GDS** gets gds_prepare_for_EM 1.8: merged vias are complete (before, rings of vias came out cut open and large via fields lost strips along their fracture lines), circuit blocks whose wiring is drawn as paths are no longer deleted as seal rings, and large layouts are much faster.
+- Layouts are read with gdstk instead of gdspy, which is no longer maintained and could hang.
+- The cell read when the Cellname box says "(default)" is now the top-level cell with the largest bounding box, never KLayout's `$$$CONTEXT_INFO$$$`. Before, it was the first top-level cell in the file. The box names that cell, e.g. "(default: T582_BEOL_D1_300u)".
+
+## Fixes
+
+- Tools > Simplify GDS: merged via rings and large via fields are complete now (they came out cut open), circuit blocks wired with paths are no longer deleted as seal rings, and large layouts are much faster.
 
 # What's New - November 16, 2026 (setupEM 0.18.4)
 
-**File > Save (Ctrl+S) saves the settings file you opened.** Opened from a `.simcfg` (e.g. the KLayout plug-in's export, with Open in setupEM), Ctrl+S did nothing: the action existed only for a script edited in place, and changes such as a port wall extension were lost without a question when setupEM was closed. Now:
-- Ctrl+S saves into the `.simcfg` / `.tsimcfg` the model was opened from (the menu names it). Its other entries, e.g. the plug-in's link to the model script, are kept. A script edited in place and a piece of a split region are saved as before; a new model asks for a file name.
-- Closing setupEM, opening another file or File > New asks "Save the changes to ...?" when the settings changed since the file was opened or saved.
+## Fixes
+
+- File > Save (Ctrl+S) saves the settings file you opened. In a model opened from a `.simcfg`, e.g. the KLayout plug-in's export, Ctrl+S did nothing, and changes were lost without a question when setupEM was closed. Now Ctrl+S saves into that file, and closing setupEM, opening another file or File > New asks whether to save the changes.
 
 # What's New - November 15, 2026 (setupEM 0.18.3)
 
 Needs gds2palace 0.10.7 or newer (`pip install` updates it).
 
-**`combine_extend_snp.py` 1.5** (`combine_snp`, in `scripts/`), the same file as in gds2palace 0.10.7:
-- The `_dc` Touchstone file keeps all simulated frequency points and adds only the 0 Hz point in front. Before, a result with the two low frequency points of a sweep from 0 Hz was resampled to a uniform frequency grid, so the simulated points, among them the two low ones, were replaced by interpolated values. The 0 Hz value itself is unchanged.
-- Port walls (from gds2palace 0.10.6): the line resistance of the standards is taken from the model's lowest frequency, so R and Q of models with port walls are right also below fstop/20.
+## Changed behaviour
 
-**Sweep from 0 Hz, the frequencies that replace DC** (a gds2palace 0.10.7 change, nothing to set in setupEM): with start frequency 0, gds2palace simulates two low frequency points instead of 0 Hz. These were always 10 MHz and 20 MHz. With a mesh finer than 0.5 µm (refined cellsize or a per-layer override), gds2palace 0.10.7 moves them up, to 5 MHz·µm divided by the smallest cell size and twice that (e.g. 25 and 50 MHz at 0.2 µm), because on such a fine mesh Palace could stop with "SuperLUSolver: Found a singular matrix" at 10 MHz. Models with cell sizes of 0.5 µm and more keep 10 and 20 MHz. The user's guide section on DC handling says this now.
+- Sweep from 0 Hz with a very fine mesh: with start frequency 0, two low frequency points are simulated instead of 0 Hz, normally 10 and 20 MHz. With a mesh finer than 0.5 µm they are now higher (e.g. 25 and 50 MHz at 0.2 µm), because Palace could fail at 10 MHz on such a fine mesh. Nothing to set in setupEM.
+- `CITATION.cff` and a "How to cite" section in the README; GitHub's **Cite this repository** button gives APA and BibTeX entries.
 
-**Citation:** `CITATION.cff` and a "How to cite" section in the README; GitHub's **Cite this repository** button gives APA and BibTeX entries.
+## Fixes
 
-**Internal:** the model script writer of setupEM and setupThermal is now a module without Qt (`script_writer.py`, issue #52). The written scripts are unchanged; `tests/test_script_writer.py` checks 8 recorded scripts against both the GUI and the writer.
+- Results from 0 Hz: the `_dc` Touchstone file keeps all simulated frequency points and only adds the 0 Hz point in front. Before, the simulated points were replaced by interpolated values on a uniform frequency grid.
+- Port walls: R and Q at low frequency are now right for models with a reference plane shift or a port wall extension.
 
 # What's New - November 13, 2026 (setupEM 0.18.2)
 
-**Ports and thermal objects:** Return in a text field of the form (source layer, Z0, voltage; in setupThermal layer, power, temperature) applies the settings to the selected row, like the Apply button. With no row selected, the status bar says so.
+## Changed behaviour
 
-**Command line fixes** (from issue #52):
-- A script from File > Export runs without a display: gds2palace 0.10.4 and newer builds the model without the gmsh window on Linux with no display (ssh, container, batch job). Before, the script stopped with "Can't open display". The exported script also has the switch as a comment, `# settings['no_gui'] = True`, for unattended runs where a display exists.
-- `combine_extend_snp.py` (`combine_snp`, in `scripts/`) has `--help` and `--version`, and takes the folder to search as an optional argument. Before, any option was ignored and the conversion ran. Same file as in gds2palace 0.10.4.
+- Ports and thermal objects: Return in a text field applies the settings to the selected row, like the Apply button.
+- A script from File > Export runs on Linux without a display (ssh, container, batch job). Before, it stopped with "Can't open display". `combine_snp` has `--help` and `--version`.
 
-**Scripts used on two machines** (e.g. Windows and Linux):
-- A model script edited in place whose GDS file was taken from its folder on opening (the script had the other machine's path, e.g. `/mnt/pub/...` for `P:/...`) now gets that path when it is saved or the model is created; the Code tab shows it. Before, the GUI showed the new path and the script kept the old one, and the model was made from the old one.
-- On Linux, a path with a drive letter from Windows (`D:/...`) in a script or settings file is no longer taken as relative to the script's folder (`/mnt/.../D:/...`, "Load a GDSII file and XML stackup first"). A stackup that is not found, also not next to the script, is taken from the stackups that ship with gds2palace if one has that name; the log says so.
+## Fixes
+
+Scripts used on two machines (e.g. Windows and Linux):
+- A model script edited in place can have the other machine's path to its GDS file. When setupEM finds the file in the script's folder instead, the script is now saved with that path. Before, the model was still made from the old path.
+- On Linux, a Windows path with a drive letter (`D:/...`) is no longer taken as relative to the script's folder. A stackup that is not found is taken from the stackups that ship with gds2palace, if one has that name.
 
 # What's New - November 11, 2026 (setupEM 0.18.1)
 
-**Command line fixes** (from issue #52, use without a display):
-- `--help`, `--version` and a wrong argument of `setupEM`, `setupThermal`, `stackupEditor`, `resultViewer` and `fieldViewer` no longer need a display: the arguments are read before Qt starts. All five have `--version` now.
-- `setupEM -simcfg <file>` opens a settings file of an Elmer model in Elmer mode. It opened in Palace mode unless `--elmer` was given, also when started from the KLayout plug-in.
-- A `-simcfg`, `-gdsfile` or `-xmlfile` that does not exist, or a settings file of the other application, ends `setupEM` / `setupThermal` with a message on stderr and exit code 2 instead of an empty window. In the GUI, a settings file that is gone is reported as "File not found", not as "Unknown data format".
-- Loading a settings file no longer shows a "Loaded" box: the log says "Config loaded from ...", with a GDS or stackup file that was not found at its saved path and was taken from the settings file's folder instead.
-- Opening a `.simcfg` continues with the model script only when the file is linked to it, and asks only when the two have other settings (the question lists them). Create Model links: besides `<model>.simcfg` it writes the script's name (`"model_script"`) into the `.simcfg` the model was opened from, e.g. the KLayout plug-in's export, which keeps it on the next export. A script that only reads the same GDSII file is no longer taken for the model; the log names it. New options `--continue-with-script` and `--start-from-config` answer the question on the command line.
-- `fieldViewer --screenshot` needs no display and no `QT_QPA_PLATFORM=offscreen`.
-- `python -m setupEM.join_pieces` and `python -m setupEM.thermal_results` have `--help` and `--version`, write their errors to stderr, and a missing file is a message, not a traceback.
-- The modules without a GUI (`join_pieces`, `thermal_results`, `script_model`, ...) can be imported without loading Qt.
-- User guide: Model Fit starts snp2le with the result file loaded (the text said it has to be loaded by hand).
+## Changed behaviour
 
-**Split regions, fix:**a side of the region made a port wall in setupEM after the export (e.g. with via ports of the layout on the region's edge) was a plain PEC wall in every piece and in the full check model: the wall shorted those ports, and the joined result and the full model were both wrong, in the same way. The pieces' port walls on the region's edge are now found from the ports on the edge of each piece's layout; the full model has all of the region's port walls. Where the region has a port wall but a piece none of its ports, that stretch stays PEC and now moves outward with the region's port wall extension (a length; written as `settings['wall_extension']`, needs gds2palace 0.10.1), so that all pieces and the full model have the same box.
+- `--help` and `--version` of `setupEM`, `setupThermal`, `stackupEditor`, `resultViewer` and `fieldViewer` work without a display, and so does `fieldViewer --screenshot`.
+- A file given on the command line that does not exist ends with a message and exit code 2 instead of an empty window.
+- Loading a settings file no longer shows a "Loaded" box; the log says what was loaded.
+- Opening a `.simcfg` continues with its model script only when the two belong together, and asks only when their settings differ. The new options `--continue-with-script` and `--start-from-config` answer that question on the command line.
+
+## Fixes
+
+- `setupEM -simcfg <file>` opens a settings file of an Elmer model in Elmer mode.
+- Split regions: when a side of the region was made a port wall in setupEM after the export, the pieces had a plain PEC wall there, which shorted the ports on that edge. The joined result and the full check model were both wrong. Needs gds2palace 0.10.1.
 
 # What's New - November 10, 2026 (setupEM 0.18.0)
 
-**De-embedded results shown**: View S-Parameters lists the `_deembedded` files from the start and opens with the raw result and its `_deembedded` result together. Model Fit fits the calibrated result (`_dc_deembedded`, else `_deembedded`) of a model with port walls or a moved reference plane; the raw result still holds the uncalibrated gap ports.
+Needs gds2palace 0.10.0 or newer.
 
-**Port wall fixes:** a model script edited in place now gives back its port wall extension, reference plane shift and de-embedding length (they were written but not read, so the next session started with 0). Two port walls no longer make 0 the default oversize and air (the other sides became overrides and the default fields changed nothing); a default field that sets no side any more is greyed out. The status line under the log names the solve of a port wall run (calibration standard k/n, reused, or the model). The Port walls status says OK or the warnings only; the layout preview draws an extended feed and its length, a symbol per box side, and labels without the side names.
+## New
 
-**Split regions**: a `.simcfg` from the KLayout plug-in's Export All of a split region (several EM region boxes) opens as a set of pieces. The Models list shows the pieces (and an unticked full check model). The settings (frequencies, mesh, solver, boundaries) are those of the whole region, shared by all pieces; a piece's box sides follow from the region's (a cut is a port wall, a stretch of a port wall without the piece's ports is PEC at the layout edge) and are locked; a piece can have its own mesh settings (Mesh tab, "Own mesh settings for p2"). Start Simulation runs the pieces without a gmsh window and does not mesh a piece again whose mesh is current; View S-Parameters shows the joined result first, and Model Fit fits it. The port wall extension and reference plane shift are the region's, on its outer sides only (none on a cut). An export written on another machine opens with its model folders, layouts and stackup found here. Start Simulation creates and runs the ticked pieces one after another and joins their results at the cuts (`join_pieces.py`, also `python -m setupEM.join_pieces <name>.simcfg`) into `<name>_deembedded.sNp` of the whole region. A piece whose layout fingerprint, settings and gds2palace version are unchanged since its last run is reused (`piece.key` in its model folder); **Run unchanged pieces too** overrides. Create Model keeps a settings file's own keys of the layout tool (piece name, fingerprint) when it rewrites the file.
+**Port walls: calibrated ports at the layout edge.**
+- **Mesh and Boundaries > Advanced...** offers **Port wall** for each side: a PEC wall at the layout edge, which is the ground of the ports there. These ports are then removed from the result by calibration.
+- The Ports tab has a **De-embedding** column and a **Port walls** group. **Check port walls** reads the layout without meshing and lists, per port wall, its ports, the valid frequency range and any warnings.
+- **Reference plane shift** moves the reference plane into the layout, and **Extension (µm)** moves a port wall outward.
+- The layout preview shows the simulation box, the port walls and the reference planes.
 
-The calibration standards of a port wall are no longer listed as models of their own in **Models** on the Create Model tab (they share the model's `_data` folder and its `run_sim` solves them before the model); Start Simulation ran `run_sim` once per listed row, and **Preview** stopped after the first standard with the model itself unbuilt. For a script that creates several models, the question about results of a previous simulation is now asked once before the first model starts, not between two models.
+**Split regions.** A `.simcfg` from the KLayout plug-in's Export All of a split region (several EM region boxes) opens as a set of pieces.
+- The Models list shows the pieces. Frequencies, mesh, solver and boundaries are set once for the whole region; a piece can have its own mesh settings.
+- Start Simulation runs the pieces one after another and joins their results into one S-parameter file of the whole region. A piece that has not changed since its last run is not simulated again.
+- View S-Parameters and Model Fit use the joined result.
 
-**Port walls**: calibrated ports at the layout edge (needs gds2palace 0.10.0). **Mesh and Boundaries > Advanced...** offers **Port wall** for xmin, xmax, ymin and ymax: PEC at the layout edge, oversize and air 0 and locked, written as `'PORTWALL'` in `settings['boundary']`. The Ports tab gets a **De-embedding** column (calibrated at a port wall, or the estimated port inductance), locks the direction of ports on a port wall, and a **Port walls** group with **Check port walls** (reads the layout, no meshing): per port wall its ports, ground at the cut, D, the standards' lengths, the valid frequency range, warnings or the error, and the **Reference plane shift** (`settings['reference_plane_shift']`). A port on an edge that is not a port wall gets the question whether to make that side one. Create Model runs the check when a port wall is set and stops on an error. An **Extension (µm)** per port wall (`auto` or a length, `settings['port_wall_extension']`) moves the port wall outward. The Ports tab runs the check by itself when a port wall has no result yet; the panel splits with the port list by a divider; warnings show with an icon and the start of their text. The layout preview shows the reference plane, where the uniform feed ends, and an extension, and fits the view to the layout and its box. setupEM and setupThermal keep the window's size and position (and the Ports tab's divider) from one session to the next. A via port on a port wall is listed as "via port used as a gap port on <line metal>" (gds2palace converts it when writing the model). The layout preview draws the simulation box: one frame, not to scale, with a label per side (a click opens the box sides dialog), a port wall as a white line. `combine_extend_snp.py` in `src/scripts` is synced with gds2palace.
+**De-embedded results shown.** View S-Parameters opens the raw result together with its `_deembedded` result. Model Fit uses the de-embedded result of a model with port walls.
 
-The dielectric oversize can be set per side (xmin, xmax, ymin, ymax): in setupEM with **Advanced...** next to **Boundary conditions**, in setupThermal with **Advanced...** next to the oversize. It is written to the model script as a list `settings['margin'] = [xmin, xmax, ymin, ymax]`, and read from there and from settings files. Needs gds2palace 0.10.0. A negative oversize is no longer accepted.
+**Dielectric oversize per side** (xmin, xmax, ymin, ymax): with **Advanced...** next to **Boundary conditions** in setupEM, and next to the oversize in setupThermal.
 
-Bundled IHP stackups (from gds2palace 0.10.0): heat source target layers `HEAT_TRANSISTOR` and `HEAT_RESISTOR`, for thermal models. Nothing is drawn on them, so EM models are unchanged.
+## Changed behaviour
+
+- The bundled IHP stackups have the heat source target layers `HEAT_TRANSISTOR` and `HEAT_RESISTOR`, for thermal models. EM models are unchanged.
+- setupEM and setupThermal remember the window's size and position.
+- The calibration standards of a port wall are no longer listed as models of their own on the Create Model tab.
 
 # What's New - November 5, 2026 (setupEM 0.17.0)
 
-setupThermal works with the thermal export of the KLayout plug-in klayout_em_export (one heat source per transistor and resistor, with the schematic instance names from LVS in `<layout>_thermalmap.json`):
-- **Load powers...** below the Thermal Sources + Boundaries list sets the powers from a file of your circuit simulation, by instance name. Needs gds2palace with `util_thermal_map`.
-- The list names the device of each heat source (instance and pcell) and the region outline. Heat source layers above 299 count as present in the layout.
-- The export's placeholder boundary (constant temperature on the region outline, no target layer) is listed as "region outline: choose the target layer"; Create Model refuses a boundary without a target layer.
-- **Temperature per device**: after a run, the log lists the average and peak temperature of each heat source and their rise above the fixed temperature, and `<model>_temperatures.csv` next to the model script has the same per instance. Command line: `python -m setupEM.thermal_results <model>.tsimcfg`.
+## New
 
-**Changes:**
-- **Create Model also writes the settings file**, `<model>.simcfg` / `<model>.tsimcfg` next to the model script (as Save Config would), so that a layout tool's next export keeps your settings and the KLayout plug-in finds the layout's stackup, datatypes and thermal objects. It overwrites only a settings file of the same application. Opening a `.simcfg` that Create Model wrote with a script continues that script without asking.
-- The Mesh tab's "Mesh refinement at metal edges" is now **"Mesh size at heat sources"**, which is what it sets in a thermal model (metal edges are not refined there).
+**setupThermal works with the thermal export of the KLayout plug-in klayout_em_export**, which makes one heat source per transistor and resistor, with the schematic instance names from LVS.
+- **Load powers...** below the Thermal Sources + Boundaries list sets the powers from a file of your circuit simulation, by instance name.
+- The list names the device of each heat source (instance and pcell).
+- **Temperature per device:** after a run, the log lists the average and peak temperature of each heat source, and `<model>_temperatures.csv` has the same per instance. Command line: `python -m setupEM.thermal_results <model>.tsimcfg`.
 
-**Fixes:**
-- ElmerSolver no longer hangs at start on a Linux desktop where an X display does not accept connections ("Authorization required, but no authorization protocol specified"): setupThermal starts it with hwloc's OpenGL plug-in off (`HWLOC_COMPONENTS=-gl`, unless you set that variable).
+## Changed behaviour
+
+- Create Model also writes the settings file, `<model>.simcfg` / `<model>.tsimcfg`, next to the model script, so that a layout tool's next export keeps your settings.
+- Create Model refuses a constant-temperature boundary without a target layer, such as the export's placeholder on the region outline.
+- The Mesh tab's "Mesh refinement at metal edges" is now **"Mesh size at heat sources"** in setupThermal, which is what it sets in a thermal model.
+
+## Fixes
+
+- ElmerSolver no longer hangs at start on a Linux desktop where an X display does not accept connections ("Authorization required, but no authorization protocol specified").
 
 # What's New - October 31, 2026 (setupEM 0.16.0)
 
-**After a new export from the layout tool** (setupEM): a layout tool such as the KLayout plug-in klayout_em_export writes the GDSII file and a `.simcfg`, and writes both again when the layout changes. The settings you made in setupEM since are only in your model script, because Create Model writes the script, not the `.simcfg`. setupEM now takes from such a `.simcfg` only the ports, GDSII file, stackup, cell and purpose, and keeps everything else as in the script:
-- Opening a `.simcfg` when a model script for the same GDSII file exists next to it asks whether to **Continue with the script** (edit it in place, ports and layout settings from the `.simcfg`) or **Start from the config**.
-- Loading a `.simcfg` while editing a script in place lists the ports and layout settings that differ and asks whether to **Update the script from it** or **Open it as a new model**. Before, loading it ended editing in place and replaced all settings.
-- While editing a script in place, the bar below the menu points out a newer `.simcfg` of the same GDSII file with other ports or layout settings, with **Update from it**.
+Needs gds2palace 0.9.3 or newer: several shapes on one port layer (e.g. a transistor terminal on several fingers) make one port with several elements.
 
-**Load Config, Import from \*.py model and Edit \*.py model in place** start in the folder of the model you are working on (the config or script loaded last, else the GDSII file). Before, they started in the folder setupEM was launched from, e.g. KLayout's when the KLayout plug-in opened setupEM.
+## New
 
-setupEM 0.16.0 needs gds2palace 0.9.3 or later: a layout with several shapes on one port layer (e.g. a transistor terminal on several fingers, from the KLayout plug-in) makes one port with several elements there; older gds2palace versions used only the last shape.
+**After a new export from the layout tool.** A layout tool such as the KLayout plug-in klayout_em_export writes the GDSII file and a `.simcfg` again when the layout changes. setupEM now takes only the ports, GDSII file, stackup, cell and purpose from that `.simcfg`, and keeps all your other settings from the model script. It asks whether to continue with the script or to start from the config, and it points out a newer `.simcfg` while you edit a script.
 
-**Fixes:**
-- `scripts/combine_extend_snp.py` is the same as gds2palace's again. It had missed three fixes made there in September: the port impedance lookup for AMR iterations, the missing `.sNp` extension for a model name that contains a dot, and Touchstone output after an interrupted Palace run.
-- On Linux with GNOME (Wayland), the mouse cursor no longer keeps spinning for about 10 seconds after setupEM starts. setupEM briefly opened three invisible windows while building the Input Files tab, and GNOME waited for them to finish starting.
-- Via ports with direction `-Z` keep their from and to layers. Before, loading a `.simcfg` dropped them, and Create Model wrote such a port as an in-plane port.
-- An incomplete port (direction and layers that don't fit, e.g. from a `.simcfg` written by another tool) gives a warning in the Ports tab. Before, gds2palace exited and setupEM closed. A lowercase `z` counts as a via port too.
-- `combine_extend_snp` (Touchstone output after a Palace run) handles ports with several elements (several shapes on one port layer, gds2palace 0.9.3): one Z0 per port in the option line, and the elements' port inductances combined in parallel for de-embedding. Before, the last element overwrote the others.
+## Changed behaviour
+
+- Load Config, Import from \*.py model and Edit \*.py model in place start in the folder of the model you are working on.
+
+## Fixes
+
+- On Linux with GNOME (Wayland), the mouse cursor no longer keeps spinning for about 10 seconds after setupEM starts.
+- Via ports with direction `-Z` keep their from and to layers when a `.simcfg` is loaded.
+- An incomplete port, e.g. from a `.simcfg` written by another tool, gives a warning in the Ports tab instead of closing setupEM.
+- Touchstone output (`combine_snp`): fixes for results after an interrupted Palace run, model names that contain a dot, and ports with several elements.
 
 # What's New - October 29, 2026
 
-**File > Edit \*.py model in place** (new, setupEM and setupThermal): edits a gds2palace model script directly, e.g. one from the gds2palace MCP server, an example or your own code. Create Model and **File > Save** write only the values you change; the script's loops, comments and custom code stay. Settings the script computes itself are greyed out. A script that builds several models (a parameter sweep) lists them on the Create Model tab, and Start Simulation runs the ticked ones. After importing a script that setupEM didn't write, a bar below the menu offers **Edit in place instead**.
+## New
 
-**File > Import from \*.py model** now runs a gds2palace script to read it, without reading the GDSII file and without meshing. The run stops where the script builds the model, so its solver start never runs. The import now gets exactly what gds2palace would get, also values and ports the script computes. Before, ports made in a loop (as in many gds2palace MCP scripts) were left out, and the imported model was missing them. The script's own code before building the model does run, e.g. a script that generates its GDSII file writes it. If the run fails, the import reads the script text as before, and the bar below the menu says why.
+**File > Edit \*.py model in place** (setupEM and setupThermal): edits a gds2palace model script directly, e.g. one from the gds2palace MCP server, an example or your own code. Only the values you change are written; the script's loops, comments and custom code stay. A script that builds several models lists them on the Create Model tab.
 
-**File menu:** the three Recent submenus are now one **Open Recent** submenu, with sections for configs, imported \*.py models and \*.py models edited in place. A file reopens the way it was opened. The menu is grouped as open, recent, save, preferences. **Load Default Config** and **Save as Default Config** are removed: defaults for new models are set in **File > Preferences**. An existing `default.simcfg` / `default.tsimcfg` in your home directory still opens with **Load Config**, and **Save Config** can write it.
+## Changed behaviour
 
-Import and edit in place now read a stackup given as `utilities.get_stackup_path("SG13G2_FEM_200um.xml")`, the way the gds2palace MCP server writes it (needs gds2palace 0.9.1 or later). Before, an imported model using that syntax had no stackup file.
-
-
+- File > Import from \*.py model now also gets the values and ports that a script computes, e.g. ports made in a loop. It runs the script up to the point where the model would be built, without meshing.
+- File menu: one **Open Recent** submenu instead of three. **Load Default Config** and **Save as Default Config** are removed: set the defaults for new models in **File > Preferences**.
+- Import and edit in place read a stackup given as `utilities.get_stackup_path("SG13G2_FEM_200um.xml")`, the way the gds2palace MCP server writes it (needs gds2palace 0.9.1 or later).
 
 # What's New - October 21, 2026
 
