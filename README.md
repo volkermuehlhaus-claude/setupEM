@@ -21,7 +21,9 @@ https://www.youtube.com/playlist?list=PLQ6NbZzeLAVU
 
 [gds2palace](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2) enables an **RFIC FEM simulation** workflow where GDSII layout files are simulated using the [Palace FEM solver by AWS](https://awslabs.github.io/palace/stable/). setupEM provides a Python-based **graphical user interface** to configure and run gds2palace, instead of creating the simulation model code manually, and also start simulation in Palace.
 
-When you install setupEM, the gds2palace workflow is automatically installed in the background. This enables **creating a simulation model** for AWS Palace. To actually **run the simulation**, you need to have AWS Palace installed, as described below. Palace installation is **not** done automatically!
+When you install setupEM, the gds2palace workflow is automatically installed in the background. This enables **creating a simulation model** for AWS Palace. To actually **run the simulation**, you need to have AWS Palace installed. The install scripts described under "Quick install" below install setupEM, gds2palace and Palace in one step. `pip install setupEM` alone does **not** install Palace.
+
+setupEM is one of several tools for EM simulation of IHP SG13G2 layouts. For an overview, see [Which tool for what](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/blob/main/doc/toolchain_overview.md).
 
 The setupEM package now includes setupThermal also, which is the equivalent of setupEM for thermal models using [Elmer](https://www.elmerfem.org/blog/). To run a thermal model in Elmer, you need to have Elmer installed. Elmer installation is **not** done automatically!
 
@@ -32,6 +34,15 @@ Two more external tools are used by parts of the workflow, and are not installed
 - [ParaView](https://www.paraview.org/) — optional, for viewing field-dump output (Palace/Elmer EM) and Elmer thermal result files with ParaView itself instead of the built-in 3D field viewer (see [3D Field Viewer](#3d-field-viewer) below). Not required: the built-in viewer needs nothing extra installed and is the default.
 - An MPI implementation — only needed for multi-process Elmer runs (the Elmer solver settings' multithreading option). Use OpenMPI or MPICH on Linux/macOS; on Windows, install [Microsoft MPI](https://learn.microsoft.com/en-us/message-passing-interface/microsoft-mpi) (setupEM checks for this and shows a download link if it's missing).
 
+
+## Quick install
+
+One script installs everything you need: a Python environment with setupEM and gds2palace, the AWS Palace solver as a ready-made container image, and the scripts that run a Palace model. No clone of a repository is needed.
+
+- **Linux:** download and run `install_gds2palace.sh`, see [Installing on Linux](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/tree/main/scripts/install_linux).
+- **Windows:** download and run `install_gds2palace.bat`, see [Installing on Windows + WSL](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/tree/main/scripts/install_windows). setupEM and gds2palace run on Windows, the Palace solver runs in WSL.
+
+Then open a new terminal and type `setupEM`. The two chapters below describe the installation by hand: the Palace solver, and setupEM with pip.
 
 ## Installing the AWS Palace FEM solver engine
 **setupEM** creates and runs simulation models for the AWS Palace FEM solver engine. The underlying solver **AWS Palace** can be installed in multiple ways. For a smooth interaction with the gds2palace workflow, it is recommended to create some scripts that help running the model and convert the Palace results to SnP Touchstone files.

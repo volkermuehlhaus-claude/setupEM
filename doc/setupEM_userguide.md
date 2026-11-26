@@ -75,6 +75,8 @@ For the underlying workflow concepts (settings dictionary, port semantics, mesh 
 
 ## Installation
 
+**In one step:** the install scripts of gds2palace create a Python environment with setupEM and gds2palace, install the AWS Palace solver as a ready-made container image and set up the scripts that run a Palace model. There is one for [Linux](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/tree/main/scripts/install_linux) and one for [Windows with WSL](https://github.com/VolkerMuehlhaus/gds2palace_ihp_sg13g2/tree/main/scripts/install_windows), where setupEM runs on Windows and Palace in WSL. With them, you can skip the next two sections; Elmer for thermal models is still a separate installation.
+
 ### Installing setupEM
 
 As a Python program using the Qt library, setupEM and setupThermal work on Linux, Windows, macOS and other platforms. Activate the Python venv you want to install into, then:
