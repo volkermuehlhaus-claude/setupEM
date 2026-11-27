@@ -13,7 +13,7 @@ authors = [
 ]
 dependencies = [
     "gds2palace>=0.13.0",
-    "gds_prepare_for_EM>=1.8.0",
+    "gds_prepare_for_EM>=1.9.0",
     "PySide6",
     "shiboken6",
     "scipy",

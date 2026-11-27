@@ -7031,7 +7031,8 @@ class MainWindowBase(QMainWindow):
             return None
         layernum = int(dielectric.gdsboundary)
         metal = self.metals_list.getbylayernumber(layernum) if self.metals_list is not None else None
-        return metal.name if metal is not None else f"Layer {layernum}"
+        # the same name as the layout preview gives a layer without a stackup layer (68/5 with a datatype)
+        return metal.name if metal is not None else f"Layer {stackup_reader.layer_text(layernum)}"
 
     def _forward_layout_selection_to_stackup(self, layernum):
         """Slot for LayoutPreviewWindow.layerSelected - mirrors a layer

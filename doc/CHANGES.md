@@ -35,6 +35,7 @@ Needs gds2palace 0.13.0 or newer.
 - Saving a stackup no longer sets its format version back to an older one.
 - Saving a stackup: a comment in the Layers section stays in front of its layer when the layers are sorted. Before, all comments moved to the top of the section.
 - Saving a stackup: the comment about format 3.2 names the features the file uses, e.g. only the limits of variables. Before, it always named thermal conductivity per direction and Priority. The file now ends with a newline.
+- Stackup layers with a Datatype: Simplify GDS now simplifies them, on their datatype only (before, they were left out without a message), and "Exclude layers" also takes layer/datatype, e.g. `68/20`. The layout preview counts their polygons for its large-layout warning and shows them as `68/20` in tooltips. Needs gds_prepare_for_EM 1.9.0.
 - Bundled SG13G2 stackups: the same files as in gds2palace again (`total_thickness` has a minimum of 25 µm).
 - setupThermal stackup preview: metals and vias with a temperature-dependent thermal conductivity table (e.g. Activ) are labelled κ=table, like dielectrics, instead of κ=0.0.
 

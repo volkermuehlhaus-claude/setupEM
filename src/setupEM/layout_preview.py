@@ -1280,12 +1280,13 @@ class LayoutPreviewWindow(QDialog):
                     name = metal.name
                 else:
                     color = QColor(DEFAULT_LAYER_COLOR)
-                    name = f"Layer {layernum}"
+                    name = f"Layer {stackup_reader.layer_text(layernum)}"
                 self._layer_layernum_by_name[name] = layernum
 
                 group = _VisibilityGroup()
 
-                tooltip = f"{name} [{layernum}]"
+                # 134, or 68/20 for a stackup layer with a Datatype (its layer id is not a GDS layer number)
+                tooltip = f"{name} [{stackup_reader.layer_text(layernum)}]"
                 for poly in polys:
                     item = QGraphicsPolygonItem(self._polygon_points(poly))
                     item.setBrush(QBrush(color))

@@ -32,7 +32,8 @@ entirely from the XML stackup already parsed into MainWindow.metals_list
 """
 
 import os, io, contextlib, traceback
-from gds_simplify_for_em import run_simplify, layers_from_stackup
+from gds_simplify_for_em import run_simplify, layers_from_stackup, layer_label
+from gds_geometry_utils import layer_spec
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
     QPushButton, QPlainTextEdit, QFileDialog, QMessageBox, QCheckBox,
@@ -99,16 +100,35 @@ def _port_layer_range(app_name):
 
 
 def _parse_layer_list(text):
-    """Blank -> empty set. Otherwise a set of ints from a comma-separated
-    list of GDS layer numbers, or raises ValueError."""
+    """Blank -> empty set. Otherwise a set from a comma-separated list of GDS
+    layers, or raises ValueError. An entry is a layer number (int: every
+    datatype of that number) or layer/datatype, e.g. 68/20 (a (layer, datatype)
+    pair: that datatype only, for a stackup layer with a Datatype)."""
     text = text.strip()
     if text == "":
         return set()
     try:
-        return {int(part.strip()) for part in text.split(",") if part.strip() != ""}
+        entries = set()
+        for part in text.split(","):
+            part = part.strip()
+            if part == "":
+                continue
+            if "/" in part:
+                layer, datatype = part.split("/")
+                entries.add((int(layer), int(datatype)))
+            else:
+                entries.add(int(part))
+        return entries
     except ValueError:
         raise ValueError(f"'Layers excluded from simplification' is not a valid "
-                          f"comma-separated list of layer numbers: {text!r}")
+                          f"comma-separated list of layers (e.g. 10,11 or 68/20): {text!r}")
+
+
+def _is_excluded(layer, excluded_layers):
+    """layer: an entry of layers_from_stackup() (a layer number, or (layer, datatype) for a stackup layer with a
+    Datatype). Excluded by its layer number, or by its own layer/datatype."""
+    number, datatype = layer_spec(layer)
+    return number in excluded_layers or (number, datatype) in excluded_layers
 
 
 class SimplifyGdsDialog(QDialog):
@@ -148,7 +168,7 @@ class SimplifyGdsDialog(QDialog):
             return label
 
         metal_layers_tip = (
-            f"Metal layers considered: {', '.join(str(n) for n in self._metal_layers) or '(none)'}\n"
+            f"Metal layers considered: {', '.join(layer_label(n) for n in self._metal_layers) or '(none)'}\n"
             f"Port/marker layers {port_layer_min}-{port_layer_max} are always passed through untouched."
         )
 
@@ -397,7 +417,7 @@ class SimplifyGdsDialog(QDialog):
             QMessageBox.warning(self, "Error", str(e))
             return
 
-        layers_to_process = [l for l in self._metal_layers if l not in excluded_layers]
+        layers_to_process = [l for l in self._metal_layers if not _is_excluded(l, excluded_layers)]
         if not layers_to_process:
             QMessageBox.warning(self, "Error", "No metal layers left to process - "
                                                 "check 'Layers excluded from simplification'")
@@ -428,7 +448,7 @@ class SimplifyGdsDialog(QDialog):
                     do_floating=do_floating, fill_minsize=fill_minsize,
                     fill_maxsize=fill_maxsize, fill_mincount=fill_mincount,
                     do_merge=do_merge,
-                    via_layers=[v for v in self._via_layers if v[0] not in excluded_layers],
+                    via_layers=[v for v in self._via_layers if not _is_excluded(v[0], excluded_layers)],
                     via_merge_size=via_merge_size)
         except (Exception, SystemExit):
             printed = captured_stdout.getvalue().strip()
