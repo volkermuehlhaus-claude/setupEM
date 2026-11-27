@@ -134,6 +134,23 @@ def test_placeholder_boundary(app, monkeypatch, export):
     win._config_baseline = None
     win.close()
 
+def test_layer_used_twice_stops_create_model(app, monkeypatch, export):
+    """gds2palace finds a heat source or boundary by its GDSII layer: of two on one layer, only one would be built"""
+    cfg = json.loads(export.read_text())
+    cfg["thermal"].append({"source_layernum": 201, "target_layername": "Metal1", "type": "constanttemp", "temp": 300.0})
+    export.write_text(json.dumps(cfg))
+    win, setupthermal, shown = open_window(monkeypatch, export)
+    started = []
+    monkeypatch.setattr(win.create_model_tab.process, "start", lambda *a: started.append(a))
+    shown.clear()
+    win.create_model_tab.create_model()
+    assert not started and len(shown) == 1
+    assert f"Rows {len(LAYERS) + 1} and {len(LAYERS) + 2} both use GDSII layer 201" in shown[0]
+    win._script_dirty = False
+    win._config_baseline = None
+    win.close()
+
+
 def test_elmer_environment(monkeypatch):
     """ElmerSolver runs with hwloc's GL plug-in off (it hangs probing a display that does not accept connections),
     unless HWLOC_COMPONENTS is set already."""

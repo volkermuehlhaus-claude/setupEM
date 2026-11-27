@@ -562,6 +562,8 @@ class PortsTab(QWidget):
 
         # clear previous thermal objects
         thermal_objects.objects.clear()
+        thermal_objects.layers.clear()
+        rows_by_layer = {}  # GDSII layer -> table row (1-based) that uses it
         # loop over rows in ports table
         for row in range(self.thermalobjectslist.rowCount()):
             testvalue = self.thermalobjectslist.item(row, 0)
@@ -581,6 +583,16 @@ class PortsTab(QWidget):
                     except Exception:
                         QMessageBox.warning(self, "Error", "Invalid input in row " + str(row+1))
                         return False
+                    # a heat source or boundary is found by its GDSII layer: a second one on the same layer would
+                    # be left out of the model
+                    if source_layer_num in rows_by_layer:
+                        QMessageBox.warning(self, "Error",
+                                            f"Rows {rows_by_layer[source_layer_num]} and {row+1} both use GDSII layer "
+                                            f"{source_layer_num}.\n\nEach heat source and each constant temperature "
+                                            "boundary needs its own GDSII layer. Draw the second shape on another "
+                                            "layer, also where both have the same outline.")
+                        return False
+                    rows_by_layer[source_layer_num] = row + 1
                     # create port
                     if "SOURCE" in thermaltype.upper():
                         thermal_objects.add_heatsource(simulation_setup.heatsource(
@@ -1038,7 +1050,9 @@ class CreateModelTab(CreateModelTabBase):
     def create_model(self):
         # Request all tabs to save values again,
         # which can do some update to saved_values
-        self.MainWindow.save_all_tabs()
+        if not self.MainWindow.save_all_tabs():
+            # a tab has shown what is wrong; a model from half-read input would e.g. lack a heat source or boundary
+            return
 
         # a boundary without a target layer (the placeholder of a thermal export) has no height to mesh at
         missing_target = [o.source_layernum for o in thermal_objects.objects

@@ -38,6 +38,7 @@ Needs gds2palace 0.13.0 or newer.
 - Stackup layers with a Datatype: Simplify GDS now simplifies them, on their datatype only (before, they were left out without a message), and "Exclude layers" also takes layer/datatype, e.g. `68/20`. The layout preview counts their polygons for its large-layout warning and shows them as `68/20` in tooltips. Needs gds_prepare_for_EM 1.9.0.
 - Bundled SG13G2 stackups: the same files as in gds2palace again (`total_thickness` has a minimum of 25 µm).
 - setupThermal stackup preview: metals and vias with a temperature-dependent thermal conductivity table (e.g. Activ) are labelled κ=table, like dielectrics, instead of κ=0.0.
+- setupThermal: two heat sources or boundaries on the same GDSII layer are now refused with a message that names the two rows. Before, the model was built with only one of them. Create Model also stops when a tab reports invalid input, instead of building the model from the part that could be read.
 
 # What's New - November 23, 2026 (setupEM 0.20.0)
 
