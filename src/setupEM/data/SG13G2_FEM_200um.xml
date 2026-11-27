@@ -8,7 +8,7 @@
   <!-- Stackup format 3.2 features used (allowed values of Variables) require gds2palace util_stackup_reader.py version 1.11.0 or newer -->
   <Variables>
     <Variable Name="air_thickness" Value="200.0000" />
-    <Variable Name="total_thickness" Value="200.0000" Min="25" />
+    <Variable Name="total_thickness" Value="200.0000" Min="25" Description="total thickness incl. BEOL" />
     <Variable Name="bulk_thickness" Value="=total_thickness-19.88" />
   </Variables>
   <Materials>
