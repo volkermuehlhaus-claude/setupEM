@@ -39,6 +39,7 @@ Needs gds2palace 0.13.0 or newer.
 - Bundled SG13G2 stackups: the same files as in gds2palace again (`total_thickness` has a minimum of 25 µm).
 - setupThermal stackup preview: metals and vias with a temperature-dependent thermal conductivity table (e.g. Activ) are labelled κ=table, like dielectrics, instead of κ=0.0.
 - setupThermal: two heat sources or boundaries on the same GDSII layer are now refused with a message that names the two rows. Before, the model was built with only one of them. Create Model also stops when a tab reports invalid input, instead of building the model from the part that could be read.
+- setupThermal: the temperature per heat source (the table after a run and the temperatures CSV) now also works for models with gds2palace's extruded thermal mesh (`thermal_mesh = 'extruded'`, prisms instead of tetrahedra). Before, it showed no heat source temperatures for such a model.
 
 # What's New - November 23, 2026 (setupEM 0.20.0)
 

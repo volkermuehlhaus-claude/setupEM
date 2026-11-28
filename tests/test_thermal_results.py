@@ -95,6 +95,20 @@ def test_source_temperatures(tmp_path):
     assert t_mean == pytest.approx(T_MEAN) and t_max == 400.0
 
 
+def test_source_temperatures_of_a_prism_mesh(tmp_path, monkeypatch):
+    """gds2palace's extruded thermal mesh (thermal_mesh='extruded') has prisms (VTK 13), not tetrahedra"""
+    prism = np.array([[0, 0, 0], [2, 0, 0], [0, 2, 0], [0, 0, 1], [2, 0, 1], [0, 2, 1]], dtype=np.float64)
+    monkeypatch.setattr(sys.modules[__name__], "POINTS", np.vstack([prism, prism + [5, 0, 0]]) * 1e-6)
+    # source_205: 300 K at the bottom, 330 K at the top, linear in between: the mean is 315 K
+    monkeypatch.setattr(sys.modules[__name__], "TEMPERATURE", np.array([300.0] * 3 + [330.0] * 3 + [305.0] * 6))
+    monkeypatch.setattr(sys.modules[__name__], "CELLS", [(13, [0, 1, 2, 3, 4, 5], 3), (13, [6, 7, 8, 9, 10, 11], 1),
+                                                         (5, [3, 4, 5], 3)])
+    run = str(tmp_path / "run")
+    make_result(run)
+    t_mean, t_max = thermal_results.source_temperatures(run)[205]
+    assert t_mean == pytest.approx(315.0) and t_max == 330.0
+
+
 def test_temperature_key_is_not_flux_or_gradient():
     keys = ["temperature flux", "temperature grad", "temperature loads", "temperature", "GeometryIds"]
     assert thermal_results.temperature_key(keys) == "temperature"

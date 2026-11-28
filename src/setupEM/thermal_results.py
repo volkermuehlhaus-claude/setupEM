@@ -344,6 +344,9 @@ def format_heatflow(heatflow):
 # ---------- temperature per heat source / device ----------
 
 _VTK_TETRAHEDRA = (10, 24)      # linear and quadratic tetrahedron; the volume comes from the 4 corner nodes
+_VTK_WEDGES = (13, 26)          # linear and quadratic prism (gds2palace thermal_mesh='extruded'): 6 corner nodes
+# a prism (corners 0-2 at the bottom, 3-5 above them) is the union of these three tetrahedra
+_WEDGE_AS_TETRAHEDRA = np.array([[0, 1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5]])
 _SOURCE_PREFIX = "source_"      # gds2palace names the body of a heat source source_<GDS layer>
 _CONSTTEMP_PREFIX = "constanttemp_"     # ... and a constant-temperature boundary constanttemp_<GDS layer>
 
@@ -365,23 +368,40 @@ def read_body_names(run_path):
     return names
 
 
+def _as_tetrahedra(corners, body, nodes):
+    """corner node indices (n x 4) and body ids of volume cells with `nodes` corners: tetrahedra as they are, prisms
+    split into three tetrahedra each"""
+    if nodes == 4:
+        return corners[:, :4], body
+    return (corners[:, :6][:, _WEDGE_AS_TETRAHEDRA].reshape(-1, 4),
+            np.repeat(np.asarray(body).ravel(), len(_WEDGE_AS_TETRAHEDRA)))
+
+
 def _tetrahedra(path):
     """(points, temperature per point, corner node indices per tetrahedron (n x 4), body id per tetrahedron) of
-    an Elmer result .vtu. Elmer's file also holds the boundary elements; only the tetrahedra are volume."""
+    an Elmer result .vtu. Elmer's file also holds the boundary elements; only the tetrahedra are volume. A mesh of
+    prisms (gds2palace's extruded thermal mesh) comes back as tetrahedra, three per prism."""
     try:
         mesh = meshio.read(path)
         points, point_data = mesh.points, mesh.point_data
-        blocks = [(block.data[:, :4], ids) for block, ids in zip(mesh.cells, mesh.cell_data.get("GeometryIds", []))
-                  if block.type in ("tetra", "tetra10")]
+        corner_count = {"tetra": 4, "tetra10": 4, "wedge": 6, "wedge15": 6}
+        blocks = [_as_tetrahedra(block.data, np.asarray(ids).ravel(), corner_count[block.type])
+                  for block, ids in zip(mesh.cells, mesh.cell_data.get("GeometryIds", []))
+                  if block.type in corner_count]
         corners = np.vstack([b for b, _ in blocks]) if blocks else np.zeros((0, 4), int)
-        body = np.concatenate([np.asarray(i).ravel() for _, i in blocks]) if blocks else np.zeros(0, int)
+        body = np.concatenate([i for _, i in blocks]) if blocks else np.zeros(0, int)
     except Exception:
         # Elmer's raw appended .vtu, which meshio cannot read (see _read_raw_appended_vtu)
         points, point_data, (connectivity, offsets, types), cell_data = _read_raw_appended_vtu(path, with_cells=True)
         starts = np.concatenate(([0], offsets[:-1]))
-        tetra = np.isin(types, _VTK_TETRAHEDRA)
-        corners = connectivity[starts[tetra][:, None] + np.arange(4)]
-        body = cell_data["GeometryIds"][tetra]
+        parts = []
+        for vtk_types, nodes in ((_VTK_TETRAHEDRA, 4), (_VTK_WEDGES, 6)):
+            cells = np.isin(types, vtk_types)
+            if cells.any():
+                parts.append(_as_tetrahedra(connectivity[starts[cells][:, None] + np.arange(nodes)],
+                                            cell_data["GeometryIds"][cells], nodes))
+        corners = np.vstack([c for c, _ in parts]) if parts else np.zeros((0, 4), int)
+        body = np.concatenate([b for _, b in parts]) if parts else np.zeros(0, int)
     temp_key = temperature_key(point_data)
     if temp_key is None:
         raise KeyError("no temperature array in " + path)
